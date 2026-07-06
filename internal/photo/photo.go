@@ -30,12 +30,13 @@ func (f FileEntry) CameraPath() string { return f.Folder + "/" + f.Name }
 // Shot groups files that belong to one exposure: a RAF+JPG pair, or a video.
 type Shot struct {
 	ID        string            // "151_FUJI/DSCF0001" (unique, stable)
-	CameraDir string            // dir relative to the mount root, e.g. "SLOT 1/DCIM/151_FUJI"
+	CameraDir string            // dir relative to the camera root, e.g. "SLOT 1/DCIM/151_FUJI"
 	Folder    string            // base folder name, e.g. "151_FUJI" (used for dest layout)
 	Base      string            // "DSCF0001"
 	Kind      string            // "photo" | "video"
 	Files     map[string]string // upper-case ext (without dot) -> filename, e.g. "JPG" -> "DSCF0001.JPG"
 	Sizes     map[string]int64  // upper-case ext -> size in bytes
+	ObjectIDs map[string]string // upper-case ext -> MTP object ID (cli backend; enables get-id)
 }
 
 // DisplayExt returns the extension of the file used for on-screen preview.
