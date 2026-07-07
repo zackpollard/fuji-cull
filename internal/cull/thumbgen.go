@@ -30,14 +30,42 @@ func (p *Prefetcher) localThumbGen() {
 				continue
 			}
 			s := p.cat.Get(id)
-			if s == nil || s.Kind != "photo" || p.thumbs[s.ID] != thumbMissing {
+			// Handle failed shots too: for the fragment-thumb files the
+			// camera can NEVER produce a thumbnail — local generation from
+			// the buffered full image is their only path.
+			if s == nil || s.Kind != "photo" || p.thumbs[s.ID] == thumbHave {
 				continue
 			}
 			target = s
 			break
 		}
+		// No buffered work: demand the full image of the nearest shot whose
+		// thumbnail the camera cannot provide (fragment-thumb files), so the
+		// normal image pipeline feeds the generator. One at a time, viewport-
+		// steered, capped by per-shot attempts.
+		if target == nil {
+			origin := p.thumbOriginLocked()
+			for d := 0; d < len(p.cat.Shots); d++ {
+				for _, i := range []int{origin + d, origin - d} {
+					if i < 0 || i >= len(p.cat.Shots) || (d == 0 && i != origin) {
+						continue
+					}
+					s := p.cat.Shots[i]
+					if s.Kind != "photo" || p.thumbs[s.ID] != thumbFailed || p.thumbStalls[s.ID] >= 4 {
+						continue
+					}
+					if st, ok := p.state[s.ID]; !ok || st.Status == "failed" {
+						delete(p.state, s.ID)
+						p.demand[s.ID] = true
+					}
+					d = len(p.cat.Shots) // break outer
+					break
+				}
+			}
+		}
 		p.mu.Unlock()
 		if target == nil {
+			p.cond.Broadcast()
 			continue
 		}
 		if err := p.generateThumb(target); err != nil {

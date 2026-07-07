@@ -613,8 +613,10 @@ func (p *Prefetcher) fetchThumbBatch(ctx context.Context, batch []*photo.Shot) {
 	}
 }
 
-// jpegComplete reports whether the file ends with the JPEG EOI marker —
-// truncated transfers pass a size check but can never decode.
+// jpegComplete reports whether the file both starts with the JPEG SOI marker
+// and ends with EOI. Truncated transfers fail the tail check; the Fuji/gphoto2
+// fragment bug (a "thumbnail" that is a mid-file slice of image data, ending
+// at the true EOI) fails the head check.
 func jpegComplete(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
@@ -625,11 +627,14 @@ func jpegComplete(path string) bool {
 	if err != nil || st.Size() < 4 {
 		return false
 	}
-	var tail [2]byte
+	var head, tail [2]byte
+	if _, err := f.ReadAt(head[:], 0); err != nil {
+		return false
+	}
 	if _, err := f.ReadAt(tail[:], st.Size()-2); err != nil {
 		return false
 	}
-	return tail[0] == 0xFF && tail[1] == 0xD9
+	return head[0] == 0xFF && head[1] == 0xD8 && tail[0] == 0xFF && tail[1] == 0xD9
 }
 
 // ThumbPath is the cache location of a shot's timeline thumbnail.
