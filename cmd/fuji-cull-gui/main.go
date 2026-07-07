@@ -1,0 +1,803 @@
+// fuji-cull-gui: native frontend for fuji-cull. Runs the same engine as the
+// web UI in-process (the HTTP server stays up for remote/iPad use) and adds
+// what the browser can't: libjpeg-turbo decode across all cores and GPU
+// textures the app owns outright.
+//
+// Keys mirror the web UI: arrows navigate, K keep, X reject, C clear,
+// U undo, G next undecided, Z 1:1 zoom, wheel zoom, drag pan, Q/Esc quit.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/exec"
+	"runtime"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+	"unsafe"
+
+	"github.com/veandco/go-sdl2/sdl"
+	"github.com/veandco/go-sdl2/ttf"
+
+	"github.com/zack/fuji-tools/internal/cull"
+	"github.com/zack/fuji-tools/internal/photo"
+	"github.com/zack/fuji-tools/internal/turbo"
+)
+
+/* ── palette (mirrors the web UI) ─────────────────────────── */
+var (
+	colBG       = sdl.Color{R: 0x0b, G: 0x0c, B: 0x0b, A: 255}
+	colPanel    = sdl.Color{R: 0x12, G: 0x14, B: 0x12, A: 255}
+	colFG       = sdl.Color{R: 0xe8, G: 0xe6, B: 0xdf, A: 255}
+	colDim      = sdl.Color{R: 0x7d, G: 0x81, B: 0x7b, A: 255}
+	colKeep     = sdl.Color{R: 0x37, G: 0xd6, B: 0x7a, A: 255}
+	colReject   = sdl.Color{R: 0xff, G: 0x5a, B: 0x3c, A: 255}
+	colAmber    = sdl.Color{R: 0xff, G: 0xb4, B: 0x2e, A: 255}
+	colBuffered = sdl.Color{R: 0x2f, G: 0x7f, B: 0xe0, A: 255}
+	colDecoded  = sdl.Color{R: 0x2d, G: 0xe0, B: 0xc8, A: 255}
+	colTickBG   = sdl.Color{R: 0x1d, G: 0x20, B: 0x1d, A: 255}
+)
+
+/* ── decode pool: libjpeg-turbo across cores ──────────────── */
+
+type decoded struct {
+	img  *turbo.Image
+	err  error
+	when time.Time
+}
+
+type decodePool struct {
+	mu       sync.Mutex
+	app      *cull.App
+	want     []string // priority order, first = most urgent
+	inflight map[string]bool
+	done     map[string]*decoded
+}
+
+func newDecodePool(app *cull.App, workers int) *decodePool {
+	p := &decodePool{app: app, inflight: map[string]bool{}, done: map[string]*decoded{}}
+	for i := 0; i < workers; i++ {
+		go p.worker()
+	}
+	return p
+}
+
+// SetWant replaces the priority list (called each frame with the cursor
+// window). Entries already decoded or inflight are skipped by workers.
+func (p *decodePool) SetWant(ids []string) {
+	p.mu.Lock()
+	p.want = ids
+	p.mu.Unlock()
+}
+
+func (p *decodePool) Get(id string) *decoded {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.done[id]
+}
+
+// Forget drops decoded frames not in keep (bounded RAM).
+func (p *decodePool) Prune(keep map[string]bool) {
+	p.mu.Lock()
+	for id := range p.done {
+		if !keep[id] {
+			delete(p.done, id)
+		}
+	}
+	p.mu.Unlock()
+}
+
+func (p *decodePool) next() (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, id := range p.want {
+		if p.inflight[id] || p.done[id] != nil {
+			continue
+		}
+		p.inflight[id] = true
+		return id, true
+	}
+	return "", false
+}
+
+func (p *decodePool) worker() {
+	for {
+		id, ok := p.next()
+		if !ok {
+			time.Sleep(15 * time.Millisecond)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		path, err := p.app.WaitImage(ctx, id) // camera fetch if not buffered
+		cancel()
+		var d decoded
+		d.when = time.Now()
+		if err != nil {
+			d.err = err
+		} else {
+			d.img, d.err = turbo.DecodeFile(path)
+		}
+		p.mu.Lock()
+		delete(p.inflight, id)
+		p.done[id] = &d
+		p.mu.Unlock()
+	}
+}
+
+/* ── texture caches ───────────────────────────────────────── */
+
+type texEntry struct {
+	tex  *sdl.Texture
+	w, h int32
+	used time.Time
+}
+
+type texCache struct {
+	m   map[string]*texEntry
+	cap int
+}
+
+func newTexCache(cap int) *texCache { return &texCache{m: map[string]*texEntry{}, cap: cap} }
+
+func (c *texCache) get(id string) *texEntry {
+	e := c.m[id]
+	if e != nil {
+		e.used = time.Now()
+	}
+	return e
+}
+
+func (c *texCache) put(id string, e *texEntry) {
+	e.used = time.Now()
+	c.m[id] = e
+	for len(c.m) > c.cap {
+		oldest, ot := "", time.Now()
+		for k, v := range c.m {
+			if v.used.Before(ot) {
+				oldest, ot = k, v.used
+			}
+		}
+		c.m[oldest].tex.Destroy()
+		delete(c.m, oldest)
+	}
+}
+
+func uploadRGBA(r *sdl.Renderer, img *turbo.Image) (*texEntry, error) {
+	tex, err := r.CreateTexture(uint32(sdl.PIXELFORMAT_ABGR8888), sdl.TEXTUREACCESS_STATIC, int32(img.W), int32(img.H))
+	if err != nil {
+		return nil, err
+	}
+	if err := tex.Update(nil, unsafe.Pointer(&img.Pix[0]), img.W*4); err != nil {
+		tex.Destroy()
+		return nil, err
+	}
+	tex.SetBlendMode(sdl.BLENDMODE_NONE)
+	return &texEntry{tex: tex, w: int32(img.W), h: int32(img.H)}, nil
+}
+
+/* ── UI state ─────────────────────────────────────────────── */
+
+type ui struct {
+	app    *cull.App
+	pool   *decodePool
+	ren    *sdl.Renderer
+	win    *sdl.Window
+	font   *ttf.Font
+	fontSm *ttf.Font
+
+	shots     []*photo.Shot
+	decisions map[string]string
+	cursor    int
+	undo      []struct {
+		idx  int
+		prev string
+	}
+
+	full   *texCache // full-res textures
+	thumbs *texCache // strip thumbnails
+	texts  *texCache // rendered strings
+
+	// viewer transform (CSS-pixel semantics like the web UI)
+	scale, tx, ty float64
+	fit           float64
+	natW, natH    int32
+	curTexID      string
+	zoomMem       *zoomMem
+
+	panning    bool
+	panStart   [2]int32
+	panStartTx [2]float64
+}
+
+type zoomMem struct{ scale, cx, cy, aspect float64 }
+
+func main() {
+	var o cull.Options
+	flag.StringVar(&o.Listen, "listen", "127.0.0.1:8787", "HTTP listen address for the built-in web UI")
+	flag.StringVar(&o.BackendName, "backend", "cli", "camera access: cli or dir")
+	flag.StringVar(&o.Root, "root", "", "dir backend root")
+	flag.StringVar(&o.CameraRoot, "camera-root", "/SLOT 1/DCIM,/SLOT 2/DCIM", "camera DCIM paths")
+	flag.StringVar(&o.SessionName, "session", "default", "session name")
+	flag.StringVar(&o.CacheDir, "cache-dir", "", "image buffer directory")
+	flag.IntVar(&o.Ahead, "ahead", 150, "shots to buffer ahead")
+	flag.IntVar(&o.Behind, "behind", 50, "shots to buffer behind")
+	flag.IntVar(&o.EvictMargin, "evict-margin", 600, "disk eviction distance")
+	flag.IntVar(&o.Batch, "batch", 6, "files per camera invocation")
+	flag.StringVar(&o.Dest, "dest", "", "import destination")
+	flag.StringVar(&o.ImmichURL, "immich-url", os.Getenv("IMMICH_URL"), "Immich URL")
+	flag.StringVar(&o.ImmichKey, "immich-key", os.Getenv("IMMICH_API_KEY"), "Immich API key")
+	flag.StringVar(&o.ImmichAlbum, "immich-album", "", "Immich album")
+	flag.BoolVar(&o.SkipImmich, "skip-immich", false, "skip Immich")
+	flag.IntVar(&o.Retries, "retries", 3, "immich retries")
+	flag.IntVar(&o.UploadConc, "upload-concurrency", 4, "parallel uploads")
+	flag.IntVar(&o.HashConc, "hash-concurrency", 4, "parallel hashing")
+	flag.Parse()
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
+	app, handler, err := cull.Start(o)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	go func() {
+		if err := http.ListenAndServe(o.Listen, handler); err != nil {
+			log.Printf("http: %v", err)
+		}
+	}()
+	log.Printf("web UI also available at http://%s", o.Listen)
+
+	if err := run(app); err != nil {
+		log.Fatalf("%v", err)
+	}
+}
+
+func findMonoFont() string {
+	out, err := exec.Command("fc-match", "--format=%{file}", "monospace").Output()
+	if err == nil && len(out) > 0 {
+		return strings.TrimSpace(string(out))
+	}
+	return "/usr/share/fonts/TTF/DejaVuSansMono.ttf"
+}
+
+func run(app *cull.App) error {
+	runtime.LockOSThread()
+	if err := sdl.Init(sdl.INIT_VIDEO | sdl.INIT_EVENTS); err != nil {
+		return err
+	}
+	defer sdl.Quit()
+	if err := ttf.Init(); err != nil {
+		return err
+	}
+	win, err := sdl.CreateWindow("fuji-cull", sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED,
+		1600, 1000, sdl.WINDOW_RESIZABLE|sdl.WINDOW_ALLOW_HIGHDPI)
+	if err != nil {
+		return err
+	}
+	defer win.Destroy()
+	ren, err := sdl.CreateRenderer(win, -1, sdl.RENDERER_ACCELERATED|sdl.RENDERER_PRESENTVSYNC)
+	if err != nil {
+		return err
+	}
+	defer ren.Destroy()
+
+	fontPath := findMonoFont()
+	font, err := ttf.OpenFont(fontPath, 15)
+	if err != nil {
+		return fmt.Errorf("font %s: %w", fontPath, err)
+	}
+	fontSm, _ := ttf.OpenFont(fontPath, 12)
+
+	workers := runtime.NumCPU() - 2
+	if workers < 2 {
+		workers = 2
+	}
+	u := &ui{
+		app: app, ren: ren, win: win, font: font, fontSm: fontSm,
+		pool:      newDecodePool(app, workers),
+		full:      newTexCache(6),
+		thumbs:    newTexCache(400),
+		texts:     newTexCache(256),
+		decisions: map[string]string{},
+	}
+	log.Printf("gui: %d turbo decode workers", workers)
+
+	for u.frame() {
+	}
+	return nil
+}
+
+/* ── per-frame ────────────────────────────────────────────── */
+
+func (u *ui) frame() bool {
+	for ev := sdl.PollEvent(); ev != nil; ev = sdl.PollEvent() {
+		if !u.handleEvent(ev) {
+			return false
+		}
+	}
+
+	if u.shots == nil && u.app.Ready() {
+		u.shots = u.app.Shots()
+		u.decisions = u.app.Decisions()
+		u.cursor = u.app.Cursor()
+		if u.cursor < 0 || u.cursor >= len(u.shots) {
+			u.cursor = 0
+		}
+	}
+
+	u.ren.SetDrawColor(colBG.R, colBG.G, colBG.B, 255)
+	u.ren.Clear()
+
+	if u.shots == nil {
+		stage, files, errMsg := u.app.Discovery()
+		msg := "READING CAMERA INDEX"
+		sub := fmt.Sprintf("%s · %d files", stage, files)
+		if errMsg != "" {
+			msg, sub = "DISCOVERY FAILED", errMsg
+		}
+		w, h := u.win.GetSize()
+		u.text(u.font, msg, colDim, w/2, h/2-14, true)
+		u.text(u.fontSm, sub, colDim, w/2, h/2+12, true)
+	} else {
+		u.updateWants()
+		u.uploadReady()
+		u.drawViewer()
+		u.drawHeader()
+		u.drawStrip()
+	}
+
+	u.ren.Present()
+	return true
+}
+
+// updateWants hands the decode pool the priority window around the cursor.
+func (u *ui) updateWants() {
+	var ids []string
+	add := func(i int) {
+		if i >= 0 && i < len(u.shots) && u.shots[i].Kind == "photo" {
+			ids = append(ids, u.shots[i].ID)
+		}
+	}
+	add(u.cursor)
+	for d := 1; d <= 8; d++ {
+		add(u.cursor + d)
+		add(u.cursor - d)
+	}
+	u.pool.SetWant(ids)
+	keep := map[string]bool{}
+	for _, id := range ids {
+		keep[id] = true
+	}
+	u.pool.Prune(keep)
+}
+
+// uploadReady moves at most one decoded frame into a GPU texture per frame.
+func (u *ui) uploadReady() {
+	check := func(i int) bool {
+		if i < 0 || i >= len(u.shots) || u.shots[i].Kind != "photo" {
+			return false
+		}
+		id := u.shots[i].ID
+		if u.full.get(id) != nil {
+			return false
+		}
+		d := u.pool.Get(id)
+		if d == nil || d.err != nil || d.img == nil {
+			return false
+		}
+		if te, err := uploadRGBA(u.ren, d.img); err == nil {
+			u.full.put(id, te)
+			return true
+		}
+		return false
+	}
+	if check(u.cursor) {
+		return
+	}
+	for d := 1; d <= 4; d++ {
+		if check(u.cursor + d) {
+			return
+		}
+		if check(u.cursor - d) {
+			return
+		}
+	}
+}
+
+/* ── viewer draw + transform ──────────────────────────────── */
+
+func (u *ui) stageRect() sdl.Rect {
+	w, h := u.win.GetSize()
+	return sdl.Rect{X: 10, Y: 44, W: w - 20, H: h - 44 - 66}
+}
+
+func (u *ui) drawViewer() {
+	s := u.shots[u.cursor]
+	st := u.stageRect()
+
+	if s.Kind == "video" {
+		u.text(u.font, "VIDEO "+s.Base, colAmber, st.X+st.W/2, st.Y+st.H/2-12, true)
+		u.text(u.fontSm, "embedded playback lands in the next build", colDim, st.X+st.W/2, st.Y+st.H/2+12, true)
+		return
+	}
+
+	te := u.full.get(s.ID)
+	if te == nil {
+		d := u.pool.Get(s.ID)
+		msg := "BUFFERING " + s.Base
+		if d != nil && d.err != nil {
+			msg = "FETCH FAILED — retrying"
+		}
+		u.text(u.font, msg, colDim, st.X+st.W/2, st.Y+st.H/2, true)
+		u.curTexID = ""
+		return
+	}
+
+	if u.curTexID != s.ID {
+		u.mountTexture(s.ID, te, st)
+	}
+	dst := sdl.FRect{
+		X: float32(float64(st.X) + u.tx), Y: float32(float64(st.Y) + u.ty),
+		W: float32(float64(te.w) * u.scale), H: float32(float64(te.h) * u.scale),
+	}
+	u.ren.SetClipRect(&st)
+	u.ren.CopyF(te.tex, nil, &dst)
+	u.ren.SetClipRect(nil)
+
+	// decision frame + badge
+	if d := u.decisions[s.ID]; d != "" {
+		c := colKeep
+		if d == "reject" {
+			c = colReject
+		}
+		u.ren.SetDrawColor(c.R, c.G, c.B, 255)
+		u.ren.DrawRect(&st)
+		u.text(u.font, strings.ToUpper(d), c, st.X+18, st.Y+14, false)
+	}
+	if u.scale > u.fit+1e-4 {
+		u.text(u.font, fmt.Sprintf("%d%%", int(u.scale*100+0.5)), colAmber, st.X+st.W-70, st.Y+14, false)
+	}
+}
+
+func (u *ui) mountTexture(id string, te *texEntry, st sdl.Rect) {
+	u.curTexID = id
+	u.natW, u.natH = te.w, te.h
+	u.fit = minf(float64(st.W)/float64(te.w), float64(st.H)/float64(te.h))
+	if u.fit > 1 {
+		u.fit = 1
+	}
+	aspect := float64(te.w) / float64(te.h)
+	if u.zoomMem != nil && absf(u.zoomMem.aspect-aspect) < 0.01 {
+		u.scale = maxf(u.fit, minf(8, u.zoomMem.scale))
+		u.tx = float64(st.W)/2 - u.zoomMem.cx*float64(te.w)*u.scale
+		u.ty = float64(st.H)/2 - u.zoomMem.cy*float64(te.h)*u.scale
+	} else {
+		u.zoomMem = nil
+		u.scale = u.fit
+	}
+	u.clampPan(st)
+}
+
+func (u *ui) clampPan(st sdl.Rect) {
+	w := float64(u.natW) * u.scale
+	h := float64(u.natH) * u.scale
+	if w <= float64(st.W) {
+		u.tx = (float64(st.W) - w) / 2
+	} else {
+		u.tx = minf(0, maxf(float64(st.W)-w, u.tx))
+	}
+	if h <= float64(st.H) {
+		u.ty = (float64(st.H) - h) / 2
+	} else {
+		u.ty = minf(0, maxf(float64(st.H)-h, u.ty))
+	}
+	// persist zoom for same-aspect neighbours
+	if u.scale > u.fit+1e-4 {
+		u.zoomMem = &zoomMem{
+			scale:  u.scale,
+			cx:     (float64(st.W)/2 - u.tx) / u.scale / float64(u.natW),
+			cy:     (float64(st.H)/2 - u.ty) / u.scale / float64(u.natH),
+			aspect: float64(u.natW) / float64(u.natH),
+		}
+	} else {
+		u.zoomMem = nil
+	}
+}
+
+func (u *ui) zoomAt(px, py float64, newScale float64) {
+	st := u.stageRect()
+	newScale = maxf(u.fit, minf(8, newScale))
+	ix := (px - u.tx) / u.scale
+	iy := (py - u.ty) / u.scale
+	u.tx = px - ix*newScale
+	u.ty = py - iy*newScale
+	u.scale = newScale
+	u.clampPan(st)
+}
+
+/* ── header + strip ───────────────────────────────────────── */
+
+func (u *ui) drawHeader() {
+	w, _ := u.win.GetSize()
+	u.fillRect(sdl.Rect{X: 0, Y: 0, W: w, H: 38}, colPanel)
+	s := u.shots[u.cursor]
+	u.text(u.font, fmt.Sprintf("%04d/%04d", u.cursor+1, len(u.shots)), colFG, 14, 10, false)
+	name := fmt.Sprintf("%s / %s", s.Folder, s.Base)
+	u.text(u.font, name, colFG, w/2, 10, true)
+	keep, rej := 0, 0
+	for _, d := range u.decisions {
+		if d == "keep" {
+			keep++
+		} else {
+			rej++
+		}
+	}
+	u.text(u.font, fmt.Sprintf("K %d   X %d   · %d", keep, rej, len(u.shots)-keep-rej), colDim, w-260, 10, false)
+}
+
+const tickW, tickH, tickGap = 26, 40, 2
+
+func (u *ui) drawStrip() {
+	w, h := u.win.GetSize()
+	stripY := h - 62
+	u.fillRect(sdl.Rect{X: 0, Y: stripY, W: w, H: 62}, colPanel)
+
+	pitch := int32(tickW + tickGap)
+	visible := int(w/pitch) + 2
+	first := u.cursor - visible/2
+	for i := 0; i < visible; i++ {
+		idx := first + i
+		if idx < 0 || idx >= len(u.shots) {
+			continue
+		}
+		s := u.shots[idx]
+		x := int32(i)*pitch + (w-int32(visible)*pitch)/2
+		r := sdl.Rect{X: x, Y: stripY + 8, W: tickW, H: tickH}
+		u.fillRect(r, colTickBG)
+		if tp, ok := u.app.ThumbPathIfReady(s.ID); ok {
+			if te := u.thumbTex(s.ID, tp); te != nil {
+				// cover-fit the 160x120 thumb into the tick
+				src := coverSrc(te.w, te.h, tickW, tickH)
+				u.ren.Copy(te.tex, &src, &r)
+			}
+		}
+		// pipeline stripe
+		states := u.pool.Get(s.ID)
+		var stripe *sdl.Color
+		if s.Kind == "video" {
+			stripe = &colAmber
+		} else if states != nil && states.img != nil {
+			stripe = &colDecoded
+		}
+		if stripe != nil {
+			u.fillRect(sdl.Rect{X: x, Y: stripY + 8, W: tickW, H: 3}, *stripe)
+		}
+		// decision bar
+		if d := u.decisions[s.ID]; d != "" {
+			c := colKeep
+			if d == "reject" {
+				c = colReject
+			}
+			u.fillRect(sdl.Rect{X: x, Y: stripY + 8 + tickH - 4, W: tickW, H: 4}, c)
+		}
+		if idx == u.cursor {
+			u.ren.SetDrawColor(colFG.R, colFG.G, colFG.B, 255)
+			out := sdl.Rect{X: r.X - 2, Y: r.Y - 2, W: r.W + 4, H: r.H + 4}
+			u.ren.DrawRect(&out)
+		}
+	}
+	u.text(u.fontSm, "←→ nav   K keep   X reject   C clear   U undo   G next   Z 1:1   wheel zoom   Q quit", colDim, w/2, h-16, true)
+}
+
+func coverSrc(tw, th, dw, dh int32) sdl.Rect {
+	ta := float64(tw) / float64(th)
+	da := float64(dw) / float64(dh)
+	if ta > da { // source wider: crop sides
+		cw := int32(float64(th) * da)
+		return sdl.Rect{X: (tw - cw) / 2, Y: 0, W: cw, H: th}
+	}
+	ch := int32(float64(tw) / da)
+	return sdl.Rect{X: 0, Y: (th - ch) / 2, W: tw, H: ch}
+}
+
+func (u *ui) thumbTex(id, path string) *texEntry {
+	if te := u.thumbs.get(id); te != nil {
+		return te
+	}
+	img, err := turbo.DecodeFile(path)
+	if err != nil {
+		return nil
+	}
+	te, err := uploadRGBA(u.ren, img)
+	if err != nil {
+		return nil
+	}
+	u.thumbs.put(id, te)
+	return te
+}
+
+/* ── input ────────────────────────────────────────────────── */
+
+func (u *ui) handleEvent(ev sdl.Event) bool {
+	switch e := ev.(type) {
+	case *sdl.QuitEvent:
+		return false
+	case *sdl.KeyboardEvent:
+		if e.Type != sdl.KEYDOWN || u.shots == nil {
+			return true
+		}
+		switch e.Keysym.Sym {
+		case sdl.K_q:
+			return false
+		case sdl.K_ESCAPE:
+			if u.scale > u.fit+1e-4 {
+				u.scale = u.fit
+				u.zoomMem = nil
+				u.clampPan(u.stageRect())
+			}
+		case sdl.K_RIGHT, sdl.K_l:
+			u.nav(u.cursor + 1)
+		case sdl.K_LEFT, sdl.K_h:
+			u.nav(u.cursor - 1)
+		case sdl.K_HOME:
+			u.nav(0)
+		case sdl.K_END:
+			u.nav(len(u.shots) - 1)
+		case sdl.K_k:
+			u.decide("keep")
+		case sdl.K_x:
+			u.decide("reject")
+		case sdl.K_c:
+			u.decide("")
+		case sdl.K_u:
+			u.undoLast()
+		case sdl.K_g:
+			u.nextUndecided()
+		case sdl.K_z, sdl.K_SPACE:
+			st := u.stageRect()
+			if u.scale > u.fit+1e-4 {
+				u.scale = u.fit
+			} else {
+				u.zoomAt(float64(st.W)/2, float64(st.H)/2, 1)
+			}
+			u.clampPan(st)
+		}
+	case *sdl.MouseWheelEvent:
+		if u.shots == nil || u.curTexID == "" {
+			return true
+		}
+		mx, my, _ := sdl.GetMouseState()
+		st := u.stageRect()
+		factor := 1.0 + 0.15*float64(e.Y)
+		u.zoomAt(float64(mx-st.X), float64(my-st.Y), u.scale*factor)
+	case *sdl.MouseButtonEvent:
+		if e.Button == sdl.BUTTON_LEFT {
+			if e.Type == sdl.MOUSEBUTTONDOWN && u.scale > u.fit+1e-4 {
+				u.panning = true
+				u.panStart = [2]int32{e.X, e.Y}
+				u.panStartTx = [2]float64{u.tx, u.ty}
+			} else {
+				u.panning = false
+			}
+		}
+	case *sdl.MouseMotionEvent:
+		if u.panning {
+			u.tx = u.panStartTx[0] + float64(e.X-u.panStart[0])
+			u.ty = u.panStartTx[1] + float64(e.Y-u.panStart[1])
+			u.clampPan(u.stageRect())
+		}
+	}
+	return true
+}
+
+func (u *ui) nav(i int) {
+	if i < 0 || i >= len(u.shots) {
+		return
+	}
+	u.cursor = i
+	u.curTexID = "" // remount (keeps zoomMem semantics)
+	u.app.SetCursor(i)
+}
+
+func (u *ui) decide(d string) {
+	s := u.shots[u.cursor]
+	u.undo = append(u.undo, struct {
+		idx  int
+		prev string
+	}{u.cursor, u.decisions[s.ID]})
+	if d == "" {
+		delete(u.decisions, s.ID)
+	} else {
+		u.decisions[s.ID] = d
+	}
+	go u.app.SetDecision(s.ID, d)
+	if d != "" {
+		u.nav(u.cursor + 1)
+	}
+}
+
+func (u *ui) undoLast() {
+	if len(u.undo) == 0 {
+		return
+	}
+	last := u.undo[len(u.undo)-1]
+	u.undo = u.undo[:len(u.undo)-1]
+	id := u.shots[last.idx].ID
+	if last.prev == "" {
+		delete(u.decisions, id)
+	} else {
+		u.decisions[id] = last.prev
+	}
+	go u.app.SetDecision(id, last.prev)
+	u.nav(last.idx)
+}
+
+func (u *ui) nextUndecided() {
+	for d := 1; d <= len(u.shots); d++ {
+		i := (u.cursor + d) % len(u.shots)
+		if u.decisions[u.shots[i].ID] == "" {
+			u.nav(i)
+			return
+		}
+	}
+}
+
+/* ── drawing helpers ──────────────────────────────────────── */
+
+func (u *ui) fillRect(r sdl.Rect, c sdl.Color) {
+	u.ren.SetDrawColor(c.R, c.G, c.B, c.A)
+	u.ren.FillRect(&r)
+}
+
+// text renders (with caching) and draws a string; centered when center=true.
+func (u *ui) text(f *ttf.Font, s string, c sdl.Color, x, y int32, center bool) {
+	if s == "" || f == nil {
+		return
+	}
+	key := fmt.Sprintf("%p|%s|%d%d%d", f, s, c.R, c.G, c.B)
+	te := u.texts.get(key)
+	if te == nil {
+		surf, err := f.RenderUTF8Blended(s, c)
+		if err != nil {
+			return
+		}
+		tex, err := u.ren.CreateTextureFromSurface(surf)
+		w, h := surf.W, surf.H
+		surf.Free()
+		if err != nil {
+			return
+		}
+		te = &texEntry{tex: tex, w: w, h: h}
+		u.texts.put(key, te)
+	}
+	dst := sdl.Rect{X: x, Y: y, W: te.w, H: te.h}
+	if center {
+		dst.X -= te.w / 2
+	}
+	u.ren.Copy(te.tex, nil, &dst)
+}
+
+func minf(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+func maxf(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+func absf(a float64) float64 {
+	if a < 0 {
+		return -a
+	}
+	return a
+}
+
+var _ = sort.Ints // reserved
