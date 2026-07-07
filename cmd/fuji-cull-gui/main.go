@@ -250,6 +250,9 @@ type ui struct {
 	impAlbum string
 	impField int
 	impError string
+
+	decodeAhead  int
+	decodeBehind int
 }
 
 const (
@@ -280,6 +283,8 @@ func main() {
 	flag.IntVar(&o.Retries, "retries", 3, "immich retries")
 	flag.IntVar(&o.UploadConc, "upload-concurrency", 4, "parallel uploads")
 	flag.IntVar(&o.HashConc, "hash-concurrency", 4, "parallel hashing")
+	decodeAhead := flag.Int("decode-ahead", 28, "decoded frames to hold ahead of the cursor (~104 MB RAM each)")
+	decodeBehind := flag.Int("decode-behind", 8, "decoded frames to hold behind the cursor")
 	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
@@ -294,7 +299,7 @@ func main() {
 	}()
 	log.Printf("web UI also available at http://%s", o.Listen)
 
-	if err := run(app); err != nil {
+	if err := run(app, *decodeAhead, *decodeBehind); err != nil {
 		log.Fatalf("%v", err)
 	}
 }
@@ -307,7 +312,7 @@ func findMonoFont() string {
 	return "/usr/share/fonts/TTF/DejaVuSansMono.ttf"
 }
 
-func run(app *cull.App) error {
+func run(app *cull.App, decodeAhead, decodeBehind int) error {
 	runtime.LockOSThread()
 	if err := sdl.Init(sdl.INIT_VIDEO | sdl.INIT_EVENTS); err != nil {
 		return err
@@ -341,8 +346,9 @@ func run(app *cull.App) error {
 	}
 	u := &ui{
 		app: app, ren: ren, win: win, font: font, fontSm: fontSm,
-		pool:      newDecodePool(app, workers),
-		full:      newTexCache(12),
+		pool:        newDecodePool(app, workers),
+		decodeAhead: decodeAhead, decodeBehind: decodeBehind,
+		full:      newTexCache(16),
 		thumbs:    newTexCache(400),
 		texts:     newTexCache(256),
 		decisions: map[string]string{},
@@ -431,9 +437,19 @@ func (u *ui) updateWants() {
 		}
 	}
 	add(u.cursor)
-	for d := 1; d <= 8; d++ {
-		add(u.cursor + d)
-		add(u.cursor - d)
+	// Forward-biased: scrubbing is directional, so most of the runway goes
+	// ahead of the cursor.
+	max := u.decodeAhead
+	if u.decodeBehind > max {
+		max = u.decodeBehind
+	}
+	for d := 1; d <= max; d++ {
+		if d <= u.decodeAhead {
+			add(u.cursor + d)
+		}
+		if d <= u.decodeBehind {
+			add(u.cursor - d)
+		}
 	}
 	u.pool.SetWant(ids)
 	keep := map[string]bool{}
@@ -473,7 +489,7 @@ func (u *ui) uploadReady() {
 	if tryUp(u.cursor) {
 		return
 	}
-	for d := 1; d <= 4; d++ {
+	for d := 1; d <= 6; d++ {
 		if tryUp(u.cursor+d) || tryUp(u.cursor-d) {
 			return
 		}
