@@ -1,4 +1,4 @@
-package main
+package cull
 
 import "github.com/zack/fuji-tools/internal/photo"
 

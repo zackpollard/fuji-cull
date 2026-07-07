@@ -1,4 +1,4 @@
-package main
+package cull
 
 import (
 	"encoding/json"
