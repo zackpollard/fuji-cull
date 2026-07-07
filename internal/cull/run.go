@@ -135,6 +135,9 @@ func Start(o Options) (*App, http.Handler, error) {
 			return
 		}
 		go prefetch.Run()
+		if prefetch.thumbFetcher != nil {
+			go prefetch.localThumbGen()
+		}
 		app.finishInit(catalog, prefetch)
 		log.Printf("fuji-cull ready: http://%s  (session=%s, backend=%s, %d shots, buffer %d ahead / %d behind)",
 			o.Listen, o.SessionName, backend.Name(), len(catalog.Shots), o.Ahead, o.Behind)
