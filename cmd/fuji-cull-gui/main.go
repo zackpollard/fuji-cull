@@ -253,6 +253,8 @@ type ui struct {
 
 	decodeAhead  int
 	decodeBehind int
+
+	thumbBad map[string]time.Time // corrupt thumb files, negative-cached
 }
 
 const (
@@ -719,10 +721,18 @@ func (u *ui) thumbTex(id, path string) *texEntry {
 	if te := u.thumbs.get(id); te != nil {
 		return te
 	}
+	if t, bad := u.thumbBad[id]; bad && time.Since(t) < 30*time.Second {
+		return nil // corrupt on disk; recheck occasionally (sweep may replace it)
+	}
 	img, err := turbo.DecodeFile(path)
 	if err != nil {
+		if u.thumbBad == nil {
+			u.thumbBad = map[string]time.Time{}
+		}
+		u.thumbBad[id] = time.Now()
 		return nil
 	}
+	delete(u.thumbBad, id)
 	te, err := uploadRGBA(u.ren, img)
 	if err != nil {
 		return nil

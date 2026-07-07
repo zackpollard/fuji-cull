@@ -573,6 +573,13 @@ func (p *Prefetcher) fetchThumbBatch(ctx context.Context, batch []*photo.Shot) {
 		if s == nil || p.thumbs[s.ID] == thumbHave {
 			continue
 		}
+		// An interrupted gphoto2 leaves truncated files behind (nonzero size,
+		// no EOI marker) — banking those poisons the cache with thumbnails
+		// that can never decode. Validate completeness before accepting.
+		if !jpegComplete(tmp) {
+			os.Remove(tmp)
+			continue
+		}
 		if os.Rename(tmp, p.ThumbPath(s)) == nil {
 			p.thumbs[s.ID] = thumbHave
 			total++
@@ -604,6 +611,25 @@ func (p *Prefetcher) fetchThumbBatch(ctx context.Context, batch []*photo.Shot) {
 	if total > 0 {
 		log.Printf("thumbs: +%d from %s", total, dir)
 	}
+}
+
+// jpegComplete reports whether the file ends with the JPEG EOI marker —
+// truncated transfers pass a size check but can never decode.
+func jpegComplete(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || st.Size() < 4 {
+		return false
+	}
+	var tail [2]byte
+	if _, err := f.ReadAt(tail[:], st.Size()-2); err != nil {
+		return false
+	}
+	return tail[0] == 0xFF && tail[1] == 0xD9
 }
 
 // ThumbPath is the cache location of a shot's timeline thumbnail.
