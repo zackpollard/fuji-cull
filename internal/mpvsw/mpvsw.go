@@ -69,7 +69,13 @@ func New() (*Player, error) {
 		C.free(unsafe.Pointer(cv))
 	}
 	set("vo", "libmpv")
-	set("hwdec", "auto-safe")
+	// auto-copy: hardware decode with copy-back — the SW render context
+	// cannot consume non-copyback hwdec frames, and mpv's silent fallback is
+	// software-decoding 4K 10-bit HEVC (very laggy).
+	set("hwdec", "auto-copy")
+	// fast scaling paths for the software renderer; per-frame swscale at
+	// high quality costs more than the decode itself.
+	set("sw-fast", "yes")
 	set("keep-open", "yes")
 	set("audio-client-name", "fuji-cull")
 	if C.mpv_initialize(h) < 0 {
