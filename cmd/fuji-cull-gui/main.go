@@ -26,6 +26,7 @@ import (
 	"github.com/veandco/go-sdl2/ttf"
 
 	"github.com/zack/fuji-tools/internal/cull"
+	"github.com/zack/fuji-tools/internal/mpvsw"
 	"github.com/zack/fuji-tools/internal/photo"
 	"github.com/zack/fuji-tools/internal/turbo"
 )
@@ -79,7 +80,12 @@ func (p *decodePool) SetWant(ids []string) {
 func (p *decodePool) Get(id string) *decoded {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.done[id]
+	d := p.done[id]
+	if d != nil && d.err != nil && time.Since(d.when) > 3*time.Second {
+		delete(p.done, id) // auto-retry: forget the failure
+		return nil
+	}
+	return d
 }
 
 // Forget drops decoded frames not in keep (bounded RAM).
@@ -224,7 +230,32 @@ type ui struct {
 
 	fetchStates map[string]string // server-side disk-buffer states (blue stripe)
 	frameN      int
+	lastWinW    int32
+	lastWinH    int32
+
+	mode int // modeViewer | modeGrid | modeImport
+
+	mpv        *mpvsw.Player
+	videoID    string
+	videoTex   *sdl.Texture
+	videoTexW  int32
+	videoTexH  int32
+	videoBar   sdl.Rect
+
+	gridTop  int
+	lastHint int
+
+	impDest  string
+	impAlbum string
+	impField int
+	impError string
 }
+
+const (
+	modeViewer = iota
+	modeGrid
+	modeImport
+)
 
 type zoomMem struct{ scale, cx, cy, aspect float64 }
 
@@ -338,6 +369,13 @@ func (u *ui) frame() bool {
 		if u.cursor < 0 || u.cursor >= len(u.shots) {
 			u.cursor = 0
 		}
+		u.impDest, u.impAlbum = u.app.Defaults()
+	}
+
+	// window resize: refit the viewer transform (zoomMem preserved)
+	if w, h := u.win.GetSize(); w != u.lastWinW || h != u.lastWinH {
+		u.lastWinW, u.lastWinH = w, h
+		u.curTexID = ""
 	}
 
 	u.ren.SetDrawColor(colBG.R, colBG.G, colBG.B, 255)
@@ -363,9 +401,20 @@ func (u *ui) frame() bool {
 		}
 		u.updateWants()
 		u.uploadReady()
-		u.drawViewer()
-		u.drawHeader()
-		u.drawStrip()
+		switch u.mode {
+		case modeGrid:
+			u.drawGrid()
+			u.drawHeader()
+		case modeImport:
+			u.drawViewer()
+			u.drawHeader()
+			u.drawStrip()
+			u.drawImportPanel()
+		default:
+			u.drawViewer()
+			u.drawHeader()
+			u.drawStrip()
+		}
 	}
 
 	u.ren.Present()
@@ -442,8 +491,7 @@ func (u *ui) drawViewer() {
 	st := u.stageRect()
 
 	if s.Kind == "video" {
-		u.text(u.font, "VIDEO "+s.Base, colAmber, st.X+st.W/2, st.Y+st.H/2-12, true)
-		u.text(u.fontSm, "embedded playback lands in the next build", colDim, st.X+st.W/2, st.Y+st.H/2+12, true)
+		u.drawVideo(st)
 		return
 	}
 
@@ -570,6 +618,17 @@ func (u *ui) drawHeader() {
 		}
 	}
 	u.text(u.font, fmt.Sprintf("K %d   X %d   · %d", keep, rej, len(u.shots)-keep-rej), colDim, w-260, 10, false)
+	if states, have := u.app.ThumbProgress(); states != "" {
+		total := 0
+		for _, c := range states {
+			if c != '-' {
+				total++
+			}
+		}
+		if have < total {
+			u.text(u.fontSm, fmt.Sprintf("TH %d/%d", have, total), colDim, w-380, 12, false)
+		}
+	}
 }
 
 const tickW, tickH, tickGap = 26, 40, 2
@@ -625,7 +684,7 @@ func (u *ui) drawStrip() {
 			u.ren.DrawRect(&out)
 		}
 	}
-	u.text(u.fontSm, "←→ nav   K keep   X reject   C clear   U undo   G next   Z 1:1   wheel zoom   Q quit", colDim, w/2, h-16, true)
+	u.text(u.fontSm, "←→ nav   K keep   X reject   C clear   U undo   G next   T grid   I import   L video   Z 1:1   Space pause   ,/. seek   Q quit", colDim, w/2, h-16, true)
 }
 
 func coverSrc(tw, th, dw, dh int32) sdl.Rect {
@@ -661,9 +720,31 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 	switch e := ev.(type) {
 	case *sdl.QuitEvent:
 		return false
+	case *sdl.TextInputEvent:
+		if u.mode == modeImport {
+			u.importText(e.GetText())
+		}
+		return true
 	case *sdl.KeyboardEvent:
 		if e.Type != sdl.KEYDOWN || u.shots == nil {
 			return true
+		}
+		if u.mode == modeImport {
+			u.importKey(e)
+			return true
+		}
+		if u.mode == modeGrid {
+			switch e.Keysym.Sym {
+			case sdl.K_t, sdl.K_ESCAPE, sdl.K_RETURN:
+				u.mode = modeViewer
+				return true
+			case sdl.K_UP:
+				u.nav(u.cursor - u.gridCols())
+				return true
+			case sdl.K_DOWN:
+				u.nav(u.cursor + u.gridCols())
+				return true
+			}
 		}
 		switch e.Keysym.Sym {
 		case sdl.K_q:
@@ -674,7 +755,7 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 				u.zoomMem = nil
 				u.clampPan(u.stageRect())
 			}
-		case sdl.K_RIGHT, sdl.K_l:
+		case sdl.K_RIGHT:
 			u.nav(u.cursor + 1)
 		case sdl.K_LEFT, sdl.K_h:
 			u.nav(u.cursor - 1)
@@ -692,7 +773,36 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 			u.undoLast()
 		case sdl.K_g:
 			u.nextUndecided()
-		case sdl.K_z, sdl.K_SPACE:
+		case sdl.K_t:
+			if u.mode == modeGrid {
+				u.mode = modeViewer
+			} else {
+				u.mode = modeGrid
+			}
+		case sdl.K_i:
+			u.mode = modeImport
+			sdl.StartTextInput()
+		case sdl.K_l:
+			s := u.shots[u.cursor]
+			if s.Kind == "video" {
+				u.app.EnsureVideo(s.ID)
+			} else {
+				u.nav(u.cursor + 1)
+			}
+		case sdl.K_r:
+			s := u.shots[u.cursor]
+			u.pool.mu.Lock()
+			delete(u.pool.done, s.ID)
+			u.pool.mu.Unlock()
+		case sdl.K_COMMA:
+			if u.mpv != nil && u.videoID != "" {
+				u.mpv.Seek(-5)
+			}
+		case sdl.K_PERIOD:
+			if u.mpv != nil && u.videoID != "" {
+				u.mpv.Seek(5)
+			}
+		case sdl.K_z:
 			st := u.stageRect()
 			if u.scale > u.fit+1e-4 {
 				u.scale = u.fit
@@ -700,9 +810,31 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 				u.zoomAt(float64(st.W)/2, float64(st.H)/2, 1)
 			}
 			u.clampPan(st)
+		case sdl.K_SPACE:
+			if u.shots[u.cursor].Kind == "video" && u.mpv != nil {
+				u.mpv.SetPause(!u.mpv.Paused())
+			} else {
+				st := u.stageRect()
+				if u.scale > u.fit+1e-4 {
+					u.scale = u.fit
+				} else {
+					u.zoomAt(float64(st.W)/2, float64(st.H)/2, 1)
+				}
+				u.clampPan(st)
+			}
 		}
 	case *sdl.MouseWheelEvent:
-		if u.shots == nil || u.curTexID == "" {
+		if u.shots == nil {
+			return true
+		}
+		if u.mode == modeGrid {
+			u.gridTop -= int(e.Y) * 2
+			if u.gridTop < 0 {
+				u.gridTop = 0
+			}
+			return true
+		}
+		if u.curTexID == "" {
 			return true
 		}
 		mx, my, _ := sdl.GetMouseState()
@@ -710,11 +842,40 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 		factor := 1.0 + 0.15*float64(e.Y)
 		u.zoomAt(float64(mx-st.X), float64(my-st.Y), u.scale*factor)
 	case *sdl.MouseButtonEvent:
-		if e.Button == sdl.BUTTON_LEFT {
-			if e.Type == sdl.MOUSEBUTTONDOWN && u.scale > u.fit+1e-4 {
-				u.panning = true
-				u.panStart = [2]int32{e.X, e.Y}
-				u.panStartTx = [2]float64{u.tx, u.ty}
+		if e.Button == sdl.BUTTON_LEFT && u.shots != nil {
+			if e.Type == sdl.MOUSEBUTTONDOWN {
+				if u.mode == modeGrid {
+					if idx := u.gridClick(e.X, e.Y); idx >= 0 {
+						if idx == u.cursor {
+							u.mode = modeViewer // second click on selected opens it
+						}
+						u.nav(idx)
+					}
+					return true
+				}
+				// filmstrip click-to-jump
+				_, h := u.win.GetSize()
+				if e.Y > h-62 {
+					if idx := u.stripClick(e.X); idx >= 0 {
+						u.nav(idx)
+					}
+					return true
+				}
+				// video seek-bar click
+				s := u.shots[u.cursor]
+				if s.Kind == "video" && u.mpv != nil && u.videoBar.W > 0 &&
+					e.Y >= u.videoBar.Y-6 && e.Y <= u.videoBar.Y+u.videoBar.H+6 &&
+					e.X >= u.videoBar.X && e.X <= u.videoBar.X+u.videoBar.W {
+					_, dur := u.mpv.Position()
+					frac := float64(e.X-u.videoBar.X) / float64(u.videoBar.W)
+					u.mpv.Seek(frac*dur - func() float64 { p, _ := u.mpv.Position(); return p }())
+					return true
+				}
+				if u.scale > u.fit+1e-4 {
+					u.panning = true
+					u.panStart = [2]int32{e.X, e.Y}
+					u.panStartTx = [2]float64{u.tx, u.ty}
+				}
 			} else {
 				u.panning = false
 			}
@@ -733,8 +894,25 @@ func (u *ui) nav(i int) {
 	if i < 0 || i >= len(u.shots) {
 		return
 	}
+	if u.shots[u.cursor].Kind == "video" && (i >= len(u.shots) || u.shots[i].ID != u.shots[u.cursor].ID) {
+		u.stopVideo()
+	}
 	u.cursor = i
 	u.app.SetCursor(i)
+}
+
+// stripClick maps a click in the strip band to a shot index.
+func (u *ui) stripClick(mx int32) int {
+	w, _ := u.win.GetSize()
+	pitch := int32(tickW + tickGap)
+	visible := int(w/pitch) + 2
+	first := u.cursor - visible/2
+	off := (w - int32(visible)*pitch) / 2
+	idx := first + int((mx-off)/pitch)
+	if idx < 0 || idx >= len(u.shots) {
+		return -1
+	}
+	return idx
 }
 
 func (u *ui) decide(d string) {

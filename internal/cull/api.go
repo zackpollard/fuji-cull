@@ -85,6 +85,21 @@ func (a *App) SetThumbHint(i int) { a.prefetch.SetThumbHint(i) }
 // ThumbProgress returns per-shot thumb states and the cached count.
 func (a *App) ThumbProgress() (string, int) { return a.prefetch.ThumbStates() }
 
+// VideoPathIfReady returns the buffered local path of a video shot.
+func (a *App) VideoPathIfReady(id string) (string, bool) {
+	s := a.catalog.Get(id)
+	if s == nil || s.Kind != "video" {
+		return "", false
+	}
+	if a.prefetch.Snapshot()[id] != "ready" {
+		return "", false
+	}
+	return a.prefetch.displayPath(s), true
+}
+
+// Defaults returns the configured import destination and album.
+func (a *App) Defaults() (dest, album string) { return a.dest, a.album }
+
 // StartImport kicks off an import of keepers (same path the web UI uses).
 func (a *App) StartImport(dest, album string) error {
 	d, al := a.dest, a.album
