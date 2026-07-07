@@ -29,19 +29,27 @@ func (u *ui) drawGrid() {
 	rowPitch := int32(cellH + cellGap)
 	viewRows := int(h-44-gridPad) / int(rowPitch)
 
-	// keep cursor visible
-	curRow := u.cursor / cols
-	if curRow < u.gridTop {
-		u.gridTop = curRow
+	// Keep the cursor visible only when it MOVES — snapping every frame
+	// fights manual scrolling and makes the rest of the grid unreachable.
+	if u.cursor != u.lastGridCursor {
+		u.lastGridCursor = u.cursor
+		curRow := u.cursor / cols
+		if curRow < u.gridTop {
+			u.gridTop = curRow
+		}
+		if curRow >= u.gridTop+viewRows {
+			u.gridTop = curRow - viewRows + 1
+		}
 	}
-	if curRow >= u.gridTop+viewRows {
-		u.gridTop = curRow - viewRows + 1
+	maxTop := rows - viewRows
+	if maxTop < 0 {
+		maxTop = 0
 	}
 	if u.gridTop < 0 {
 		u.gridTop = 0
 	}
-	if u.gridTop > rows-1 {
-		u.gridTop = rows - 1
+	if u.gridTop > maxTop {
+		u.gridTop = maxTop
 	}
 
 	// retarget the thumbnail sweep at what's on screen
@@ -67,12 +75,17 @@ func (u *ui) drawGrid() {
 			y := 44 + int32(r)*rowPitch
 			cell := sdl.Rect{X: x, Y: y, W: cellW, H: cellH}
 			u.fillRect(cell, colTickBG)
-			if tp, ok := u.app.ThumbPathIfReady(s.ID); ok && decodes < 12 {
-				if te := u.thumbTex(s.ID, tp); te != nil {
+			if tp, ok := u.app.ThumbPathIfReady(s.ID); ok {
+				// Cached textures always draw; only NEW synchronous decodes
+				// are budgeted per frame (they cost main-thread time).
+				te := u.thumbs.get(s.ID)
+				if te == nil && decodes < 12 {
+					te = u.thumbTex(s.ID, tp)
+					decodes++
+				}
+				if te != nil {
 					src := coverSrc(te.w, te.h, cellW, cellH)
 					u.ren.Copy(te.tex, &src, &cell)
-				} else {
-					decodes++
 				}
 			}
 			if s.Kind == "video" {

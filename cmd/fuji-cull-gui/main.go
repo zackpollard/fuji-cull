@@ -242,8 +242,9 @@ type ui struct {
 	videoTexH  int32
 	videoBar   sdl.Rect
 
-	gridTop  int
-	lastHint int
+	gridTop        int
+	lastHint       int
+	lastGridCursor int
 
 	impDest  string
 	impAlbum string
