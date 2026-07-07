@@ -139,8 +139,9 @@ type texEntry struct {
 }
 
 type texCache struct {
-	m   map[string]*texEntry
-	cap int
+	m       map[string]*texEntry
+	cap     int
+	protect string // never evict this id (the on-screen texture)
 }
 
 func newTexCache(cap int) *texCache { return &texCache{m: map[string]*texEntry{}, cap: cap} }
@@ -159,9 +160,15 @@ func (c *texCache) put(id string, e *texEntry) {
 	for len(c.m) > c.cap {
 		oldest, ot := "", time.Now()
 		for k, v := range c.m {
+			if k == c.protect {
+				continue
+			}
 			if v.used.Before(ot) {
 				oldest, ot = k, v.used
 			}
+		}
+		if oldest == "" {
+			return
 		}
 		c.m[oldest].tex.Destroy()
 		delete(c.m, oldest)
@@ -208,11 +215,15 @@ type ui struct {
 	fit           float64
 	natW, natH    int32
 	curTexID      string
+	lastTex       *texEntry
 	zoomMem       *zoomMem
 
 	panning    bool
 	panStart   [2]int32
 	panStartTx [2]float64
+
+	fetchStates map[string]string // server-side disk-buffer states (blue stripe)
+	frameN      int
 }
 
 type zoomMem struct{ scale, cx, cy, aspect float64 }
@@ -299,7 +310,7 @@ func run(app *cull.App) error {
 	u := &ui{
 		app: app, ren: ren, win: win, font: font, fontSm: fontSm,
 		pool:      newDecodePool(app, workers),
-		full:      newTexCache(6),
+		full:      newTexCache(12),
 		thumbs:    newTexCache(400),
 		texts:     newTexCache(256),
 		decisions: map[string]string{},
@@ -332,6 +343,9 @@ func (u *ui) frame() bool {
 	u.ren.SetDrawColor(colBG.R, colBG.G, colBG.B, 255)
 	u.ren.Clear()
 
+	if u.shots != nil && u.cursor < len(u.shots) {
+		u.full.protect = u.shots[u.cursor].ID
+	}
 	if u.shots == nil {
 		stage, files, errMsg := u.app.Discovery()
 		msg := "READING CAMERA INDEX"
@@ -343,6 +357,10 @@ func (u *ui) frame() bool {
 		u.text(u.font, msg, colDim, w/2, h/2-14, true)
 		u.text(u.fontSm, sub, colDim, w/2, h/2+12, true)
 	} else {
+		u.frameN++
+		if u.fetchStates == nil || u.frameN%30 == 0 {
+			u.fetchStates = u.app.FetchStates()
+		}
 		u.updateWants()
 		u.uploadReady()
 		u.drawViewer()
@@ -395,14 +413,18 @@ func (u *ui) uploadReady() {
 		}
 		return false
 	}
-	if check(u.cursor) {
+	uploads := 0
+	tryUp := func(i int) bool {
+		if check(i) {
+			uploads++
+		}
+		return uploads >= 2
+	}
+	if tryUp(u.cursor) {
 		return
 	}
 	for d := 1; d <= 4; d++ {
-		if check(u.cursor + d) {
-			return
-		}
-		if check(u.cursor - d) {
+		if tryUp(u.cursor+d) || tryUp(u.cursor-d) {
 			return
 		}
 	}
@@ -427,18 +449,29 @@ func (u *ui) drawViewer() {
 
 	te := u.full.get(s.ID)
 	if te == nil {
+		// Keep the previous frame on screen while the new one decodes and
+		// uploads — a full-screen flash per navigation reads as strobing.
+		if u.lastTex != nil {
+			dst := sdl.FRect{
+				X: float32(float64(st.X) + u.tx), Y: float32(float64(st.Y) + u.ty),
+				W: float32(float64(u.lastTex.w) * u.scale), H: float32(float64(u.lastTex.h) * u.scale),
+			}
+			u.ren.SetClipRect(&st)
+			u.ren.CopyF(u.lastTex.tex, nil, &dst)
+			u.ren.SetClipRect(nil)
+		}
 		d := u.pool.Get(s.ID)
 		msg := "BUFFERING " + s.Base
 		if d != nil && d.err != nil {
-			msg = "FETCH FAILED — retrying"
+			msg = "FETCH FAILED — retrying " + s.Base
 		}
-		u.text(u.font, msg, colDim, st.X+st.W/2, st.Y+st.H/2, true)
-		u.curTexID = ""
+		u.text(u.font, msg, colDim, st.X+st.W/2, st.Y+st.H-30, true)
 		return
 	}
 
 	if u.curTexID != s.ID {
 		u.mountTexture(s.ID, te, st)
+		u.lastTex = te
 	}
 	dst := sdl.FRect{
 		X: float32(float64(st.X) + u.tx), Y: float32(float64(st.Y) + u.ty),
@@ -565,13 +598,15 @@ func (u *ui) drawStrip() {
 				u.ren.Copy(te.tex, &src, &r)
 			}
 		}
-		// pipeline stripe
-		states := u.pool.Get(s.ID)
+		// pipeline stripe: amber video, cyan decoded in GPU pipeline,
+		// blue buffered on disk from the camera
 		var stripe *sdl.Color
 		if s.Kind == "video" {
 			stripe = &colAmber
-		} else if states != nil && states.img != nil {
+		} else if d := u.pool.Get(s.ID); d != nil && d.img != nil {
 			stripe = &colDecoded
+		} else if u.fetchStates[s.ID] == "ready" {
+			stripe = &colBuffered
 		}
 		if stripe != nil {
 			u.fillRect(sdl.Rect{X: x, Y: stripY + 8, W: tickW, H: 3}, *stripe)
@@ -699,7 +734,6 @@ func (u *ui) nav(i int) {
 		return
 	}
 	u.cursor = i
-	u.curTexID = "" // remount (keeps zoomMem semantics)
 	u.app.SetCursor(i)
 }
 
