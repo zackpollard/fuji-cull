@@ -261,6 +261,7 @@
       <span class="r" id="cReject">X 0</span>
       <span class="u" id="cUndecided">· 0</span>
     </span>
+    <span class="counter" id="metaProg" title="metadata (orientation) coverage"></span>
     <span class="counter" id="thumbProg" title="thumbnail sweep progress"></span>
     <button class="grid-toggle" id="gridBtn">GRID</button>
     <button class="import" id="importBtn">IMPORT</button>
@@ -838,6 +839,9 @@ async function syncThumbs() {
     $("thumbProg").textContent = t.have < eligible
       ? "TH " + t.have + "/" + eligible + (healing ? " · " + healing + " healing" : "")
       : "";
+    const mdEligible = o.length - (o.match(/-/g) || []).length;
+    const mdKnown = mdEligible - (o.match(/0/g) || []).length;
+    $("metaProg").textContent = mdKnown < mdEligible ? "MD " + mdKnown + "/" + mdEligible : "";
   } catch (e) { /* transient */ }
   if (!s || s.includes("0") || orientStates.includes("0"))
     setTimeout(syncThumbs, gridOpen ? 2000 : 4000);

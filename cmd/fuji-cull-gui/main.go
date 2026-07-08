@@ -671,6 +671,20 @@ func (u *ui) drawHeader() {
 			u.text(u.fontSm, label, colDim, w-470, 12, false)
 		}
 	}
+	if u.orients != "" {
+		mdTotal, mdKnown := 0, 0
+		for _, c := range u.orients {
+			if c != '-' {
+				mdTotal++
+			}
+			if c != '-' && c != '0' {
+				mdKnown++
+			}
+		}
+		if mdKnown < mdTotal {
+			u.text(u.fontSm, fmt.Sprintf("MD %d/%d", mdKnown, mdTotal), colDim, w-640, 12, false)
+		}
+	}
 }
 
 const tickW, tickH, tickGap = 26, 40, 2
