@@ -42,8 +42,9 @@ func (p *Prefetcher) localThumbGen() {
 		// No buffered work: demand the full image of the nearest shot whose
 		// thumbnail the camera cannot provide (fragment-thumb files), so the
 		// normal image pipeline feeds the generator. One at a time, viewport-
-		// steered, capped by per-shot attempts.
-		if target == nil {
+		// steered, capped by per-shot attempts. Paused while bulk reads are
+		// sick — these demands would hammer garbage transfers forever.
+		if target == nil && !p.bulkSickLocked() {
 			// Pipeline up to 3 demands so image transfer overlaps with
 			// generation; the healing marches outward on its own — browsing
 			// only re-prioritizes it.

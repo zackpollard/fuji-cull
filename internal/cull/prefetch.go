@@ -61,6 +61,8 @@ type Prefetcher struct {
 	photoSeq      []photoRank    // photos in catalog order with ranks, for density scans
 	partBin       string         // patched aft-mtp-cli with get-part; "" = video posters off
 	partSick      bool           // partial reads returned stale-buffer garbage; distrust for the session
+	bulkSick      bool           // bulk reads (get-id) returned stale-buffer garbage
+	bulkSickAt    time.Time
 
 	orient      map[string]uint8 // shot ID -> EXIF orientation (absent = unknown)
 	orientDirty bool
@@ -189,16 +191,31 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 		}
 	}
 
-	// Adopt cache files left by a previous run of the same session.
-	adopted := 0
+	// Adopt cache files left by a previous run of the same session. Content
+	// is magic-checked: a poisoned camera once delivered stale-buffer garbage
+	// with plausible sizes, and size was all the old promotion checked.
+	adopted, purged := 0, 0
 	for _, s := range cat.Shots {
-		if st, err := os.Stat(p.displayPath(s)); err == nil && st.Size() > 0 {
+		path := p.displayPath(s)
+		if st, err := os.Stat(path); err == nil && st.Size() > 0 {
+			kind := "jpg"
+			if s.Kind == "video" {
+				kind = "mov"
+			}
+			if !mediaValid(path, kind) {
+				os.Remove(path)
+				purged++
+				continue
+			}
 			p.state[s.ID] = &fetchState{Status: "ready"}
 			adopted++
 		}
 	}
 	if adopted > 0 {
 		log.Printf("prefetch: adopted %d cached files from previous run", adopted)
+	}
+	if purged > 0 {
+		log.Printf("prefetch: purged %d stale-buffer garbage files banked by a previous run", purged)
 	}
 	p.loadOrient()
 	go p.orientFlusher()
@@ -772,7 +789,7 @@ func (p *Prefetcher) fetchVideoPoster(ctx context.Context, s *photo.Shot) {
 	// A real Fuji MOV head carries "ftyp" at offset 4. Anything else is the
 	// stale-buffer firmware bug — distrust partial reads entirely and leave
 	// the shot unstruck (the data was garbage, not the video).
-	if !movHead(head) {
+	if !mediaValid(head, "mov") {
 		p.mu.Lock()
 		p.partSick = true
 		p.mu.Unlock()
@@ -799,18 +816,37 @@ func (p *Prefetcher) fetchVideoPoster(ctx context.Context, s *photo.Shot) {
 	p.mu.Unlock()
 }
 
-// movHead reports whether a file begins like a QuickTime container.
-func movHead(path string) bool {
+// mediaValid reports whether a file starts like the media it claims to be
+// ("jpg", "raf" or "mov"). The X-H2S stale-buffer bug answers reads — bulk
+// GetObject included — with replayed MTP responses of plausible LENGTH but
+// garbage content, so size checks alone are not proof of a good transfer.
+func mediaValid(path, kind string) bool {
 	f, err := os.Open(path)
 	if err != nil {
 		return false
 	}
 	defer f.Close()
-	var b [8]byte
+	var b [16]byte
 	if _, err := io.ReadFull(f, b[:]); err != nil {
 		return false
 	}
-	return string(b[4:8]) == "ftyp"
+	switch kind {
+	case "raf":
+		return string(b[:8]) == "FUJIFILM"
+	case "mov":
+		return string(b[4:8]) == "ftyp"
+	default:
+		return b[0] == 0xFF && b[1] == 0xD8
+	}
+}
+
+// bulkSickLocked reports whether automated pulls should pause because bulk
+// reads recently returned stale-buffer garbage. Explicit demands stay allowed
+// — they act as recovery probes, and one valid transfer clears the flag (the
+// user fixes the camera with a power cycle). Re-probes automatically every
+// 3 minutes so an idle app also notices recovery.
+func (p *Prefetcher) bulkSickLocked() bool {
+	return p.bulkSick && time.Since(p.bulkSickAt) < 3*time.Minute
 }
 
 func (p *Prefetcher) noteVideoPosterErr(s *photo.Shot, err error) {
@@ -936,6 +972,11 @@ func (p *Prefetcher) pickLocked() []*photo.Shot {
 		return batch
 	}
 	// Window: current, then ahead (the direction of travel), then behind.
+	// Paused while bulk reads are sick — every pull would bank a 10 MB
+	// garbage transfer; the 3-minute re-probe (or any demand) checks recovery.
+	if p.bulkSickLocked() {
+		return nil
+	}
 	var first *photo.Shot
 	if p.cursor >= 0 && p.cursor < len(p.cat.Shots) && needed(p.cat.Shots[p.cursor]) {
 		first = p.cat.Shots[p.cursor]
@@ -1004,6 +1045,7 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 	items := make([]fetchItem, 0, len(targets))
 	tmps := make([]string, len(targets))
 	expect := make([]int64, len(targets))
+	kinds := make([]string, len(targets))
 	finished := make([]bool, len(targets))
 
 	for i, s := range targets {
@@ -1024,6 +1066,13 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 		if srcExt == "RAF" && s.Kind == "photo" {
 			dest = p.rafPath(s)
 		}
+		kinds[i] = "jpg"
+		switch {
+		case s.Kind == "video":
+			kinds[i] = "mov"
+		case srcExt == "RAF":
+			kinds[i] = "raf"
+		}
 		tmps[i] = dest + ".tmp"
 		expect[i] = s.Sizes[srcExt]
 		items = append(items, fetchItem{
@@ -1043,12 +1092,29 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 	go func() { fetchDone <- p.backend.Fetch(fctx, items) }()
 
 	promote := func(i int) {
+		if !mediaValid(tmps[i], kinds[i]) {
+			os.Remove(tmps[i])
+			log.Printf("prefetch: %s: transfer content is not %s — camera bulk reads are replaying stale buffers; POWER-CYCLE the camera (automated pulls paused, navigation still probes)",
+				targets[i].ID, kinds[i])
+			p.mu.Lock()
+			p.bulkSick, p.bulkSickAt = true, time.Now()
+			p.mu.Unlock()
+			p.setState(targets[i].ID, "failed", "camera returned stale-buffer garbage — power-cycle the camera")
+			finished[i] = true
+			return
+		}
 		if err := p.finalizeShot(targets[i], tmps[i]); err != nil {
 			log.Printf("prefetch: %s: %v", targets[i].ID, err)
 			p.setState(targets[i].ID, "failed", err.Error())
 		} else {
 			p.setState(targets[i].ID, "ready", "")
 			p.harvestOrient(targets[i])
+			p.mu.Lock()
+			if p.bulkSick {
+				p.bulkSick = false
+				log.Printf("prefetch: camera bulk reads recovered")
+			}
+			p.mu.Unlock()
 		}
 		finished[i] = true
 	}
