@@ -251,6 +251,7 @@ type ui struct {
 	mpv        *mpvsw.Player
 	videoID    string
 	videoSrc   string // what mpv is playing: local path or stream URL
+	videoDiag  bool   // decode-path diagnostic logged for this clip
 	videoTex   *sdl.Texture
 	videoTexW  int32
 	videoTexH  int32

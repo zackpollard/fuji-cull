@@ -96,6 +96,18 @@ func New() (*Player, error) {
 	return &Player{h: h, rc: rc}, nil
 }
 
+// PropertyString returns an mpv property as a string ("" when unavailable).
+func (p *Player) PropertyString(name string) string {
+	cn := C.CString(name)
+	defer C.free(unsafe.Pointer(cn))
+	cs := C.mpv_get_property_string(p.h, cn)
+	if cs == nil {
+		return ""
+	}
+	defer C.mpv_free(unsafe.Pointer(cs))
+	return C.GoString(cs)
+}
+
 // Load starts playing a file (path or URL).
 func (p *Player) Load(target string) {
 	ct := C.CString(target)

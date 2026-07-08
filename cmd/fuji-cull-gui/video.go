@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"net/url"
 	"unsafe"
 
@@ -48,7 +49,21 @@ func (u *ui) drawVideo(st sdl.Rect) {
 	}
 	if u.videoSrc != src {
 		u.videoID, u.videoSrc = s.ID, src
+		u.videoDiag = false
 		u.mpv.Load(src)
+	}
+	// One diagnostic line per clip once decode settles: proves whether hwdec
+	// engaged (silent software fallback of 4K HEVC pegs the CPU).
+	if !u.videoDiag {
+		if hw := u.mpv.PropertyString("hwdec-current"); hw != "" && hw != "no" || u.mpv.PropertyString("vo-configured") == "yes" {
+			log.Printf("video: %s decode=%s format=%s %sx%s@%s drops=%s",
+				s.Base, orUnknown(hw),
+				u.mpv.PropertyString("video-params/pixelformat"),
+				u.mpv.PropertyString("video-params/w"), u.mpv.PropertyString("video-params/h"),
+				u.mpv.PropertyString("container-fps"),
+				u.mpv.PropertyString("frame-drop-count"))
+			u.videoDiag = true
+		}
 	}
 	if streaming {
 		u.text(u.fontSm, "STREAMING FROM CAMERA · L pulls a local copy", colDim, st.X+st.W/2, st.Y+16, true)
@@ -93,6 +108,13 @@ func (u *ui) stopVideo() {
 		u.mpv.Stop()
 		u.videoID, u.videoSrc = "", ""
 	}
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return s
 }
 
 func fmtTime(s float64) string {
