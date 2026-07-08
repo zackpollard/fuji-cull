@@ -13,8 +13,11 @@ import (
 	"sync"
 	"time"
 
+	"os/exec"
+
 	"github.com/zack/fuji-tools/internal/exif"
 	"github.com/zack/fuji-tools/internal/gphoto"
+	"github.com/zack/fuji-tools/internal/mtppart"
 	"github.com/zack/fuji-tools/internal/photo"
 )
 
@@ -56,6 +59,7 @@ type Prefetcher struct {
 	thumbTimeouts int            // consecutive errored batches; drives escalating settle backoff
 	thumbRank     map[string]int // shot ID -> 1-based file index within its camera folder
 	photoSeq      []photoRank    // photos in catalog order with ranks, for density scans
+	partBin       string         // patched aft-mtp-cli with get-part; "" = video posters off
 }
 
 type photoRank struct {
@@ -126,12 +130,20 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 		}
 	}
 	if p.thumbFetcher != nil {
+		if bin := mtppart.Bin(); bin != "" {
+			if _, err := exec.LookPath("ffmpeg"); err == nil {
+				p.partBin = bin
+				log.Printf("video posters enabled via %s", bin)
+			}
+		}
+	}
+	if p.thumbFetcher != nil {
 		if err := os.MkdirAll(p.thumbDir, 0o755); err != nil {
 			return nil, err
 		}
 		have := 0
 		for _, s := range cat.Shots {
-			if s.Kind != "photo" {
+			if s.Kind != "photo" && p.partBin == "" {
 				continue
 			}
 			if st, err := os.Stat(p.ThumbPath(s)); err == nil && st.Size() > 0 {
@@ -381,6 +393,13 @@ func (p *Prefetcher) Run() {
 						thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
 						break
 					}
+					if p.partBin != "" {
+						if v := p.pickVideoPosterLocked(); v != nil {
+							thumbBatch = []*photo.Shot{v}
+							thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
+							break
+						}
+					}
 				}
 			}
 			p.cond.Wait()
@@ -408,7 +427,11 @@ func (p *Prefetcher) Run() {
 		}
 
 		p.mu.Unlock()
-		p.fetchThumbBatch(thumbCtx, thumbBatch)
+		if len(thumbBatch) == 1 && thumbBatch[0].Kind == "video" {
+			p.fetchVideoPoster(thumbCtx, thumbBatch[0])
+		} else {
+			p.fetchThumbBatch(thumbCtx, thumbBatch)
+		}
 		p.mu.Lock()
 		p.thumbCancel = nil
 		p.mu.Unlock()
@@ -684,6 +707,77 @@ func (p *Prefetcher) saveThumbFailedLocked() {
 	}
 }
 
+// pickVideoPosterLocked selects the nearest video lacking a poster.
+func (p *Prefetcher) pickVideoPosterLocked() *photo.Shot {
+	if !p.thumbRetryAt.IsZero() && time.Now().Before(p.thumbRetryAt) {
+		return nil
+	}
+	origin := p.thumbOriginLocked()
+	for d := 0; d < len(p.cat.Shots); d++ {
+		for _, i := range []int{origin + d, origin - d} {
+			if i < 0 || i >= len(p.cat.Shots) {
+				continue
+			}
+			s := p.cat.Shots[i]
+			if s.Kind != "video" || p.thumbs[s.ID] != thumbMissing || p.thumbStalls[s.ID] >= 2 {
+				continue
+			}
+			if s.ObjectIDs[s.DisplayExt()] == "" {
+				continue
+			}
+			return s
+		}
+	}
+	return nil
+}
+
+// fetchVideoPoster pulls the head of the video (Fuji writes moov at the
+// front, so ~8 MB carries the index plus the opening frames) and extracts a
+// 240px poster via ffmpeg.
+func (p *Prefetcher) fetchVideoPoster(ctx context.Context, s *photo.Shot) {
+	cctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	tmp, err := os.MkdirTemp(p.thumbDir, "vp-*")
+	if err != nil {
+		return
+	}
+	defer os.RemoveAll(tmp)
+	head := filepath.Join(tmp, "head.mov")
+	if err := mtppart.GetPart(cctx, s.ObjectIDs[s.DisplayExt()], 0, 8<<20, head); err != nil {
+		p.noteVideoPosterErr(s, err)
+		return
+	}
+	poster := filepath.Join(tmp, "poster.jpg")
+	out, err := exec.CommandContext(cctx, "ffmpeg", "-y", "-loglevel", "error",
+		"-i", head, "-frames:v", "1", "-vf", "scale=240:-2", "-q:v", "4", poster).CombinedOutput()
+	if err != nil {
+		p.noteVideoPosterErr(s, fmt.Errorf("ffmpeg: %v: %.150s", err, string(out)))
+		return
+	}
+	if !jpegComplete(poster) {
+		p.noteVideoPosterErr(s, fmt.Errorf("poster not a valid jpeg"))
+		return
+	}
+	if err := os.Rename(poster, p.ThumbPath(s)); err != nil {
+		p.noteVideoPosterErr(s, err)
+		return
+	}
+	p.mu.Lock()
+	p.thumbs[s.ID] = thumbHave
+	p.mu.Unlock()
+}
+
+func (p *Prefetcher) noteVideoPosterErr(s *photo.Shot, err error) {
+	log.Printf("video poster: %s: %v", s.ID, err)
+	p.mu.Lock()
+	p.thumbStalls[s.ID]++
+	if p.thumbStalls[s.ID] >= 2 {
+		p.thumbs[s.ID] = thumbFailed
+	}
+	p.thumbRetryAt = time.Now().Add(3 * time.Second)
+	p.mu.Unlock()
+}
+
 // ThumbPath is the cache location of a shot's timeline thumbnail.
 func (p *Prefetcher) ThumbPath(s *photo.Shot) string {
 	return filepath.Join(p.thumbDir, s.SafeID()+".jpg")
@@ -697,7 +791,7 @@ func (p *Prefetcher) ThumbStates() (string, int) {
 	buf := make([]byte, len(p.cat.Shots))
 	have := 0
 	for i, s := range p.cat.Shots {
-		if p.thumbFetcher == nil || s.Kind != "photo" {
+		if p.thumbFetcher == nil || (s.Kind != "photo" && p.partBin == "") {
 			buf[i] = '-'
 			continue
 		}
