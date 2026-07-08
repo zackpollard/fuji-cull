@@ -409,7 +409,13 @@ func (u *ui) frame() bool {
 			u.fetchStates = u.app.FetchStates()
 		}
 		u.updateWants()
-		u.uploadReady()
+		// A 104 MB photo texture upload mid-playback stalls the render
+		// thread and stutters the video: photos wait until playback stops.
+		videoPlaying := u.mode == modeViewer && u.cursor < len(u.shots) &&
+			u.shots[u.cursor].Kind == "video" && u.videoID != ""
+		if !videoPlaying {
+			u.uploadReady()
+		}
 		switch u.mode {
 		case modeGrid:
 			u.drawGrid()
