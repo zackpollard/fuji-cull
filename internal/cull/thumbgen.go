@@ -117,7 +117,11 @@ func (p *Prefetcher) generateThumb(s *photo.Shot) error {
 		return err
 	}
 	p.mu.Lock()
+	wasFailed := p.thumbs[s.ID] == thumbFailed
 	p.thumbs[s.ID] = thumbHave
+	if wasFailed {
+		p.saveThumbFailedLocked()
+	}
 	p.mu.Unlock()
 	return nil
 }

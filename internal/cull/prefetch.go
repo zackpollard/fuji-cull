@@ -2,6 +2,7 @@ package cull
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -139,6 +140,7 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 			}
 		}
 		log.Printf("thumbs: %d/%d already cached", have, len(cat.Shots))
+		p.loadThumbFailed()
 
 		// gphoto2 selects by 1-based position within the folder; compute each
 		// shot's display-file rank among all files in its folder (name order,
@@ -596,6 +598,7 @@ func (p *Prefetcher) fetchThumbBatch(ctx context.Context, batch []*photo.Shot) {
 		if p.thumbStalls[s.ID] >= 2 {
 			p.thumbs[s.ID] = thumbFailed
 			log.Printf("thumbs: no thumbnail for %s/%s after two attempts; skipping", s.CameraDir, s.Files[s.DisplayExt()])
+			p.saveThumbFailedLocked()
 		}
 	}
 	if runErr != nil && ctx.Err() == nil {
@@ -635,6 +638,50 @@ func jpegComplete(path string) bool {
 		return false
 	}
 	return head[0] == 0xFF && head[1] == 0xD8 && tail[0] == 0xFF && tail[1] == 0xD9
+}
+
+// thumbFailedPath persists shots whose thumbnails the camera can never
+// deliver (the fragment-blob firmware bug) — without it every restart
+// re-downloads ~4 MB of garbage twice per shot before re-striking.
+func (p *Prefetcher) thumbFailedPath() string {
+	return filepath.Join(p.thumbDir, "camera-impossible.json")
+}
+
+func (p *Prefetcher) loadThumbFailed() {
+	raw, err := os.ReadFile(p.thumbFailedPath())
+	if err != nil {
+		return
+	}
+	var ids []string
+	if json.Unmarshal(raw, &ids) != nil {
+		return
+	}
+	n := 0
+	for _, id := range ids {
+		if s := p.cat.Get(id); s != nil && p.thumbs[id] != thumbHave {
+			p.thumbs[id] = thumbFailed
+			p.thumbStalls[id] = 2
+			n++
+		}
+	}
+	if n > 0 {
+		log.Printf("thumbs: %d shots marked camera-impossible (persisted)", n)
+	}
+}
+
+// saveThumbFailedLocked snapshots the failed set (call with p.mu held).
+func (p *Prefetcher) saveThumbFailedLocked() {
+	var ids []string
+	for id, st := range p.thumbs {
+		if st == thumbFailed {
+			ids = append(ids, id)
+		}
+	}
+	raw, _ := json.Marshal(ids)
+	tmp := p.thumbFailedPath() + ".tmp"
+	if os.WriteFile(tmp, raw, 0o644) == nil {
+		_ = os.Rename(tmp, p.thumbFailedPath())
+	}
 }
 
 // ThumbPath is the cache location of a shot's timeline thumbnail.
