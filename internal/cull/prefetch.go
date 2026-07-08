@@ -1163,6 +1163,7 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 			p.mu.Unlock()
 			p.setState(targets[i].ID, "failed", "camera returned stale-buffer garbage — power-cycle the camera")
 			finished[i] = true
+			fcancel() // the rest of the batch is garbage too; don't pull ~290 MB of it
 			return
 		}
 		if err := p.finalizeShot(targets[i], tmps[i]); err != nil {
@@ -1174,7 +1175,16 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 			p.mu.Lock()
 			if p.bulkSick {
 				p.bulkSick = false
-				log.Printf("prefetch: camera bulk reads recovered")
+				// A valid transfer after garbage means the camera was
+				// power-cycled — the only cure — so partial reads (streaming,
+				// posters, head-heal) are trustworthy again too. Their own
+				// validation re-trips partSick if not.
+				if p.partSick {
+					p.partSick = false
+					log.Printf("prefetch: camera recovered — re-enabling partial reads")
+				} else {
+					log.Printf("prefetch: camera bulk reads recovered")
+				}
 			}
 			p.mu.Unlock()
 		}
