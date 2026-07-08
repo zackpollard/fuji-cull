@@ -107,6 +107,33 @@ func (u *ui) drawGrid() {
 			}
 		}
 	}
+	// Preload beyond the fold with whatever decode budget the visible pass
+	// left: nearest rows first, below before above (scrolling down
+	// dominates), so revealed rows are already decoded instead of popping.
+	for d := 1; d <= 14 && decodes < 12; d++ {
+		for _, row := range [2]int{u.gridTop + viewRows + d, u.gridTop - d} {
+			if row < 0 || row >= rows {
+				continue
+			}
+			for c := 0; c < cols && decodes < 12; c++ {
+				idx := row*cols + c
+				if idx >= len(u.shots) {
+					break
+				}
+				s := u.shots[idx]
+				tp, ok := u.app.ThumbPathIfReady(s.ID)
+				if !ok {
+					continue
+				}
+				if te := u.thumbs.get(s.ID); te != nil && te.orient == u.orientAt(idx) {
+					continue
+				}
+				u.thumbTex(s.ID, tp, u.orientAt(idx))
+				decodes++
+			}
+		}
+	}
+
 	u.text(u.fontSm, fmt.Sprintf("GRID  %d/%d   T/Esc close   Enter open   K/X/C cull", u.cursor+1, len(u.shots)),
 		colDim, w/2, h-16, true)
 }
