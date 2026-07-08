@@ -27,7 +27,7 @@ import (
 	"github.com/veandco/go-sdl2/ttf"
 
 	"github.com/zack/fuji-tools/internal/cull"
-	"github.com/zack/fuji-tools/internal/mpvsw"
+	"github.com/zack/fuji-tools/internal/mpvgl"
 	"github.com/zack/fuji-tools/internal/photo"
 	"github.com/zack/fuji-tools/internal/turbo"
 )
@@ -248,7 +248,11 @@ type ui struct {
 
 	mode int // modeViewer | modeGrid | modeImport
 
-	mpv        *mpvsw.Player
+	mpv        videoPlayer
+	glVideo    bool          // GL render path available (zero-copy hwdec)
+	sdlCtx     uintptr       // SDL renderer's GL context
+	mpvCtx     sdl.GLContext // dedicated shared context for mpv rendering
+	videoTexID uint32        // GL name of videoTex (GL path)
 	videoID    string
 	videoSrc   string // what mpv is playing: local path or stream URL
 	videoDiag  bool   // decode-path diagnostic logged for this clip
@@ -277,6 +281,19 @@ const (
 	modeGrid
 	modeImport
 )
+
+// videoPlayer is what the UI needs from an embedded player; satisfied by
+// both the GL (zero-copy) and software mpv wrappers.
+type videoPlayer interface {
+	Load(target string)
+	Stop()
+	SetPause(paused bool)
+	Paused() bool
+	Seek(secs float64)
+	Position() (pos, dur float64)
+	PropertyString(name string) string
+	Close()
+}
 
 type zoomMem struct{ scale, cx, cy, aspect float64 }
 
@@ -345,8 +362,11 @@ func run(app *cull.App, apiBase string, decodeAhead, decodeBehind int) error {
 	if err := ttf.Init(); err != nil {
 		return err
 	}
+	// GL renderer required for zero-copy video (mpv renders into a shared
+	// SDL texture); WINDOW_OPENGL lets us create the second shared context.
+	sdl.SetHint(sdl.HINT_RENDER_DRIVER, "opengl")
 	win, err := sdl.CreateWindow("fuji-cull", sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED,
-		1600, 1000, sdl.WINDOW_RESIZABLE|sdl.WINDOW_ALLOW_HIGHDPI)
+		1600, 1000, sdl.WINDOW_RESIZABLE|sdl.WINDOW_ALLOW_HIGHDPI|sdl.WINDOW_OPENGL)
 	if err != nil {
 		return err
 	}
@@ -378,6 +398,23 @@ func run(app *cull.App, apiBase string, decodeAhead, decodeBehind int) error {
 		decisions: map[string]string{},
 	}
 	log.Printf("gui: %d turbo decode workers", workers)
+
+	// Second GL context, shared with the renderer's, for mpv's zero-copy
+	// video path. Falls back to the software render pipeline when the
+	// renderer isn't GL (then 4K60 costs ~2.5 cores of copy-back+convert).
+	if info, err := ren.GetInfo(); err == nil && strings.HasPrefix(info.Name, "opengl") {
+		u.sdlCtx = mpvgl.CurrentContext()
+		sdl.GLSetAttribute(sdl.GL_SHARE_WITH_CURRENT_CONTEXT, 1)
+		if ctx, err := win.GLCreateContext(); err == nil && u.sdlCtx != 0 {
+			u.mpvCtx, u.glVideo = ctx, true
+			mpvgl.MakeCurrent(unsafe.Pointer(win), u.sdlCtx)
+			log.Printf("gui: GL video path active (zero-copy hwdec)")
+		} else {
+			log.Printf("gui: shared GL context unavailable (%v); software video path", err)
+		}
+	} else {
+		log.Printf("gui: renderer %q is not GL; software video path", info.Name)
+	}
 
 	for u.frame() {
 	}

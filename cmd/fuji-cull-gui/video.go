@@ -7,6 +7,7 @@ import (
 
 	"github.com/veandco/go-sdl2/sdl"
 
+	"github.com/zack/fuji-tools/internal/mpvgl"
 	"github.com/zack/fuji-tools/internal/mpvsw"
 )
 
@@ -40,12 +41,25 @@ func (u *ui) drawVideo(st sdl.Rect) {
 	}
 
 	if u.mpv == nil {
-		p, err := mpvsw.New()
-		if err != nil {
-			u.text(u.font, "mpv unavailable: "+err.Error(), colReject, st.X+st.W/2, st.Y+st.H/2, true)
-			return
+		if u.glVideo {
+			u.win.GLMakeCurrent(u.mpvCtx)
+			p, err := mpvgl.New()
+			mpvgl.MakeCurrent(unsafe.Pointer(u.win), u.sdlCtx)
+			if err != nil {
+				log.Printf("gui: mpv GL init failed (%v); falling back to software video", err)
+				u.glVideo = false
+			} else {
+				u.mpv = p
+			}
 		}
-		u.mpv = p
+		if u.mpv == nil {
+			p, err := mpvsw.New()
+			if err != nil {
+				u.text(u.font, "mpv unavailable: "+err.Error(), colReject, st.X+st.W/2, st.Y+st.H/2, true)
+				return
+			}
+			u.mpv = p
+		}
 	}
 	if u.videoSrc != src {
 		u.videoID, u.videoSrc = s.ID, src
@@ -69,19 +83,40 @@ func (u *ui) drawVideo(st sdl.Rect) {
 		u.text(u.fontSm, "STREAMING FROM CAMERA · L pulls a local copy", colDim, st.X+st.W/2, st.Y+16, true)
 	}
 
-	// keep the streaming texture matched to the stage size
+	// keep the video texture matched to the stage size. GL path: a TARGET
+	// texture mpv renders into via FBO; SW path: a STREAMING upload target.
 	if u.videoTex == nil || u.videoTexW != st.W || u.videoTexH != st.H {
 		if u.videoTex != nil {
 			u.videoTex.Destroy()
 		}
-		t, err := u.ren.CreateTexture(uint32(sdl.PIXELFORMAT_ARGB8888), sdl.TEXTUREACCESS_STREAMING, st.W, st.H)
+		access := sdl.TEXTUREACCESS_STREAMING
+		if u.glVideo {
+			access = sdl.TEXTUREACCESS_TARGET
+		}
+		t, err := u.ren.CreateTexture(uint32(sdl.PIXELFORMAT_ARGB8888), access, st.W, st.H)
 		if err != nil {
 			return
 		}
 		u.videoTex, u.videoTexW, u.videoTexH = t, st.W, st.H
+		if u.glVideo {
+			// learn the texture's GL name so mpv can render into it
+			t.GLBind(nil, nil)
+			u.videoTexID = mpvgl.BoundTexture2D()
+			t.GLUnbind()
+		}
 	}
-	if buf, ok := u.mpv.Frame(int(st.W), int(st.H)); ok {
-		u.videoTex.Update(nil, unsafe.Pointer(&buf[0]), int(st.W)*4)
+	switch p := u.mpv.(type) {
+	case *mpvgl.Player:
+		// mpv renders on its own shared context; SDL's GL state is untouched
+		// and the texture is shared, so compositing below just works.
+		u.win.GLMakeCurrent(u.mpvCtx)
+		p.Render(u.videoTexID, int(st.W), int(st.H))
+		mpvgl.Flush()
+		mpvgl.MakeCurrent(unsafe.Pointer(u.win), u.sdlCtx)
+	case *mpvsw.Player:
+		if buf, ok := p.Frame(int(st.W), int(st.H)); ok {
+			u.videoTex.Update(nil, unsafe.Pointer(&buf[0]), int(st.W)*4)
+		}
 	}
 	u.ren.Copy(u.videoTex, nil, &st)
 
