@@ -44,22 +44,27 @@ func (p *Prefetcher) localThumbGen() {
 		// normal image pipeline feeds the generator. One at a time, viewport-
 		// steered, capped by per-shot attempts.
 		if target == nil {
+			// Pipeline up to 3 demands so image transfer overlaps with
+			// generation; the healing marches outward on its own — browsing
+			// only re-prioritizes it.
 			origin := p.thumbOriginLocked()
-			for d := 0; d < len(p.cat.Shots); d++ {
+			queued := 0
+			for d := 0; d < len(p.cat.Shots) && queued < 3; d++ {
 				for _, i := range []int{origin + d, origin - d} {
-					if i < 0 || i >= len(p.cat.Shots) || (d == 0 && i != origin) {
+					if queued >= 3 || i < 0 || i >= len(p.cat.Shots) || (d == 0 && i != origin) {
 						continue
 					}
 					s := p.cat.Shots[i]
 					if s.Kind != "photo" || p.thumbs[s.ID] != thumbFailed || p.thumbStalls[s.ID] >= 4 {
 						continue
 					}
-					if st, ok := p.state[s.ID]; !ok || st.Status == "failed" {
-						delete(p.state, s.ID)
-						p.demand[s.ID] = true
+					if st, ok := p.state[s.ID]; ok && (st.Status == "ready" || st.Status == "fetching") {
+						queued++ // already inbound
+						continue
 					}
-					d = len(p.cat.Shots) // break outer
-					break
+					delete(p.state, s.ID)
+					p.demand[s.ID] = true
+					queued++
 				}
 			}
 		}

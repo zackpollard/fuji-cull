@@ -638,14 +638,21 @@ func (u *ui) drawHeader() {
 	}
 	u.text(u.font, fmt.Sprintf("K %d   X %d   · %d", keep, rej, len(u.shots)-keep-rej), colDim, w-260, 10, false)
 	if states, have := u.app.ThumbProgress(); states != "" {
-		total := 0
+		total, healing := 0, 0
 		for _, c := range states {
 			if c != '-' {
 				total++
 			}
+			if c == '2' {
+				healing++
+			}
 		}
 		if have < total {
-			u.text(u.fontSm, fmt.Sprintf("TH %d/%d", have, total), colDim, w-380, 12, false)
+			label := fmt.Sprintf("TH %d/%d", have, total)
+			if healing > 0 {
+				label += fmt.Sprintf(" · %d healing", healing)
+			}
+			u.text(u.fontSm, label, colDim, w-470, 12, false)
 		}
 	}
 }

@@ -813,7 +813,10 @@ async function syncThumbs() {
     }
     thumbStates = s;
     const eligible = s.length - (s.match(/-/g) || []).length;
-    $("thumbProg").textContent = t.have < eligible ? "TH " + t.have + "/" + eligible : "";
+    const healing = (s.match(/2/g) || []).length;
+    $("thumbProg").textContent = t.have < eligible
+      ? "TH " + t.have + "/" + eligible + (healing ? " · " + healing + " healing" : "")
+      : "";
   } catch (e) { /* transient */ }
   if (!s || s.includes("0")) setTimeout(syncThumbs, gridOpen ? 2000 : 4000);
 }
