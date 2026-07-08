@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"os"
 	"unsafe"
+
+	"github.com/zack/fuji-tools/internal/jpegmeta"
 )
 
 // Image is a decoded RGBA frame (8 bits per channel, row-major).
@@ -44,7 +46,7 @@ func Decode(data []byte) (*Image, error) {
 	if C.tjDecompress2(h, src, C.ulong(len(data)), dst, w, w*4, hgt, C.TJPF_RGBA, C.TJFLAG_FASTDCT) != 0 {
 		return nil, fmt.Errorf("tjDecompress2: %s", C.GoString(C.tjGetErrorStr2(h)))
 	}
-	return img.normalize(Orientation(data)), nil
+	return img.Normalize(jpegmeta.Orientation(data)), nil
 }
 
 // DecodeFile decodes a JPEG file from disk.
@@ -58,77 +60,10 @@ func DecodeFile(path string) (*Image, error) {
 
 /* ── EXIF orientation ─────────────────────────────────────── */
 
-// Orientation extracts the EXIF orientation (1-8; 1 = upright) from a JPEG
-// byte stream with a minimal APP1/TIFF scan — libjpeg-turbo ignores EXIF, so
-// callers must normalize pixels themselves.
-func Orientation(data []byte) int {
-	// walk JPEG segments looking for APP1/Exif
-	i := 2
-	for i+4 < len(data) {
-		if data[i] != 0xFF {
-			return 1
-		}
-		marker := data[i+1]
-		if marker == 0xDA { // start of scan: no EXIF past here
-			return 1
-		}
-		seglen := int(data[i+2])<<8 | int(data[i+3])
-		if marker == 0xE1 && i+4+6 < len(data) && string(data[i+4:i+10]) == "Exif\x00\x00" {
-			return tiffOrientation(data[i+10 : i+2+seglen])
-		}
-		i += 2 + seglen
-	}
-	return 1
-}
-
-func tiffOrientation(t []byte) int {
-	if len(t) < 14 {
-		return 1
-	}
-	var be bool
-	switch string(t[0:2]) {
-	case "MM":
-		be = true
-	case "II":
-		be = false
-	default:
-		return 1
-	}
-	u16 := func(o int) int {
-		if o+2 > len(t) {
-			return 0
-		}
-		if be {
-			return int(t[o])<<8 | int(t[o+1])
-		}
-		return int(t[o+1])<<8 | int(t[o])
-	}
-	u32 := func(o int) int {
-		if o+4 > len(t) {
-			return 0
-		}
-		if be {
-			return int(t[o])<<24 | int(t[o+1])<<16 | int(t[o+2])<<8 | int(t[o+3])
-		}
-		return int(t[o+3])<<24 | int(t[o+2])<<16 | int(t[o+1])<<8 | int(t[o])
-	}
-	ifd := u32(4)
-	n := u16(ifd)
-	for e := 0; e < n; e++ {
-		off := ifd + 2 + e*12
-		if u16(off) == 0x0112 {
-			v := u16(off + 8)
-			if v >= 1 && v <= 8 {
-				return v
-			}
-			return 1
-		}
-	}
-	return 1
-}
-
-// normalize rewrites the pixels upright according to EXIF orientation.
-func (m *Image) normalize(orient int) *Image {
+// Normalize rewrites the pixels upright according to an EXIF orientation
+// (1-8) — libjpeg-turbo ignores EXIF, and thumbnails carry no EXIF at all, so
+// callers with an out-of-band orientation apply it here.
+func (m *Image) Normalize(orient int) *Image {
 	switch orient {
 	case 2:
 		m.flipH()

@@ -212,12 +212,21 @@ func (a *App) handler() http.Handler {
 		}
 		w.Header().Set("Cache-Control", "private, max-age=604800, immutable")
 		w.Header().Set("Content-Type", "image/jpeg")
+		// Thumb files stay in sensor orientation; rotate at delivery once the
+		// shot's orientation is known. Clients re-request with an &o= cache
+		// buster when orientation data arrives after the first fetch.
+		if or := a.prefetch.OrientOf(id); or > 1 {
+			if data, err := rotatedThumbJPEG(a.prefetch.ThumbPath(s), or); err == nil {
+				w.Write(data)
+				return
+			}
+		}
 		http.ServeFile(w, r, a.prefetch.ThumbPath(s))
 	})
 
 	mux.HandleFunc("GET /api/thumbs", func(w http.ResponseWriter, r *http.Request) {
 		states, have := a.prefetch.ThumbStates()
-		writeJSON(w, map[string]any{"states": states, "have": have})
+		writeJSON(w, map[string]any{"states": states, "have": have, "orient": a.prefetch.OrientStates()})
 	})
 
 	mux.HandleFunc("POST /api/thumbhint", func(w http.ResponseWriter, r *http.Request) {

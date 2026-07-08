@@ -139,9 +139,10 @@ func (p *decodePool) worker() {
 /* ── texture caches ───────────────────────────────────────── */
 
 type texEntry struct {
-	tex  *sdl.Texture
-	w, h int32
-	used time.Time
+	tex    *sdl.Texture
+	w, h   int32
+	used   time.Time
+	orient int // EXIF orientation baked into the pixels (thumbs only)
 }
 
 type texCache struct {
@@ -158,6 +159,13 @@ func (c *texCache) get(id string) *texEntry {
 		e.used = time.Now()
 	}
 	return e
+}
+
+func (c *texCache) drop(id string) {
+	if e := c.m[id]; e != nil {
+		e.tex.Destroy()
+		delete(c.m, id)
+	}
 }
 
 func (c *texCache) put(id string, e *texEntry) {
@@ -229,6 +237,7 @@ type ui struct {
 	panStartTx [2]float64
 
 	fetchStates map[string]string // server-side disk-buffer states (blue stripe)
+	orients     string            // per-shot EXIF orientation chars ('1'-'8', '0' unknown)
 	frameN      int
 	lastWinW    int32
 	lastWinH    int32
@@ -407,6 +416,7 @@ func (u *ui) frame() bool {
 		u.frameN++
 		if u.fetchStates == nil || u.frameN%30 == 0 {
 			u.fetchStates = u.app.FetchStates()
+			u.orients = u.app.Orientations()
 		}
 		u.updateWants()
 		// A 104 MB photo texture upload mid-playback stalls the render
@@ -683,8 +693,8 @@ func (u *ui) drawStrip() {
 		r := sdl.Rect{X: x, Y: stripY + 8, W: tickW, H: tickH}
 		u.fillRect(r, colTickBG)
 		if tp, ok := u.app.ThumbPathIfReady(s.ID); ok {
-			if te := u.thumbTex(s.ID, tp); te != nil {
-				// cover-fit the 160x120 thumb into the tick
+			if te := u.thumbTex(s.ID, tp, u.orientAt(idx)); te != nil {
+				// cover-fit the (upright) thumb into the tick
 				src := coverSrc(te.w, te.h, tickW, tickH)
 				u.ren.Copy(te.tex, &src, &r)
 			}
@@ -730,9 +740,21 @@ func coverSrc(tw, th, dw, dh int32) sdl.Rect {
 	return sdl.Rect{X: 0, Y: (th - ch) / 2, W: tw, H: ch}
 }
 
-func (u *ui) thumbTex(id, path string) *texEntry {
+// orientAt is the shot's EXIF orientation per the server store (1 = upright
+// or unknown). Thumb files carry no EXIF, so rotation is applied here.
+func (u *ui) orientAt(idx int) int {
+	if idx >= 0 && idx < len(u.orients) && u.orients[idx] > '1' && u.orients[idx] <= '8' {
+		return int(u.orients[idx] - '0')
+	}
+	return 1
+}
+
+func (u *ui) thumbTex(id, path string, orient int) *texEntry {
 	if te := u.thumbs.get(id); te != nil {
-		return te
+		if te.orient == orient {
+			return te
+		}
+		u.thumbs.drop(id) // orientation arrived after caching: re-decode upright
 	}
 	if t, bad := u.thumbBad[id]; bad && time.Since(t) < 30*time.Second {
 		return nil // corrupt on disk; recheck occasionally (sweep may replace it)
@@ -746,10 +768,11 @@ func (u *ui) thumbTex(id, path string) *texEntry {
 		return nil
 	}
 	delete(u.thumbBad, id)
-	te, err := uploadRGBA(u.ren, img)
+	te, err := uploadRGBA(u.ren, img.Normalize(orient))
 	if err != nil {
 		return nil
 	}
+	te.orient = orient
 	u.thumbs.put(id, te)
 	return te
 }

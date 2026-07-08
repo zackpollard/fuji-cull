@@ -85,6 +85,11 @@ func (a *App) SetThumbHint(i int) { a.prefetch.SetThumbHint(i) }
 // ThumbProgress returns per-shot thumb states and the cached count.
 func (a *App) ThumbProgress() (string, int) { return a.prefetch.ThumbStates() }
 
+// Orientations returns one byte per catalog shot: '1'-'8' known EXIF
+// orientation, '0' unknown, '-' not applicable. Thumbnail files stay in
+// sensor orientation on disk; renderers rotate at display time.
+func (a *App) Orientations() string { return a.prefetch.OrientStates() }
+
 // VideoPathIfReady returns the buffered local path of a video shot.
 func (a *App) VideoPathIfReady(id string) (string, bool) {
 	s := a.catalog.Get(id)

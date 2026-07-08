@@ -33,13 +33,32 @@ func Bin() string {
 	return ""
 }
 
+// PartReq is one partial-object read within a batched invocation.
+type PartReq struct {
+	ObjectID string
+	Offset   int64
+	Size     int64
+	Dest     string
+}
+
 // GetPart reads size bytes at offset from an MTP object into dest.
 func GetPart(ctx context.Context, objectID string, offset, size int64, dest string) error {
+	return GetParts(ctx, []PartReq{{ObjectID: objectID, Offset: offset, Size: size, Dest: dest}})
+}
+
+// GetParts runs a batch of partial reads in a single MTP session (one process
+// invocation amortizes session setup — vital for header sweeps over many
+// objects). Callers must validate the output bytes themselves: the X-H2S can
+// answer partial reads with stale response buffers instead of file data.
+func GetParts(ctx context.Context, reqs []PartReq) error {
 	bin := Bin()
 	if bin == "" {
 		return fmt.Errorf("aft-mtp-cli-part not found")
 	}
-	cmd := fmt.Sprintf("get-part %s %d %d %q\n", objectID, offset, size, dest)
+	var cmds strings.Builder
+	for _, r := range reqs {
+		fmt.Fprintf(&cmds, "get-part %s %d %d %q\n", r.ObjectID, r.Offset, r.Size, r.Dest)
+	}
 	var out bytes.Buffer
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -53,7 +72,7 @@ func GetPart(ctx context.Context, objectID string, offset, size int64, dest stri
 		c := exec.CommandContext(ctx, bin, "-b")
 		c.Cancel = func() error { return c.Process.Signal(os.Interrupt) }
 		c.WaitDelay = 3 * time.Second
-		c.Stdin = strings.NewReader(cmd)
+		c.Stdin = strings.NewReader(cmds.String())
 		out.Reset()
 		c.Stdout = &out
 		c.Stderr = &out
@@ -65,8 +84,10 @@ func GetPart(ctx context.Context, objectID string, offset, size int64, dest stri
 	if err != nil {
 		return fmt.Errorf("get-part: %w; output: %.200s", err, out.String())
 	}
-	if st, serr := os.Stat(dest); serr != nil || st.Size() == 0 {
-		return fmt.Errorf("get-part produced no data; output: %.200s", out.String())
+	if len(reqs) == 1 {
+		if st, serr := os.Stat(reqs[0].Dest); serr != nil || st.Size() == 0 {
+			return fmt.Errorf("get-part produced no data; output: %.200s", out.String())
+		}
 	}
 	return nil
 }

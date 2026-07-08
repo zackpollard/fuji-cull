@@ -79,8 +79,8 @@ func (u *ui) drawGrid() {
 				// Cached textures always draw; only NEW synchronous decodes
 				// are budgeted per frame (they cost main-thread time).
 				te := u.thumbs.get(s.ID)
-				if te == nil && decodes < 12 {
-					te = u.thumbTex(s.ID, tp)
+				if (te == nil || te.orient != u.orientAt(idx)) && decodes < 12 {
+					te = u.thumbTex(s.ID, tp, u.orientAt(idx))
 					decodes++
 				}
 				if te != nil {

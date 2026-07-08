@@ -786,15 +786,24 @@ async function boot() {
 }
 
 /* Timeline thumbnails trickle in from the camera whenever the link is idle;
-   sync availability and attach lazy <img>s to strip ticks and grid cells. */
-let thumbStates = "";
+   sync availability and attach lazy <img>s to strip ticks and grid cells.
+   Thumb files are stored in sensor orientation; the server rotates portrait
+   shots at delivery once orientation is known, so the URL carries the
+   orientation as a cache buster and imgs re-fetch when it arrives late. */
+let thumbStates = "", orientStates = "";
+
+function thumbSrc(i) {
+  let src = "/api/thumb?id=" + encodeURIComponent(shots[i].id);
+  if (orientStates[i] > "1") src += "&o=" + orientStates[i];
+  return src;
+}
 
 function thumbImg(i) {
   const im = document.createElement("img");
   im.loading = "lazy";
   im.decoding = "async";
   im.alt = "";
-  im.src = "/api/thumb?id=" + encodeURIComponent(shots[i].id);
+  im.src = thumbSrc(i);
   return im;
 }
 
@@ -803,13 +812,25 @@ function attachThumb(i) {
   if (cells[i] && !cells[i].querySelector("img")) cells[i].appendChild(thumbImg(i));
 }
 
+function refreshThumb(i) {
+  for (const holder of [ticks[i], cells[i]]) {
+    const im = holder && holder.querySelector("img");
+    if (im) im.src = thumbSrc(i);
+  }
+}
+
 async function syncThumbs() {
   let s = "";
   try {
     const t = await api("/api/thumbs");
     s = t.states || "";
+    const o = t.orient || "";
+    const prevOrient = orientStates;
+    orientStates = o; // before the loop so attach/refresh build fresh URLs
     for (let i = 0; i < s.length; i++) {
-      if (s[i] === "1" && thumbStates[i] !== "1") attachThumb(i);
+      if (s[i] !== "1") continue;
+      if (thumbStates[i] !== "1") attachThumb(i);
+      else if (o[i] > "1" && o[i] !== prevOrient[i]) refreshThumb(i);
     }
     thumbStates = s;
     const eligible = s.length - (s.match(/-/g) || []).length;
@@ -818,7 +839,8 @@ async function syncThumbs() {
       ? "TH " + t.have + "/" + eligible + (healing ? " · " + healing + " healing" : "")
       : "";
   } catch (e) { /* transient */ }
-  if (!s || s.includes("0")) setTimeout(syncThumbs, gridOpen ? 2000 : 4000);
+  if (!s || s.includes("0") || orientStates.includes("0"))
+    setTimeout(syncThumbs, gridOpen ? 2000 : 4000);
 }
 
 /* ── full-screen grid timeline ────────────────────────────── */

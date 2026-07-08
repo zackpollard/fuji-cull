@@ -60,6 +60,10 @@ type Prefetcher struct {
 	thumbRank     map[string]int // shot ID -> 1-based file index within its camera folder
 	photoSeq      []photoRank    // photos in catalog order with ranks, for density scans
 	partBin       string         // patched aft-mtp-cli with get-part; "" = video posters off
+	partSick      bool           // partial reads returned stale-buffer garbage; distrust for the session
+
+	orient      map[string]uint8 // shot ID -> EXIF orientation (absent = unknown)
+	orientDirty bool
 }
 
 type photoRank struct {
@@ -119,6 +123,7 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 		thumbCursor: -1,
 		thumbStalls: map[string]int{},
 		thumbRank:   map[string]int{},
+		orient:      map[string]uint8{},
 	}
 	p.cond = sync.NewCond(&p.mu)
 
@@ -195,6 +200,9 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 	if adopted > 0 {
 		log.Printf("prefetch: adopted %d cached files from previous run", adopted)
 	}
+	p.loadOrient()
+	go p.orientFlusher()
+	go p.backfillOrient()
 	return p, nil
 }
 
@@ -377,7 +385,7 @@ func (p *Prefetcher) Wait(ctx context.Context, id string) (string, error) {
 func (p *Prefetcher) Run() {
 	for {
 		p.mu.Lock()
-		var targets, thumbBatch []*photo.Shot
+		var targets, thumbBatch, orientBatch []*photo.Shot
 		var thumbCtx context.Context
 		for {
 			if p.closed {
@@ -393,7 +401,14 @@ func (p *Prefetcher) Run() {
 						thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
 						break
 					}
-					if p.partBin != "" {
+					// Partial-read work (orientation heads before posters:
+					// one head batch fixes rotation for 64 shots in ~¼ s,
+					// a poster costs ~8 MB for one video).
+					if p.partBin != "" && !p.partSick {
+						if orientBatch = p.pickOrientBatchLocked(orientBatchSize); len(orientBatch) > 0 {
+							thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
+							break
+						}
 						if v := p.pickVideoPosterLocked(); v != nil {
 							thumbBatch = []*photo.Shot{v}
 							thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
@@ -427,9 +442,12 @@ func (p *Prefetcher) Run() {
 		}
 
 		p.mu.Unlock()
-		if len(thumbBatch) == 1 && thumbBatch[0].Kind == "video" {
+		switch {
+		case len(orientBatch) > 0:
+			p.fetchOrientBatch(thumbCtx, orientBatch)
+		case len(thumbBatch) == 1 && thumbBatch[0].Kind == "video":
 			p.fetchVideoPoster(thumbCtx, thumbBatch[0])
-		} else {
+		default:
 			p.fetchThumbBatch(thumbCtx, thumbBatch)
 		}
 		p.mu.Lock()
@@ -747,6 +765,16 @@ func (p *Prefetcher) fetchVideoPoster(ctx context.Context, s *photo.Shot) {
 		p.noteVideoPosterErr(s, err)
 		return
 	}
+	// A real Fuji MOV head carries "ftyp" at offset 4. Anything else is the
+	// stale-buffer firmware bug — distrust partial reads entirely and leave
+	// the shot unstruck (the data was garbage, not the video).
+	if !movHead(head) {
+		p.mu.Lock()
+		p.partSick = true
+		p.mu.Unlock()
+		log.Printf("video poster: %s: head is not a MOV — camera partial reads are UNTRUSTWORTHY, disabling them until restart (power-cycle the camera)", s.ID)
+		return
+	}
 	poster := filepath.Join(tmp, "poster.jpg")
 	out, err := exec.CommandContext(cctx, "ffmpeg", "-y", "-loglevel", "error",
 		"-i", head, "-frames:v", "1", "-vf", "scale=240:-2", "-q:v", "4", poster).CombinedOutput()
@@ -765,6 +793,20 @@ func (p *Prefetcher) fetchVideoPoster(ctx context.Context, s *photo.Shot) {
 	p.mu.Lock()
 	p.thumbs[s.ID] = thumbHave
 	p.mu.Unlock()
+}
+
+// movHead reports whether a file begins like a QuickTime container.
+func movHead(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var b [8]byte
+	if _, err := io.ReadFull(f, b[:]); err != nil {
+		return false
+	}
+	return string(b[4:8]) == "ftyp"
 }
 
 func (p *Prefetcher) noteVideoPosterErr(s *photo.Shot, err error) {
@@ -1002,6 +1044,7 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 			p.setState(targets[i].ID, "failed", err.Error())
 		} else {
 			p.setState(targets[i].ID, "ready", "")
+			p.harvestOrient(targets[i])
 		}
 		finished[i] = true
 	}
