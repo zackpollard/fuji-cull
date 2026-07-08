@@ -399,9 +399,13 @@ func run(app *cull.App, apiBase string, decodeAhead, decodeBehind int) error {
 		app: app, apiBase: apiBase, ren: ren, win: win, font: font, fontSm: fontSm,
 		pool:        newDecodePool(app, workers),
 		decodeAhead: decodeAhead, decodeBehind: decodeBehind,
-		full:      newTexCache(16),
-		thumbs:    newTexCache(400),
-		texts:     newTexCache(256),
+		full: newTexCache(16),
+		// Must exceed the worst-case visible thumb count (fullscreen grid on
+		// a 4K monitor ≈ 500 cells) — an undersized LRU evicts textures that
+		// are still on screen and the grid strobes as they cycle back in.
+		// ~77 KB GPU each, so generous is cheap.
+		thumbs: newTexCache(1500),
+		texts:  newTexCache(256),
 		decisions: map[string]string{},
 	}
 	log.Printf("gui: %d turbo decode workers", workers)
