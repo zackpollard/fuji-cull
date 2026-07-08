@@ -892,8 +892,15 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 		})
 	}
 
+	// Bound the transfer: a wedged USB op with no timeout once froze the
+	// whole image pipeline for hours (goroutine stuck in [IO wait] on the
+	// aft child). On expiry the child gets SIGINT, the batch fails, and the
+	// per-shot backoff machinery retries.
+	fctx, fcancel := context.WithTimeout(context.Background(),
+		60*time.Second+time.Duration(len(items))*15*time.Second)
+	defer fcancel()
 	fetchDone := make(chan error, 1)
-	go func() { fetchDone <- p.backend.Fetch(context.Background(), items) }()
+	go func() { fetchDone <- p.backend.Fetch(fctx, items) }()
 
 	promote := func(i int) {
 		if err := p.finalizeShot(targets[i], tmps[i]); err != nil {
