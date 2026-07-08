@@ -47,6 +47,8 @@ type Prefetcher struct {
 	pause    int // >0 = paused; refcounted (importer and video streaming both pause)
 	closed   bool
 
+	imgCancel context.CancelFunc // in-flight image batch; demands preempt it
+
 	stream   *streamState // live camera video stream (owns the MTP claim)
 	streamMu sync.Mutex
 
@@ -269,6 +271,13 @@ func (p *Prefetcher) interruptThumbsLocked() {
 	}
 }
 
+// bulkBatch is how many files one image session may carry. Session setup is
+// roughly half the cost of a small batch, so batches run large — demands
+// preempt an in-flight batch via imgCancel (with per-file incremental
+// promotion banking whatever already landed), so a big batch costs latency
+// only when its own files are the ones being waited for.
+func (p *Prefetcher) bulkBatch() int { return p.batch * 4 }
+
 // interactiveWorkLocked reports whether demands or window prefetch are waiting.
 func (p *Prefetcher) interactiveWorkLocked() bool {
 	return len(p.demand) > 0 || p.pickLocked() != nil
@@ -311,8 +320,24 @@ func (p *Prefetcher) Ensure(id string) {
 		p.demand[id] = true
 	}
 	p.interruptThumbsLocked()
+	p.interruptImagesLocked(id)
 	p.mu.Unlock()
 	p.cond.Broadcast()
+}
+
+// interruptImagesLocked cancels an in-flight image batch so a blocking
+// demand gets the link now — unless the demanded shot is already part of
+// that batch (incremental promotion will hand it over the moment it lands).
+// Completed files in the cancelled batch are banked; unfinished ones simply
+// become eligible again with no failure strike.
+func (p *Prefetcher) interruptImagesLocked(id string) {
+	if p.imgCancel == nil {
+		return
+	}
+	if st, ok := p.state[id]; ok && st.Status == "fetching" {
+		return
+	}
+	p.imgCancel()
 }
 
 // Retry clears a failed state so the worker attempts the shot again.
@@ -388,6 +413,7 @@ func (p *Prefetcher) Wait(ctx context.Context, id string) (string, error) {
 		p.demand[id] = true
 	}
 	p.interruptThumbsLocked()
+	p.interruptImagesLocked(id)
 	p.cond.Broadcast()
 	for {
 		if err := ctx.Err(); err != nil {
@@ -986,7 +1012,7 @@ func (p *Prefetcher) pickLocked() []*photo.Shot {
 	if best != nil {
 		batch := []*photo.Shot{best}
 		if best.Kind == "photo" {
-			for i := p.cat.Index[best.ID] + 1; len(batch) < p.batch && i < len(p.cat.Shots); i++ {
+			for i := p.cat.Index[best.ID] + 1; len(batch) < p.bulkBatch() && i < len(p.cat.Shots); i++ {
 				s := p.cat.Shots[i]
 				if s.CameraDir != best.CameraDir || i > p.cursor+p.ahead {
 					break
@@ -1028,7 +1054,7 @@ func (p *Prefetcher) pickLocked() []*photo.Shot {
 	// Fill the batch with more missing window shots from the same camera
 	// folder (one aft-mtp-cli session covers them all).
 	batch := []*photo.Shot{first}
-	for d := 1; len(batch) < p.batch && d <= p.ahead; d++ {
+	for d := 1; len(batch) < p.bulkBatch() && d <= p.ahead+p.behind; d++ {
 		i := p.cat.Index[first.ID] + d
 		if i >= len(p.cat.Shots) || i > p.cursor+p.ahead {
 			break
@@ -1111,10 +1137,19 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 	// Bound the transfer: a wedged USB op with no timeout once froze the
 	// whole image pipeline for hours (goroutine stuck in [IO wait] on the
 	// aft child). On expiry the child gets SIGINT, the batch fails, and the
-	// per-shot backoff machinery retries.
+	// per-shot backoff machinery retries. Demands preempt via imgCancel —
+	// large backfill batches must never block an on-screen image.
 	fctx, fcancel := context.WithTimeout(context.Background(),
 		60*time.Second+time.Duration(len(items))*15*time.Second)
-	defer fcancel()
+	p.mu.Lock()
+	p.imgCancel = fcancel
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		p.imgCancel = nil
+		p.mu.Unlock()
+		fcancel()
+	}()
 	fetchDone := make(chan error, 1)
 	go func() { fetchDone <- p.backend.Fetch(fctx, items) }()
 
@@ -1151,6 +1186,7 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 	for {
 		select {
 		case fetchErr := <-fetchDone:
+			canceled := fctx.Err() == context.Canceled
 			for i, s := range targets {
 				if finished[i] {
 					continue
@@ -1161,6 +1197,15 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 					continue
 				}
 				os.Remove(tmps[i])
+				if canceled {
+					// Preempted by a demand, not a failure: immediately
+					// eligible again, no backoff strike.
+					p.mu.Lock()
+					delete(p.state, s.ID)
+					p.mu.Unlock()
+					finished[i] = true
+					continue
+				}
 				msg := "pull produced no data for " + s.ID
 				if fetchErr != nil {
 					msg = fetchErr.Error()
