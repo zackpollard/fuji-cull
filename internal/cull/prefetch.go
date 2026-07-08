@@ -66,7 +66,7 @@ type Prefetcher struct {
 	photoSeq      []photoRank    // photos in catalog order with ranks, for density scans
 	partBin       string         // patched aft-mtp-cli with get-part; "" = video posters off
 	partSick      bool           // partial reads returned stale-buffer garbage
-	partSickAt    time.Time      // drives the 3-minute recovery probe
+	partSickAt    time.Time      // drives the recovery probe
 	bulkSick      bool           // bulk reads (get-id) returned stale-buffer garbage
 	bulkSickAt    time.Time
 
@@ -86,6 +86,12 @@ const (
 	thumbHave    byte = 1
 	thumbFailed  byte = 2
 )
+
+// sickProbeInterval is how often a tripped stale-buffer breaker re-probes.
+// Probes are cheap — one file for bulk (the batch cancels on first garbage),
+// one 64 KB head for partial reads — and the link is idle while sick, so
+// recovery after a power cycle or reconnect lands within seconds of the fix.
+const sickProbeInterval = 20 * time.Second
 
 type fetchState struct {
 	Status   string // "fetching" | "ready" | "failed"
@@ -453,7 +459,7 @@ func (p *Prefetcher) Run() {
 				// Tripped partial-read breaker: probe recovery every 3
 				// minutes (a power cycle or reconnect cures the camera and
 				// streaming/posters/heal should come back on their own).
-				if p.partBin != "" && p.partSick && time.Since(p.partSickAt) > 3*time.Minute {
+				if p.partBin != "" && p.partSick && time.Since(p.partSickAt) > sickProbeInterval {
 					p.partSickAt = time.Now()
 					probePart = true
 					break
@@ -849,7 +855,7 @@ func (p *Prefetcher) fetchVideoPoster(ctx context.Context, s *photo.Shot) {
 		p.mu.Lock()
 		p.markPartSickLocked()
 		p.mu.Unlock()
-		log.Printf("video poster: %s: head is not a MOV — camera partial reads are UNTRUSTWORTHY — pausing partial reads (power-cycle the camera; probing every 3m)", s.ID)
+		log.Printf("video poster: %s: head is not a MOV — camera partial reads are UNTRUSTWORTHY — pausing partial reads (power-cycle the camera; probing every 20s)", s.ID)
 		return
 	}
 	poster := filepath.Join(tmp, "poster.jpg")
@@ -906,7 +912,7 @@ func (p *Prefetcher) LinkSick() (bulk, partial bool) {
 }
 
 // markPartSickLocked trips the partial-read breaker (call with p.mu held).
-// A probe retries every 3 minutes — the camera recovers on power cycle or
+// A probe retries every sickProbeInterval — the camera recovers on power cycle or
 // reconnect, and streaming/posters/heal should come back without a restart.
 func (p *Prefetcher) markPartSickLocked() {
 	p.partSick = true
@@ -935,11 +941,11 @@ func (p *Prefetcher) probePartialReads() {
 	err = mtppart.GetPart(ctx, target.ObjectIDs[target.DisplayExt()], 0, 64<<10, dest)
 	cancel()
 	if err != nil {
-		return // transport error (camera absent?) — next probe in 3 minutes
+		return // transport error (camera absent?) — next probe shortly
 	}
 	head, rerr := os.ReadFile(dest)
 	if rerr != nil || len(head) < 2 || head[0] != 0xFF || head[1] != 0xD8 {
-		log.Printf("prefetch: partial-read probe still garbage — next probe in 3m (power-cycle the camera)")
+		log.Printf("prefetch: partial-read probe still garbage — next probe in 20s (power-cycle the camera)")
 		return
 	}
 	p.mu.Lock()
@@ -952,9 +958,9 @@ func (p *Prefetcher) probePartialReads() {
 // reads recently returned stale-buffer garbage. Explicit demands stay allowed
 // — they act as recovery probes, and one valid transfer clears the flag (the
 // user fixes the camera with a power cycle). Re-probes automatically every
-// 3 minutes so an idle app also notices recovery.
+// sickProbeInterval so an idle app also notices recovery.
 func (p *Prefetcher) bulkSickLocked() bool {
-	return p.bulkSick && time.Since(p.bulkSickAt) < 3*time.Minute
+	return p.bulkSick && time.Since(p.bulkSickAt) < sickProbeInterval
 }
 
 func (p *Prefetcher) noteVideoPosterErr(s *photo.Shot, err error) {
@@ -1081,7 +1087,7 @@ func (p *Prefetcher) pickLocked() []*photo.Shot {
 	}
 	// Window: current, then ahead (the direction of travel), then behind.
 	// Paused while bulk reads are sick — every pull would bank a 10 MB
-	// garbage transfer; the 3-minute re-probe (or any demand) checks recovery.
+	// garbage transfer; the periodic re-probe (or any demand) checks recovery.
 	if p.bulkSickLocked() {
 		return nil
 	}
