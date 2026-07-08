@@ -238,6 +238,8 @@ type ui struct {
 
 	fetchStates map[string]string // server-side disk-buffer states (blue stripe)
 	orients     string            // per-shot EXIF orientation chars ('1'-'8', '0' unknown)
+	camBulkSick bool              // camera transfer breakers (stale-buffer bug)
+	camPartSick bool
 	frameN      int
 	lastWinW    int32
 	lastWinH    int32
@@ -417,6 +419,7 @@ func (u *ui) frame() bool {
 		if u.fetchStates == nil || u.frameN%30 == 0 {
 			u.fetchStates = u.app.FetchStates()
 			u.orients = u.app.Orientations()
+			u.camBulkSick, u.camPartSick = u.app.CameraSick()
 		}
 		u.updateWants()
 		// A 104 MB photo texture upload mid-playback stalls the render
@@ -683,6 +686,16 @@ func (u *ui) drawHeader() {
 		}
 		if mdKnown < mdTotal {
 			u.text(u.fontSm, fmt.Sprintf("MD %d/%d", mdKnown, mdTotal), colDim, w-640, 12, false)
+		}
+	}
+	if u.camBulkSick || u.camPartSick {
+		// Camera breaker: blink so a wedged link is unmissable mid-cull.
+		label := "CAMERA SICK · POWER-CYCLE"
+		if !u.camBulkSick {
+			label = "CAMERA PARTIAL-READS SICK · POWER-CYCLE"
+		}
+		if u.frameN/30%2 == 0 {
+			u.text(u.fontSm, label, colReject, w-870, 12, false)
 		}
 	}
 }

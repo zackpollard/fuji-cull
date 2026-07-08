@@ -90,6 +90,10 @@ func (a *App) ThumbProgress() (string, int) { return a.prefetch.ThumbStates() }
 // sensor orientation on disk; renderers rotate at display time.
 func (a *App) Orientations() string { return a.prefetch.OrientStates() }
 
+// CameraSick reports tripped camera-transfer circuit breakers (the X-H2S
+// stale-buffer bug); a power cycle is the only remedy.
+func (a *App) CameraSick() (bulk, partial bool) { return a.prefetch.LinkSick() }
+
 // VideoPathIfReady returns the buffered local path of a video shot.
 func (a *App) VideoPathIfReady(id string) (string, bool) {
 	s := a.catalog.Get(id)

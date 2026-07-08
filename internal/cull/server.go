@@ -142,12 +142,15 @@ func (a *App) handler() http.Handler {
 	})
 
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		bulkSick, partSick := a.prefetch.LinkSick()
 		writeJSON(w, map[string]any{
 			"cursor":    a.session.Cursor(),
 			"decisions": a.session.Decisions(),
 			"fetch":     a.prefetch.Snapshot(),
 			"counts":    a.counts(),
 			"import":    a.importer.Status(),
+			"bulkSick":  bulkSick,
+			"partSick":  partSick,
 		})
 	})
 

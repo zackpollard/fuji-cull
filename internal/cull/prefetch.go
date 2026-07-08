@@ -840,6 +840,15 @@ func mediaValid(path, kind string) bool {
 	}
 }
 
+// LinkSick reports tripped camera-transfer circuit breakers for the UIs:
+// bulk (get-id returned stale-buffer garbage; clears on the next valid
+// transfer) and partial (get-part garbage; sticky until restart).
+func (p *Prefetcher) LinkSick() (bulk, partial bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.bulkSick, p.partSick
+}
+
 // bulkSickLocked reports whether automated pulls should pause because bulk
 // reads recently returned stale-buffer garbage. Explicit demands stay allowed
 // — they act as recovery probes, and one valid transfer clears the flag (the

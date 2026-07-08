@@ -249,6 +249,12 @@
     padding: 4px 14px; cursor: pointer;
   }
   button.grid-toggle:hover, button.grid-toggle.active { color: var(--fg); border-color: var(--dim); }
+  /* camera transfer breaker: unmissable, blinking, red */
+  .camsick {
+    color: var(--reject); letter-spacing: .12em; font-weight: 600;
+    animation: blink 1.1s steps(2) infinite;
+  }
+  .camsick:empty { display: none; }
 </style>
 </head>
 <body>
@@ -261,6 +267,7 @@
       <span class="r" id="cReject">X 0</span>
       <span class="u" id="cUndecided">· 0</span>
     </span>
+    <span class="camsick" id="camSick" title="the camera is replaying stale buffers instead of file data; a power cycle is the only fix"></span>
     <span class="counter" id="metaProg" title="metadata (orientation) coverage"></span>
     <span class="counter" id="thumbProg" title="thumbnail sweep progress"></span>
     <button class="grid-toggle" id="gridBtn">GRID</button>
@@ -1112,6 +1119,8 @@ async function poll() {
     const st = await api("/api/status");
     fetchStates = st.fetch || {};
     importStatus = st.import || {};
+    $("camSick").textContent = st.bulkSick ? "CAMERA SICK · POWER-CYCLE"
+      : st.partSick ? "CAMERA PARTIAL-READS SICK · POWER-CYCLE" : "";
     decorate();
     renderImport();
     preload();
