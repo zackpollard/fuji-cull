@@ -813,7 +813,7 @@ func (u *ui) drawStrip() {
 			u.ren.DrawRect(&out)
 		}
 	}
-	u.text(u.fontSm, "←→ nav   K keep   X reject   C clear   U undo   G next   T grid   I import   L video   Z 1:1   Space pause   ,/. seek   Q quit", colDim, w/2, h-16, true)
+	u.text(u.fontSm, "A/D ←→ nav   W/K keep   S/X reject   E/C clear   U undo   G next   T grid   I import   L video   Z 1:1   Space pause   ,/. seek   Ctrl+Q quit", colDim, w/2, h-16, true)
 }
 
 func coverSrc(tw, th, dw, dh int32) sdl.Rect {
@@ -898,26 +898,32 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 		}
 		switch e.Keysym.Sym {
 		case sdl.K_q:
-			return false
+			// Ctrl+Q quits; bare Q is ignored — W (keep) is its neighbour
+			// and a one-handed mistype must not kill the app.
+			if e.Keysym.Mod&sdl.KMOD_CTRL != 0 {
+				return false
+			}
 		case sdl.K_ESCAPE:
 			if u.scale > u.fit+1e-4 {
 				u.scale = u.fit
 				u.zoomMem = nil
 				u.clampPan(u.stageRect())
 			}
-		case sdl.K_RIGHT:
+		// WASD cluster: navigate, keep, reject and clear with one hand
+		// (arrows and K/X/C stay as synonyms).
+		case sdl.K_RIGHT, sdl.K_d:
 			u.nav(u.cursor + 1)
-		case sdl.K_LEFT, sdl.K_h:
+		case sdl.K_LEFT, sdl.K_h, sdl.K_a:
 			u.nav(u.cursor - 1)
 		case sdl.K_HOME:
 			u.nav(0)
 		case sdl.K_END:
 			u.nav(len(u.shots) - 1)
-		case sdl.K_k:
+		case sdl.K_k, sdl.K_w:
 			u.decide("keep")
-		case sdl.K_x:
+		case sdl.K_x, sdl.K_s:
 			u.decide("reject")
-		case sdl.K_c:
+		case sdl.K_c, sdl.K_e:
 			u.decide("")
 		case sdl.K_u:
 			u.undoLast()

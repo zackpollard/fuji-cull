@@ -134,7 +134,7 @@ func (u *ui) drawGrid() {
 		}
 	}
 
-	u.text(u.fontSm, fmt.Sprintf("GRID  %d/%d   T/Esc close   Enter open   K/X/C cull", u.cursor+1, len(u.shots)),
+	u.text(u.fontSm, fmt.Sprintf("GRID  %d/%d   T/Esc close   Enter open   W/K keep   S/X reject   E/C clear", u.cursor+1, len(u.shots)),
 		colDim, w/2, h-16, true)
 }
 

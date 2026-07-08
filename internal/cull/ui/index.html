@@ -313,10 +313,10 @@
 
   <div id="strip"></div>
   <footer>
-    <span><b>←→</b> navigate</span>
-    <span><b>K</b> keep</span>
-    <span><b>X</b> reject</span>
-    <span><b>C</b> clear</span>
+    <span><b>A/D ←→</b> navigate</span>
+    <span><b>W/K</b> keep</span>
+    <span><b>S/X</b> reject</span>
+    <span><b>E/C</b> clear</span>
     <span><b>U</b> undo</span>
     <span><b>T</b> grid</span>
     <span><b>scroll/pinch</b> zoom</span>
@@ -1180,15 +1180,17 @@ document.addEventListener("keydown", e => {
   const k = e.key.toLowerCase();
   if (["arrowleft", "arrowright", " "].includes(k) || (gridOpen && ["arrowup", "arrowdown"].includes(k))) e.preventDefault();
   switch (k) {
-    case "arrowright": nav(cursor + 1); break;
-    case "arrowleft": case "h": nav(cursor - 1); break;
+    /* WASD cluster: navigate, keep, reject, clear with one hand
+       (arrows and K/X/C stay as synonyms) */
+    case "arrowright": case "d": nav(cursor + 1); break;
+    case "arrowleft": case "h": case "a": nav(cursor - 1); break;
     case "arrowup": if (gridOpen) nav(Math.max(0, cursor - gridCols())); break;
     case "arrowdown": if (gridOpen) nav(Math.min(shots.length - 1, cursor + gridCols())); break;
     case "home": nav(0); break;
     case "end": nav(shots.length - 1); break;
-    case "k": decide("keep"); break;
-    case "x": decide("reject"); break;
-    case "c": decide(""); break;
+    case "k": case "w": decide("keep"); break;
+    case "x": case "s": decide("reject"); break;
+    case "c": case "e": decide(""); break;
     case "u": undo(); break;
     case "g": nextUndecided(); break;
     case "t": toggleGrid(); break;
