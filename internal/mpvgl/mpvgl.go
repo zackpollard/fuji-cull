@@ -16,9 +16,36 @@ package mpvgl
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_syswm.h>
 
 static void *get_proc_address_mpv(void *ctx, const char *name) {
 	return SDL_GL_GetProcAddress(name);
+}
+
+// Native display handles: libmpv needs these at render-context creation for
+// zero-copy VAAPI interop — without them hwdec silently degrades to
+// vaapi-copy (a full core of GPU-to-RAM copy-back at 4K60).
+static void *native_wl_display(void *win) {
+	SDL_SysWMinfo info;
+	SDL_VERSION(&info.version);
+	if (!SDL_GetWindowWMInfo((SDL_Window*)win, &info))
+		return NULL;
+#ifdef SDL_VIDEO_DRIVER_WAYLAND
+	if (info.subsystem == SDL_SYSWM_WAYLAND)
+		return info.info.wl.display;
+#endif
+	return NULL;
+}
+static void *native_x11_display(void *win) {
+	SDL_SysWMinfo info;
+	SDL_VERSION(&info.version);
+	if (!SDL_GetWindowWMInfo((SDL_Window*)win, &info))
+		return NULL;
+#ifdef SDL_VIDEO_DRIVER_X11
+	if (info.subsystem == SDL_SYSWM_X11)
+		return info.info.x11.display;
+#endif
+	return NULL;
 }
 
 // Minimal GL loader — just the FBO plumbing (core in GL 3.0+ and GLES2).
@@ -56,13 +83,19 @@ static int load_gl(void) {
 	       p_glCheckFramebufferStatus && p_glDeleteFramebuffers && p_glGetIntegerv && p_glFlush;
 }
 
-static mpv_render_context *create_gl(mpv_handle *h) {
+static mpv_render_context *create_gl(mpv_handle *h, void *win) {
 	mpv_opengl_init_params gl = { .get_proc_address = get_proc_address_mpv };
-	mpv_render_param params[] = {
-		{MPV_RENDER_PARAM_API_TYPE, MPV_RENDER_API_TYPE_OPENGL},
-		{MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl},
-		{0, NULL}
-	};
+	void *wl = native_wl_display(win);
+	void *x11 = native_x11_display(win);
+	mpv_render_param params[5];
+	int n = 0;
+	params[n++] = (mpv_render_param){MPV_RENDER_PARAM_API_TYPE, MPV_RENDER_API_TYPE_OPENGL};
+	params[n++] = (mpv_render_param){MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl};
+	if (wl)
+		params[n++] = (mpv_render_param){MPV_RENDER_PARAM_WL_DISPLAY, wl};
+	else if (x11)
+		params[n++] = (mpv_render_param){MPV_RENDER_PARAM_X11_DISPLAY, x11};
+	params[n] = (mpv_render_param){0, NULL};
 	mpv_render_context *rc = NULL;
 	if (mpv_render_context_create(&rc, h, params) < 0)
 		return NULL;
@@ -87,7 +120,9 @@ static void del_fbo(unsigned int fbo) { p_glDeleteFramebuffers(1, &fbo); }
 
 static int render_gl_fbo(mpv_render_context *rc, unsigned int fbo, int w, int h) {
 	mpv_opengl_fbo f = { .fbo = (int)fbo, .w = w, .h = h, .internal_format = 0 };
-	int flip = 1;
+	// No flip: FBO texel rows already match SDL's top-down texture sampling
+	// (flip=1 rendered upside down in practice).
+	int flip = 0;
 	mpv_render_param params[] = {
 		{MPV_RENDER_PARAM_OPENGL_FBO, &f},
 		{MPV_RENDER_PARAM_FLIP_Y, &flip},
@@ -151,8 +186,9 @@ type Player struct {
 }
 
 // New creates the player and its GL render context. The caller's dedicated
-// mpv GL context must be current.
-func New() (*Player, error) {
+// mpv GL context must be current; win is the SDL window (native display
+// handles are extracted from it for zero-copy hwdec interop).
+func New(win unsafe.Pointer) (*Player, error) {
 	if C.load_gl() == 0 {
 		return nil, fmt.Errorf("required GL functions unavailable")
 	}
@@ -181,7 +217,7 @@ func New() (*Player, error) {
 		C.mpv_destroy(h)
 		return nil, fmt.Errorf("mpv_initialize failed")
 	}
-	rc := C.create_gl(h)
+	rc := C.create_gl(h, win)
 	if rc == nil {
 		C.mpv_destroy(h)
 		return nil, fmt.Errorf("mpv render context (opengl) failed")

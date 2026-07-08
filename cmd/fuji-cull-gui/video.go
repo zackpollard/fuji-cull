@@ -43,7 +43,7 @@ func (u *ui) drawVideo(st sdl.Rect) {
 	if u.mpv == nil {
 		if u.glVideo {
 			u.win.GLMakeCurrent(u.mpvCtx)
-			p, err := mpvgl.New()
+			p, err := mpvgl.New(unsafe.Pointer(u.win))
 			mpvgl.MakeCurrent(unsafe.Pointer(u.win), u.sdlCtx)
 			if err != nil {
 				log.Printf("gui: mpv GL init failed (%v); falling back to software video", err)
