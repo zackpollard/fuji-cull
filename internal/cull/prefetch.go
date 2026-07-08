@@ -397,18 +397,22 @@ func (p *Prefetcher) Run() {
 					break
 				}
 				if p.thumbFetcher != nil {
-					if thumbBatch = p.pickThumbsLocked(150); len(thumbBatch) > 0 {
-						thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
-						break
-					}
-					// Partial-read work (orientation heads before posters:
-					// one head batch fixes rotation for 64 shots in ~¼ s,
-					// a poster costs ~8 MB for one video).
+					// Idle-work priority: orientation heads first (a 64-shot
+					// batch costs ~¼ s and the whole card ~70 s — the cheap
+					// sweep finishes before anything slow gets the link),
+					// then thumbnails (~15 s per 150-shot batch), then video
+					// posters (~8 MB for one video).
 					if p.partBin != "" && !p.partSick {
 						if orientBatch = p.pickOrientBatchLocked(orientBatchSize); len(orientBatch) > 0 {
 							thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
 							break
 						}
+					}
+					if thumbBatch = p.pickThumbsLocked(150); len(thumbBatch) > 0 {
+						thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
+						break
+					}
+					if p.partBin != "" && !p.partSick {
 						if v := p.pickVideoPosterLocked(); v != nil {
 							thumbBatch = []*photo.Shot{v}
 							thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
