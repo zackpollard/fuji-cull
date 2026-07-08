@@ -65,7 +65,8 @@ type Prefetcher struct {
 	thumbRank     map[string]int // shot ID -> 1-based file index within its camera folder
 	photoSeq      []photoRank    // photos in catalog order with ranks, for density scans
 	partBin       string         // patched aft-mtp-cli with get-part; "" = video posters off
-	partSick      bool           // partial reads returned stale-buffer garbage; distrust for the session
+	partSick      bool           // partial reads returned stale-buffer garbage
+	partSickAt    time.Time      // drives the 3-minute recovery probe
 	bulkSick      bool           // bulk reads (get-id) returned stale-buffer garbage
 	bulkSickAt    time.Time
 
@@ -438,6 +439,7 @@ func (p *Prefetcher) Run() {
 	for {
 		p.mu.Lock()
 		var targets, thumbBatch, orientBatch, healBatch []*photo.Shot
+		var probePart bool
 		var thumbCtx context.Context
 		for {
 			if p.closed {
@@ -446,6 +448,14 @@ func (p *Prefetcher) Run() {
 			}
 			if p.pause == 0 {
 				if targets = p.pickLocked(); len(targets) > 0 {
+					break
+				}
+				// Tripped partial-read breaker: probe recovery every 3
+				// minutes (a power cycle or reconnect cures the camera and
+				// streaming/posters/heal should come back on their own).
+				if p.partBin != "" && p.partSick && time.Since(p.partSickAt) > 3*time.Minute {
+					p.partSickAt = time.Now()
+					probePart = true
 					break
 				}
 				if p.thumbFetcher != nil {
@@ -506,6 +516,8 @@ func (p *Prefetcher) Run() {
 
 		p.mu.Unlock()
 		switch {
+		case probePart:
+			p.probePartialReads()
 		case len(orientBatch) > 0:
 			p.fetchOrientBatch(thumbCtx, orientBatch)
 		case len(healBatch) > 0:
@@ -835,9 +847,9 @@ func (p *Prefetcher) fetchVideoPoster(ctx context.Context, s *photo.Shot) {
 	// the shot unstruck (the data was garbage, not the video).
 	if !mediaValid(head, "mov") {
 		p.mu.Lock()
-		p.partSick = true
+		p.markPartSickLocked()
 		p.mu.Unlock()
-		log.Printf("video poster: %s: head is not a MOV — camera partial reads are UNTRUSTWORTHY, disabling them until restart (power-cycle the camera)", s.ID)
+		log.Printf("video poster: %s: head is not a MOV — camera partial reads are UNTRUSTWORTHY — pausing partial reads (power-cycle the camera; probing every 3m)", s.ID)
 		return
 	}
 	poster := filepath.Join(tmp, "poster.jpg")
@@ -891,6 +903,49 @@ func (p *Prefetcher) LinkSick() (bulk, partial bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.bulkSick, p.partSick
+}
+
+// markPartSickLocked trips the partial-read breaker (call with p.mu held).
+// A probe retries every 3 minutes — the camera recovers on power cycle or
+// reconnect, and streaming/posters/heal should come back without a restart.
+func (p *Prefetcher) markPartSickLocked() {
+	p.partSick = true
+	p.partSickAt = time.Now()
+}
+
+// probePartialReads tests recovery with one validated 64 KB head.
+func (p *Prefetcher) probePartialReads() {
+	var target *photo.Shot
+	for _, s := range p.cat.Shots {
+		if s.Kind == "photo" && s.ObjectIDs[s.DisplayExt()] != "" {
+			target = s
+			break
+		}
+	}
+	if target == nil {
+		return
+	}
+	tmp, err := os.MkdirTemp(p.cache, "probe-*")
+	if err != nil {
+		return
+	}
+	defer os.RemoveAll(tmp)
+	dest := filepath.Join(tmp, "head.bin")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	err = mtppart.GetPart(ctx, target.ObjectIDs[target.DisplayExt()], 0, 64<<10, dest)
+	cancel()
+	if err != nil {
+		return // transport error (camera absent?) — next probe in 3 minutes
+	}
+	head, rerr := os.ReadFile(dest)
+	if rerr != nil || len(head) < 2 || head[0] != 0xFF || head[1] != 0xD8 {
+		log.Printf("prefetch: partial-read probe still garbage — next probe in 3m (power-cycle the camera)")
+		return
+	}
+	p.mu.Lock()
+	p.partSick = false
+	p.mu.Unlock()
+	log.Printf("prefetch: partial reads recovered (probe OK) — streaming, posters and healing re-enabled")
 }
 
 // bulkSickLocked reports whether automated pulls should pause because bulk

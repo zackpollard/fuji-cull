@@ -100,7 +100,7 @@ func (p *Prefetcher) ensureStreamLocked(s *photo.Shot, ext string) error {
 	if len(head) < 8 || string(head[4:8]) != "ftyp" {
 		p.closeStreamLocked()
 		p.mu.Lock()
-		p.partSick = true
+		p.markPartSickLocked()
 		p.mu.Unlock()
 		return fmt.Errorf("camera returned stale-buffer garbage for %s — power-cycle the camera", s.ID)
 	}

@@ -238,8 +238,8 @@ func (p *Prefetcher) fetchOrientBatch(ctx context.Context, batch []*photo.Shot) 
 		got++
 	}
 	if garbage > 0 {
-		p.partSick = true
-		log.Printf("orientation: %d/%d partial reads returned non-JPEG data — camera partial reads are UNTRUSTWORTHY, disabling them until restart (power-cycle the camera)", garbage, len(batch))
+		p.markPartSickLocked()
+		log.Printf("orientation: %d/%d partial reads returned non-JPEG data — camera partial reads are UNTRUSTWORTHY — pausing partial reads (power-cycle the camera; probing every 3m)", garbage, len(batch))
 	}
 	p.mu.Unlock()
 
@@ -344,8 +344,8 @@ func (p *Prefetcher) fetchHealBatch(ctx context.Context, batch []*photo.Shot) {
 		p.saveThumbFailedLocked()
 	}
 	if garbage > 0 {
-		p.partSick = true
-		log.Printf("thumbs: %d/%d heal heads returned non-JPEG data — camera partial reads are UNTRUSTWORTHY, disabling them until restart (power-cycle the camera)", garbage, len(batch))
+		p.markPartSickLocked()
+		log.Printf("thumbs: %d/%d heal heads returned non-JPEG data — camera partial reads are UNTRUSTWORTHY — pausing partial reads (power-cycle the camera; probing every 3m)", garbage, len(batch))
 	}
 	p.mu.Unlock()
 
