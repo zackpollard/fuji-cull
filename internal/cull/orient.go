@@ -253,6 +253,112 @@ func (p *Prefetcher) fetchOrientBatch(ctx context.Context, batch []*photo.Shot) 
 	}
 }
 
+/* ── head-heal sweep ──────────────────────────────────────── */
+
+// The camera cannot serve thumbnails for shots past its thumbnail-DB
+// capacity (the stale-buffer fragment bug), but every Fuji JPG embeds the
+// same 160×120 preview in its EXIF header — a 128 KB head pull heals a
+// thumbnail ~1000× cheaper than the old path (full 10 MB image pulled one
+// per session, decoded and downscaled: ~0.3 shots/s vs ~150 heads/s).
+const healHeadSize = 128 << 10
+
+// pickHealBatchLocked selects camera-impossible shots not yet head-healed.
+func (p *Prefetcher) pickHealBatchLocked(n int) []*photo.Shot {
+	if !p.thumbRetryAt.IsZero() && time.Now().Before(p.thumbRetryAt) {
+		return nil
+	}
+	needs := func(s *photo.Shot) bool {
+		return s.Kind == "photo" && p.thumbs[s.ID] == thumbFailed &&
+			!p.healTried[s.ID] && s.ObjectIDs[s.DisplayExt()] != ""
+	}
+	origin := p.thumbOriginLocked()
+	var batch []*photo.Shot
+	for d := 0; d < len(p.cat.Shots) && len(batch) < n; d++ {
+		for _, i := range []int{origin + d, origin - d} {
+			if len(batch) >= n || i < 0 || i >= len(p.cat.Shots) || (d == 0 && i != origin) {
+				continue
+			}
+			if s := p.cat.Shots[i]; needs(s) {
+				batch = append(batch, s)
+			}
+		}
+	}
+	return batch
+}
+
+// fetchHealBatch pulls file heads for a batch and banks their EXIF-embedded
+// thumbnails (plus orientation, for free). Shots whose heads carry no
+// embedded thumbnail stay in the failed set for the full-image generator.
+func (p *Prefetcher) fetchHealBatch(ctx context.Context, batch []*photo.Shot) {
+	tmp, err := os.MkdirTemp(p.thumbDir, "heal-*")
+	if err != nil {
+		return
+	}
+	defer os.RemoveAll(tmp)
+
+	reqs := make([]mtppart.PartReq, len(batch))
+	for i, s := range batch {
+		reqs[i] = mtppart.PartReq{
+			ObjectID: s.ObjectIDs[s.DisplayExt()],
+			Offset:   0,
+			Size:     healHeadSize,
+			Dest:     filepath.Join(tmp, s.SafeID()+".bin"),
+		}
+	}
+	cctx, cancel := context.WithTimeout(ctx, 60*time.Second+time.Duration(len(batch))*500*time.Millisecond)
+	runErr := mtppart.GetParts(cctx, reqs)
+	canceled := ctx.Err() != nil || cctx.Err() != nil
+	cancel()
+
+	healed, bare, garbage := 0, 0, 0
+	p.mu.Lock()
+	for i, s := range batch {
+		head, err := os.ReadFile(reqs[i].Dest)
+		if err != nil || len(head) == 0 {
+			continue // not transferred (cancel/error); retry naturally
+		}
+		if head[0] != 0xFF || head[1] != 0xD8 {
+			garbage++
+			continue
+		}
+		if _, known := p.orient[s.ID]; !known {
+			p.orient[s.ID] = uint8(jpegmeta.Orientation(head))
+			p.orientDirty = true
+		}
+		p.healTried[s.ID] = true
+		th := jpegmeta.Thumbnail(head)
+		if th == nil {
+			bare++ // no embedded thumbnail: full-image generator's problem
+			continue
+		}
+		tmpFile := p.ThumbPath(s) + ".heal"
+		if os.WriteFile(tmpFile, th, 0o644) != nil || os.Rename(tmpFile, p.ThumbPath(s)) != nil {
+			os.Remove(tmpFile)
+			continue
+		}
+		p.thumbs[s.ID] = thumbHave
+		delete(p.thumbStalls, s.ID)
+		healed++
+	}
+	if healed > 0 {
+		p.saveThumbFailedLocked()
+	}
+	if garbage > 0 {
+		p.partSick = true
+		log.Printf("thumbs: %d/%d heal heads returned non-JPEG data — camera partial reads are UNTRUSTWORTHY, disabling them until restart (power-cycle the camera)", garbage, len(batch))
+	}
+	p.mu.Unlock()
+
+	if runErr != nil && !canceled {
+		p.mu.Lock()
+		p.thumbRetryAt = time.Now().Add(15 * time.Second)
+		p.mu.Unlock()
+		log.Printf("thumbs: heal batch: %v", runErr)
+	} else if healed > 0 || bare > 0 {
+		log.Printf("thumbs: +%d healed from camera heads (%d without embedded thumbnails)", healed, bare)
+	}
+}
+
 /* ── delivery-time rotation (HTTP thumbs) ─────────────────── */
 
 // rotatedThumbJPEG re-encodes a thumbnail upright for the web UI. Thumbs are

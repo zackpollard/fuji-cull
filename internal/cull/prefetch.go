@@ -69,6 +69,7 @@ type Prefetcher struct {
 
 	orient      map[string]uint8 // shot ID -> EXIF orientation (absent = unknown)
 	orientDirty bool
+	healTried   map[string]bool // camera-impossible shots already head-healed (or attempted)
 }
 
 type photoRank struct {
@@ -129,6 +130,7 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 		thumbStalls: map[string]int{},
 		thumbRank:   map[string]int{},
 		orient:      map[string]uint8{},
+		healTried:   map[string]bool{},
 	}
 	p.cond = sync.NewCond(&p.mu)
 
@@ -409,7 +411,7 @@ func (p *Prefetcher) Wait(ctx context.Context, id string) (string, error) {
 func (p *Prefetcher) Run() {
 	for {
 		p.mu.Lock()
-		var targets, thumbBatch, orientBatch []*photo.Shot
+		var targets, thumbBatch, orientBatch, healBatch []*photo.Shot
 		var thumbCtx context.Context
 		for {
 			if p.closed {
@@ -428,6 +430,13 @@ func (p *Prefetcher) Run() {
 					// batch), then video posters (~8 MB for one video).
 					if p.partBin != "" && !p.partSick {
 						if orientBatch = p.pickOrientBatchLocked(orientBatchSize); len(orientBatch) > 0 {
+							thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
+							break
+						}
+						// Camera-impossible thumbs heal from EXIF-embedded
+						// previews in file heads — same cost as the
+						// orientation sweep, ~1000× cheaper than full pulls.
+						if healBatch = p.pickHealBatchLocked(orientBatchSize); len(healBatch) > 0 {
 							thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
 							break
 						}
@@ -473,6 +482,8 @@ func (p *Prefetcher) Run() {
 		switch {
 		case len(orientBatch) > 0:
 			p.fetchOrientBatch(thumbCtx, orientBatch)
+		case len(healBatch) > 0:
+			p.fetchHealBatch(thumbCtx, healBatch)
 		case len(thumbBatch) == 1 && thumbBatch[0].Kind == "video":
 			p.fetchVideoPoster(thumbCtx, thumbBatch[0])
 		default:
