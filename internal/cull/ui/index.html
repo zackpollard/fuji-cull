@@ -332,7 +332,7 @@
 const $ = id => document.getElementById(id);
 
 let shots = [], decisions = {}, fetchStates = {}, cursor = 0;
-let undoStack = [], importStatus = {}, videoDirect = false;
+let undoStack = [], importStatus = {}, videoDirect = false, videoStreaming = false;
 let ticks = [];
 const idIndex = new Map(); // shot ID -> position
 
@@ -1056,7 +1056,10 @@ function show(i, pushCursor = true) {
    past a video never accidentally transfers gigabytes. */
 function renderVideo(s) {
   const state = fetchStates[s.id];
-  const playable = videoDirect || state === "ready";
+  // Streamable videos play straight off the camera (the server bridges HTTP
+  // ranges to MTP partial reads); L still pulls a full local copy.
+  const playable = videoDirect || state === "ready" ||
+    (videoStreaming && state !== "fetching");
   if (playable) {
     $("overlay").classList.remove("show");
     const v = document.createElement("video");
@@ -1120,6 +1123,7 @@ async function poll() {
     const st = await api("/api/status");
     fetchStates = st.fetch || {};
     importStatus = st.import || {};
+    videoStreaming = !!st.streaming;
     $("camSick").textContent = st.bulkSick ? "CAMERA SICK · POWER-CYCLE"
       : st.partSick ? "CAMERA PARTIAL-READS SICK · POWER-CYCLE" : "";
     decorate();

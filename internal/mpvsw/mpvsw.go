@@ -78,6 +78,12 @@ func New() (*Player, error) {
 	set("sw-fast", "yes")
 	set("keep-open", "yes")
 	set("audio-client-name", "fuji-cull")
+	// Camera-streamed videos arrive over loopback HTTP backed by MTP partial
+	// reads (~55 MB/s): buffer generously so high-bitrate clips ride out
+	// chunk-boundary latency. Harmless for local files.
+	set("cache", "yes")
+	set("demuxer-max-bytes", "256MiB")
+	set("demuxer-readahead-secs", "10")
 	if C.mpv_initialize(h) < 0 {
 		C.mpv_destroy(h)
 		return nil, fmt.Errorf("mpv_initialize failed")

@@ -152,6 +152,7 @@ func (a *App) handler() http.Handler {
 			"import":    a.importer.Status(),
 			"bulkSick":  bulkSick,
 			"partSick":  partSick,
+			"streaming": a.prefetch.StreamingAvailable() && !a.importer.Status().Running,
 		})
 	})
 
@@ -187,14 +188,24 @@ func (a *App) handler() http.Handler {
 			http.Error(w, "shot has no video file", http.StatusNotFound)
 			return
 		}
-		// Serve only what is already local: a direct backend path, or the
-		// pulled copy in the cache. Fetching is explicit via /api/loadvideo
-		// so navigating past a video never pulls gigabytes by accident.
+		// Local copies win (direct backend path or the pulled cache copy);
+		// otherwise stream ranges straight off the camera via the persistent
+		// partial-read session. Explicit /api/loadvideo still pulls a full
+		// local copy for smoother scrubbing and import reuse.
 		path, ok := a.backend.LocalPath(s, ext)
 		if !ok {
 			path, ok = a.prefetch.CachedFile(s, ext)
 		}
 		if !ok {
+			if a.CanStreamVideo(id) {
+				rs, err := a.prefetch.StreamReader(s, ext)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadGateway)
+					return
+				}
+				http.ServeContent(w, r, name, time.Time{}, rs)
+				return
+			}
 			http.Error(w, "video not buffered; POST /api/loadvideo first", http.StatusConflict)
 			return
 		}
@@ -260,7 +271,7 @@ func (a *App) handler() http.Handler {
 			http.Error(w, "unknown video shot", http.StatusNotFound)
 			return
 		}
-		a.prefetch.Ensure(req.ID)
+		a.EnsureVideo(req.ID) // releases any live stream holding the link
 		w.WriteHeader(http.StatusAccepted)
 	})
 

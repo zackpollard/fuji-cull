@@ -76,8 +76,12 @@ func (a *App) ThumbPathIfReady(id string) (string, bool) {
 // FetchStates returns shot ID -> "fetching"|"ready"|"failed".
 func (a *App) FetchStates() map[string]string { return a.prefetch.Snapshot() }
 
-// EnsureVideo queues a video shot for pulling to the local buffer.
-func (a *App) EnsureVideo(id string) { a.prefetch.Ensure(id) }
+// EnsureVideo queues a video shot for pulling to the local buffer. Any live
+// camera stream is released first — the pull needs the link it holds.
+func (a *App) EnsureVideo(id string) {
+	a.prefetch.CloseStream()
+	a.prefetch.Ensure(id)
+}
 
 // SetThumbHint retargets the background thumbnail sweep (grid viewport).
 func (a *App) SetThumbHint(i int) { a.prefetch.SetThumbHint(i) }
@@ -93,6 +97,17 @@ func (a *App) Orientations() string { return a.prefetch.OrientStates() }
 // CameraSick reports tripped camera-transfer circuit breakers (the X-H2S
 // stale-buffer bug); a power cycle is the only remedy.
 func (a *App) CameraSick() (bulk, partial bool) { return a.prefetch.LinkSick() }
+
+// CanStreamVideo reports whether the shot's video can play by streaming
+// straight off the camera (no full pull). False during imports — the import
+// owns the link for minutes and a stream session would fight it.
+func (a *App) CanStreamVideo(id string) bool {
+	s := a.catalog.Get(id)
+	if s == nil || a.importer.Status().Running {
+		return false
+	}
+	return a.prefetch.CanStream(s, s.DisplayExt())
+}
 
 // VideoPathIfReady returns the buffered local path of a video shot.
 func (a *App) VideoPathIfReady(id string) (string, bool) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/url"
 	"unsafe"
 
 	"github.com/veandco/go-sdl2/sdl"
@@ -8,13 +9,23 @@ import (
 	"github.com/zack/fuji-tools/internal/mpvsw"
 )
 
-// drawVideo renders the current video shot: embedded mpv playback when the
-// file is buffered locally, otherwise the pull-on-demand placeholder.
+// drawVideo renders the current video shot: embedded mpv playback from the
+// local buffer when pulled, else streamed straight off the camera; the
+// pull-on-demand placeholder only remains for when neither is possible.
 func (u *ui) drawVideo(st sdl.Rect) {
 	s := u.shots[u.cursor]
-	path, ready := u.app.VideoPathIfReady(s.ID)
+	src, streaming := "", false
+	if path, ready := u.app.VideoPathIfReady(s.ID); ready {
+		src = path
+	} else if u.fetchStates[s.ID] != "fetching" && u.app.CanStreamVideo(s.ID) {
+		src = u.apiBase + "/api/video?id=" + url.QueryEscape(s.ID)
+		streaming = true
+	}
 
-	if !ready {
+	if src == "" {
+		if u.videoID == s.ID {
+			u.stopVideo() // stream gave way to an explicit pull
+		}
 		state := u.fetchStates[s.ID]
 		msg, sub := "VIDEO NOT BUFFERED", "press L to pull "+s.Base+" from the camera"
 		if state == "fetching" {
@@ -35,9 +46,12 @@ func (u *ui) drawVideo(st sdl.Rect) {
 		}
 		u.mpv = p
 	}
-	if u.videoID != s.ID {
-		u.videoID = s.ID
-		u.mpv.Load(path)
+	if u.videoSrc != src {
+		u.videoID, u.videoSrc = s.ID, src
+		u.mpv.Load(src)
+	}
+	if streaming {
+		u.text(u.fontSm, "STREAMING FROM CAMERA · L pulls a local copy", colDim, st.X+st.W/2, st.Y+16, true)
 	}
 
 	// keep the streaming texture matched to the stage size
@@ -77,7 +91,7 @@ func (u *ui) drawVideo(st sdl.Rect) {
 func (u *ui) stopVideo() {
 	if u.mpv != nil && u.videoID != "" {
 		u.mpv.Stop()
-		u.videoID = ""
+		u.videoID, u.videoSrc = "", ""
 	}
 }
 

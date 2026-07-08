@@ -44,8 +44,11 @@ type Prefetcher struct {
 	demand   map[string]bool // shot IDs explicitly requested
 	state    map[string]*fetchState
 	fetching int
-	paused   bool
+	pause    int // >0 = paused; refcounted (importer and video streaming both pause)
 	closed   bool
+
+	stream   *streamState // live camera video stream (owns the MTP claim)
+	streamMu sync.Mutex
 
 	// Background thumbnail sweep: runs only when the camera link is otherwise
 	// idle, and is killed the moment interactive work arrives.
@@ -220,6 +223,7 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 	p.loadOrient()
 	go p.orientFlusher()
 	go p.backfillOrient()
+	go p.streamJanitor()
 	return p, nil
 }
 
@@ -269,10 +273,11 @@ func (p *Prefetcher) interactiveWorkLocked() bool {
 }
 
 // PauseAndDrain stops new fetches and waits for the in-flight batch to finish
-// (used while an import owns the camera link).
+// (used while an import or a camera video stream owns the link). Pauses are
+// refcounted so overlapping owners don't resume each other's claim early.
 func (p *Prefetcher) PauseAndDrain() {
 	p.mu.Lock()
-	p.paused = true
+	p.pause++
 	p.interruptThumbsLocked()
 	for p.fetching > 0 || p.thumbCancel != nil {
 		p.cond.Wait()
@@ -282,7 +287,9 @@ func (p *Prefetcher) PauseAndDrain() {
 
 func (p *Prefetcher) Resume() {
 	p.mu.Lock()
-	p.paused = false
+	if p.pause > 0 {
+		p.pause--
+	}
 	p.mu.Unlock()
 	p.cond.Broadcast()
 }
@@ -409,7 +416,7 @@ func (p *Prefetcher) Run() {
 				p.mu.Unlock()
 				return
 			}
-			if !p.paused {
+			if p.pause == 0 {
 				if targets = p.pickLocked(); len(targets) > 0 {
 					break
 				}

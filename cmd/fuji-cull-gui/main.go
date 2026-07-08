@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -205,12 +206,13 @@ func uploadRGBA(r *sdl.Renderer, img *turbo.Image) (*texEntry, error) {
 /* ── UI state ─────────────────────────────────────────────── */
 
 type ui struct {
-	app    *cull.App
-	pool   *decodePool
-	ren    *sdl.Renderer
-	win    *sdl.Window
-	font   *ttf.Font
-	fontSm *ttf.Font
+	app     *cull.App
+	apiBase string // in-process HTTP server, for mpv stream URLs
+	pool    *decodePool
+	ren     *sdl.Renderer
+	win     *sdl.Window
+	font    *ttf.Font
+	fontSm  *ttf.Font
 
 	shots     []*photo.Shot
 	decisions map[string]string
@@ -248,6 +250,7 @@ type ui struct {
 
 	mpv        *mpvsw.Player
 	videoID    string
+	videoSrc   string // what mpv is playing: local path or stream URL
 	videoTex   *sdl.Texture
 	videoTexW  int32
 	videoTexH  int32
@@ -312,7 +315,14 @@ func main() {
 	}()
 	log.Printf("web UI also available at http://%s", o.Listen)
 
-	if err := run(app, *decodeAhead, *decodeBehind); err != nil {
+	// The in-process HTTP server also feeds mpv camera-video streams; talk
+	// to it over loopback even when listening on a wildcard address.
+	apiBase := "http://" + o.Listen
+	if host, port, err := net.SplitHostPort(o.Listen); err == nil && (host == "" || host == "0.0.0.0" || host == "::") {
+		apiBase = "http://127.0.0.1:" + port
+	}
+
+	if err := run(app, apiBase, *decodeAhead, *decodeBehind); err != nil {
 		log.Fatalf("%v", err)
 	}
 }
@@ -325,7 +335,7 @@ func findMonoFont() string {
 	return "/usr/share/fonts/TTF/DejaVuSansMono.ttf"
 }
 
-func run(app *cull.App, decodeAhead, decodeBehind int) error {
+func run(app *cull.App, apiBase string, decodeAhead, decodeBehind int) error {
 	runtime.LockOSThread()
 	if err := sdl.Init(sdl.INIT_VIDEO | sdl.INIT_EVENTS); err != nil {
 		return err
@@ -358,7 +368,7 @@ func run(app *cull.App, decodeAhead, decodeBehind int) error {
 		workers = 2
 	}
 	u := &ui{
-		app: app, ren: ren, win: win, font: font, fontSm: fontSm,
+		app: app, apiBase: apiBase, ren: ren, win: win, font: font, fontSm: fontSm,
 		pool:        newDecodePool(app, workers),
 		decodeAhead: decodeAhead, decodeBehind: decodeBehind,
 		full:      newTexCache(16),
