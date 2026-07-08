@@ -767,14 +767,15 @@ async function boot() {
     $("overlay").classList.add("show");
     $("ovErr").style.color = "var(--dim)";
     if (st && st.error) {
-      $("ovMsg").textContent = "DISCOVERY FAILED";
+      // Discovery retries server-side; keep polling until a camera appears.
+      $("ovMsg").textContent = "WAITING FOR CAMERA";
       $("ovErr").style.color = "";
-      $("ovErr").textContent = st.error + " — check the camera and restart fuji-cull";
-      return;
+      $("ovErr").textContent = st.error + " — connect or power on the camera; retrying…";
+    } else {
+      $("ovMsg").textContent = "READING CAMERA INDEX";
+      $("ovErr").textContent = !st ? "connecting…"
+        : (st.stage || "starting…") + (st.files ? " · " + st.files.toLocaleString() + " files" : "");
     }
-    $("ovMsg").textContent = "READING CAMERA INDEX";
-    $("ovErr").textContent = !st ? "connecting…"
-      : (st.stage || "starting…") + (st.files ? " · " + st.files.toLocaleString() + " files" : "");
     await new Promise(r => setTimeout(r, 700));
   }
   $("overlay").classList.remove("show");

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/zack/fuji-tools/internal/exif"
 	"github.com/zack/fuji-tools/internal/mtpcli"
@@ -108,19 +109,23 @@ func Start(o Options) (*App, http.Handler, error) {
 
 	// Discovery runs in the background so the UI is reachable immediately;
 	// /api/state reports progress until finishInit flips the app ready.
+	// Failures retry forever — the camera may be plugged in, powered on or
+	// power-cycled long after the app starts.
 	go func() {
-		log.Printf("discovering camera files (backend=%s)...", backend.Name())
-		listings, err := backend.Discover(context.Background(), app.setDiscovery)
-		if err != nil {
-			log.Printf("discover: %v", err)
+		var catalog *Catalog
+		for {
+			log.Printf("discovering camera files (backend=%s)...", backend.Name())
+			listings, err := backend.Discover(context.Background(), app.setDiscovery)
+			if err == nil {
+				catalog = buildCatalog(listings)
+				if len(catalog.Shots) > 0 {
+					break
+				}
+				err = fmt.Errorf("no shots found on camera")
+			}
+			log.Printf("discover: %v (retrying in 5s)", err)
 			app.setDiscoveryError(err)
-			return
-		}
-		catalog := buildCatalog(listings)
-		if len(catalog.Shots) == 0 {
-			log.Printf("discover: no shots found")
-			app.setDiscoveryError(fmt.Errorf("no shots found on camera"))
-			return
+			time.Sleep(5 * time.Second)
 		}
 		log.Printf("catalog: %d shots", len(catalog.Shots))
 		cursor := session.Cursor()

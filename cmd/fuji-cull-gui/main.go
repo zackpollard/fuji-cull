@@ -409,7 +409,8 @@ func (u *ui) frame() bool {
 		msg := "READING CAMERA INDEX"
 		sub := fmt.Sprintf("%s · %d files", stage, files)
 		if errMsg != "" {
-			msg, sub = "DISCOVERY FAILED", errMsg
+			// Discovery retries forever; failure means no camera right now.
+			msg, sub = "WAITING FOR CAMERA", errMsg+" — retrying"
 		}
 		w, h := u.win.GetSize()
 		u.text(u.font, msg, colDim, w/2, h/2-14, true)

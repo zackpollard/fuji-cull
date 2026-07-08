@@ -41,6 +41,7 @@ type App struct {
 func (a *App) setDiscovery(stage string, files int) {
 	a.mu.Lock()
 	a.discStage, a.discFiles = stage, files
+	a.discErr = "" // a new attempt is making progress; clear the stale error
 	a.mu.Unlock()
 }
 
