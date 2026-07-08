@@ -161,9 +161,11 @@ func (p *Prefetcher) OrientOf(id string) int {
 
 /* ── camera header sweep ──────────────────────────────────── */
 
-// orientBatchSize bounds one partial-read invocation. 64 KB heads move at
-// ~270 files/s, so 64 heads ≈ a quarter second of link time per batch.
-const orientBatchSize = 64
+// orientBatchSize bounds one partial-read invocation. The aft session setup
+// dominates (~4 s per invocation; the 64 KB heads themselves move at ~270
+// files/s), so batches are large — 256 heads ≈ 16 MB ≈ one second of link
+// time on top of the fixed setup cost.
+const orientBatchSize = 256
 
 // pickOrientBatchLocked selects photos with unknown orientation nearest the
 // sweep origin, expanding outward in catalog order. Partial reads address
