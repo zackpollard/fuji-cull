@@ -322,6 +322,13 @@ func main() {
 	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
+	// Prefer native Wayland over XWayland: SDL's X11 driver hands out a GLX
+	// context, and mpv's zero-copy VAAPI interop needs EGL — under GLX video
+	// silently degrades to vaapi-copy (a full core of copy-back at 4K60).
+	if os.Getenv("SDL_VIDEODRIVER") == "" && os.Getenv("WAYLAND_DISPLAY") != "" {
+		os.Setenv("SDL_VIDEODRIVER", "wayland")
+	}
+
 	app, handler, err := cull.Start(o)
 	if err != nil {
 		log.Fatalf("%v", err)
