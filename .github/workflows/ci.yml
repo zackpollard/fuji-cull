@@ -21,3 +21,24 @@ jobs:
       - run: go vet ./...
       - run: go build ./...
       - run: go test ./...
+
+  appimage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: install build and bundle deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libsdl2-dev libsdl2-ttf-dev libturbojpeg0-dev libmpv-dev \
+            libgphoto2-dev gphoto2 libimage-exiftool-perl \
+            cmake g++ libusb-1.0-0-dev libmagic-dev zlib1g-dev libssl-dev \
+            libfuse2 file
+      - run: chmod +x scripts/build-appimage.sh && ./scripts/build-appimage.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fuji-cull-gui-appimage
+          path: dist/appimage/*.AppImage

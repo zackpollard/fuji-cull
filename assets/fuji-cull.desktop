@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=fuji-cull
+Comment=Cull photos straight off a Fujifilm camera
+Exec=fuji-cull-gui
+Icon=fuji-cull
+Categories=Graphics;Photography;
+Terminal=false

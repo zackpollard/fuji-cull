@@ -1,0 +1,84 @@
+diff --git a/cli/Session.cpp b/cli/Session.cpp
+index 76980c3..5021a53 100644
+--- a/cli/Session.cpp
++++ b/cli/Session.cpp
+@@ -138,6 +138,12 @@ namespace cli
+ 		AddCommand("get-id", "<id> <dst> get object by id to <dst>",
+                         make_function([this](mtp::u32 id, const LocalPath &dst) -> void { Get(dst, mtp::ObjectId(id)); }));
+ 
++		AddCommand("get-part", "<id> <offset> <size> <dst> reads a byte range of an object into <dst>",
++			make_function([this](mtp::u32 id, const std::string &offset, const std::string &size, const LocalPath &dst) -> void { GetPart(id, offset, size, dst); }));
++
++		AddCommand("serve-parts", "persistent partial-read server: 'R <id> <offset> <size>' on stdin -> 'OK <n>' + raw bytes on stdout; 'Q' quits",
++			make_function([this]() -> void { ServeParts(); }));
++
+ 		AddCommand("get-thumb", "<file> downloads thumbnail for file",
+ 			make_function([this](const Path &path) -> void { GetThumb(path); }));
+ 		AddCommand("get-thumb", "<file> <dst> downloads thumbnail to <dst>",
+@@ -694,6 +700,53 @@ namespace cli
+ 		}
+ 	}
+ 
++	void Session::GetPart(mtp::u32 id, const std::string &offset, const std::string &size, const LocalPath &dst)
++	{
++		mtp::u64 off = strtoull(offset.c_str(), nullptr, 10);
++		mtp::u32 sz  = (mtp::u32)strtoul(size.c_str(), nullptr, 10);
++		mtp::ByteArray data = _session->GetPartialObject(mtp::ObjectId(id), off, sz);
++		FILE *f = fopen(dst.c_str(), "wb");
++		if (!f)
++			throw std::runtime_error("cannot open " + std::string(dst.c_str()));
++		fwrite(data.data(), 1, data.size(), f);
++		fclose(f);
++	}
++
++	void Session::ServeParts()
++	{
++		// Persistent partial-read protocol for embedding applications:
++		// request  'R <id> <offset> <size>\n'
++		// response 'OK <n>\n' followed by n raw bytes, or 'ERR <msg>\n'.
++		// Marks the response start with a leading '\x01' so clients can skip
++		// any library chatter on stdout.
++		std::string line;
++		while (std::getline(std::cin, line))
++		{
++			if (line == "Q")
++				break;
++			unsigned long long id = 0, off = 0, sz = 0;
++			if (sscanf(line.c_str(), "R %llu %llu %llu", &id, &off, &sz) != 3)
++			{
++				printf("\x01ERR parse\n");
++				fflush(stdout);
++				continue;
++			}
++			try
++			{
++				mtp::ByteArray data = _session->GetPartialObject(mtp::ObjectId((mtp::u32)id), off, (mtp::u32)sz);
++				printf("\x01OK %zu\n", data.size());
++				fflush(stdout);
++				fwrite(data.data(), 1, data.size(), stdout);
++				fflush(stdout);
++			}
++			catch (const std::exception &ex)
++			{
++				printf("\x01ERR %s\n", ex.what());
++				fflush(stdout);
++			}
++		}
++	}
++
+ 	void Session::Get(const LocalPath &dst, mtp::ObjectId srcId, bool thumb)
+ 	{
+ 		mtp::ObjectFormat format = static_cast<mtp::ObjectFormat>(_session->GetObjectIntegerProperty(srcId, mtp::ObjectProperty::ObjectFormat));
+diff --git a/cli/Session.h b/cli/Session.h
+index a2df6b6..83049ce 100644
+--- a/cli/Session.h
++++ b/cli/Session.h
+@@ -109,6 +109,8 @@ namespace cli
+ 		void DisplayStorageInfo(const StoragePath &path);
+ 		void Get(const LocalPath &dst, mtp::ObjectId srcId, bool thumb = false);
+ 		void Get(const mtp::ObjectId srcId);
++		void GetPart(mtp::u32 id, const std::string &offset, const std::string &size, const LocalPath &dst);
++		void ServeParts();
+ 		void GetThumb(const mtp::ObjectId srcId);
+ 		void GetThumb(const LocalPath &dst, mtp::ObjectId srcId)
+ 		{ Get(dst, srcId, true); }

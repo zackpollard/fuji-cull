@@ -31,11 +31,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: install cgo system deps - sdl2, sdl2_ttf, libjpeg-turbo, libmpv
+      - name: install build and bundle deps
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libsdl2-dev libsdl2-ttf-dev libturbojpeg0-dev libmpv-dev
+            libsdl2-dev libsdl2-ttf-dev libturbojpeg0-dev libmpv-dev \
+            libgphoto2-dev gphoto2 libimage-exiftool-perl \
+            cmake g++ libusb-1.0-0-dev libmagic-dev zlib1g-dev libssl-dev \
+            libfuse2 file
       - name: build release binaries
         run: |
           mkdir -p dist
@@ -44,10 +47,12 @@ jobs:
             -o dist/fuji-cull-linux-amd64 ./cmd/fuji-cull
           CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
             -o dist/fuji-import-linux-amd64 ./cmd/fuji-import
-          # native GUI links system sdl2/sdl2_ttf/turbojpeg/mpv at runtime
-          go build -trimpath -ldflags "-s -w" \
-            -o dist/fuji-cull-gui-linux-amd64 ./cmd/fuji-cull-gui
+          # self-contained GUI: libraries and external tools bundled
+          chmod +x scripts/build-appimage.sh && ./scripts/build-appimage.sh
+          cp dist/appimage/*.AppImage dist/
       - name: upload assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ needs.release-please.outputs.tag_name }}" dist/* --clobber
+        run: |
+          rm -rf dist/appimage
+          gh release upload "${{ needs.release-please.outputs.tag_name }}" dist/* --clobber

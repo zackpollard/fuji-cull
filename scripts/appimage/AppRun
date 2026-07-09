@@ -1,0 +1,14 @@
+#!/bin/bash
+# AppRun for the fuji-cull-gui AppImage: everything the app execs at runtime
+# (gphoto2, ffmpeg, exiftool, the patched aft-mtp-cli) ships inside, so PATH
+# and the plugin/library search paths must point back into the bundle.
+HERE="$(dirname "$(readlink -f "$0")")"
+export PATH="$HERE/usr/bin:$PATH"
+export LD_LIBRARY_PATH="$HERE/usr/lib:${LD_LIBRARY_PATH:-}"
+export FUJI_AFT_PART="$HERE/usr/bin/aft-mtp-cli-part"
+# libgphoto2 finds its camera/port plugins via these
+export CAMLIBS="$HERE/usr/lib/libgphoto2"
+export IOLIBS="$HERE/usr/lib/libgphoto2_port"
+# exiftool is a perl script; its module tree rides along
+export PERL5LIB="$HERE/usr/share/perl5:${PERL5LIB:-}"
+exec "$HERE/usr/bin/fuji-cull-gui" "$@"
