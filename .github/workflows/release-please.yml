@@ -3,6 +3,11 @@ name: release-please
 on:
   push:
     branches: [master]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: existing release tag to (re)build assets for
+        required: true
 
 permissions:
   contents: write
@@ -10,6 +15,7 @@ permissions:
 
 jobs:
   release-please:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.rp.outputs.release_created }}
@@ -22,7 +28,7 @@ jobs:
 
   release-assets:
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: always() && (needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -55,4 +61,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           rm -rf dist/appimage
-          gh release upload "${{ needs.release-please.outputs.tag_name }}" dist/* --clobber
+          gh release upload "${{ needs.release-please.outputs.tag_name || inputs.tag }}" dist/* --clobber

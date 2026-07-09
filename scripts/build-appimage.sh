@@ -45,12 +45,21 @@ cp -r /usr/share/perl5/Image "$APPDIR/usr/share/perl5/"
 cp -r /usr/share/perl5/File "$APPDIR/usr/share/perl5/" 2>/dev/null || true
 
 echo "== static ffmpeg"
-if [ ! -x "$WORK/ffmpeg-static/ffmpeg" ]; then
-  mkdir -p "$WORK/ffmpeg-static"
-  curl -fsSL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" |
-    tar xJ -C "$WORK/ffmpeg-static" --strip-components=1
+FF="$WORK/ffmpeg-static"
+if [ ! -x "$FF/ffmpeg" ]; then
+  mkdir -p "$FF"
+  # BtbN builds are GitHub-hosted (reliable from CI runners); johnvansickle
+  # is the fallback — it has timed out from runners before.
+  if curl -fsSL --retry 3 -o "$FF/ff.tar.xz" \
+      "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"; then
+    tar xJf "$FF/ff.tar.xz" -C "$FF" --strip-components=2 --wildcards "*/bin/ffmpeg"
+    rm -f "$FF/ff.tar.xz"
+  else
+    curl -fsSL --retry 3 "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" |
+      tar xJ -C "$FF" --strip-components=1 --wildcards "*/ffmpeg"
+  fi
 fi
-cp "$WORK/ffmpeg-static/ffmpeg" "$APPDIR/usr/bin/"
+cp "$FF/ffmpeg" "$APPDIR/usr/bin/"
 
 echo "== linuxdeploy (library closure)"
 LD="$WORK/linuxdeploy"
