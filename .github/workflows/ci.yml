@@ -54,7 +54,11 @@ jobs:
         run: brew install sdl2 sdl2_ttf jpeg-turbo mpv pkgconf cmake libusb
       - run: chmod +x scripts/build-macos.sh && ./scripts/build-macos.sh
       - name: tests
-        run: go test ./internal/...
+        run: |
+          export CGO_CFLAGS="-I$(brew --prefix)/include"
+          export CGO_LDFLAGS="-L$(brew --prefix)/lib"
+          export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          go test ./internal/...
       - uses: actions/upload-artifact@v4
         with:
           name: fuji-cull-macos
