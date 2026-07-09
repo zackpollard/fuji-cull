@@ -35,6 +35,7 @@ type Options struct {
 	ImmichURL   string
 	ImmichKey   string
 	ImmichAlbum string
+	ImmichStack bool
 	SkipImmich  bool
 	Retries     int
 	UploadConc  int
@@ -100,6 +101,7 @@ func Start(o Options) (*App, http.Handler, error) {
 		pipelineOpts: pipeline.Options{
 			ImmichURL:         strings.TrimRight(o.ImmichURL, "/"),
 			ImmichKey:         o.ImmichKey,
+			ImmichStack:       o.ImmichStack,
 			SkipImmich:        o.SkipImmich,
 			Retries:           o.Retries,
 			UploadConcurrency: o.UploadConc,

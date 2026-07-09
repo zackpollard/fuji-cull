@@ -25,6 +25,7 @@ type Options struct {
 	ImmichURL         string
 	ImmichKey         string
 	ImmichAlbum       string
+	ImmichStack       bool
 	SkipImmich        bool
 	Retries           int
 	UploadConcurrency int
@@ -97,6 +98,11 @@ func Run(ctx context.Context, opts Options, files []photo.FileEntry) error {
 			return fmt.Errorf("%d file(s) missing in Immich after %d retries", len(missing), opts.Retries)
 		}
 		log.Printf("All %d files verified in Immich", len(files))
+
+		if opts.ImmichStack && !opts.DryRun {
+			log.Printf("--- stacking RAF+JPG pairs ---")
+			StackPairs(ctx, client, files)
+		}
 	}
 
 	Report(opts.Dest, files)
@@ -255,6 +261,50 @@ func Upload(ctx context.Context, opts Options, client *immich.Client, albumID st
 	}
 
 	return nil
+}
+
+// StackPairs groups each RAF+JPG pair of the same shot into an Immich stack
+// with the JPG as the primary asset. Failures are logged, not fatal: the
+// assets themselves are already uploaded and verified.
+func StackPairs(ctx context.Context, client *immich.Client, files []photo.FileEntry) {
+	type pair struct{ jpg, raf string }
+	pairs := map[string]*pair{}
+	var keys []string
+	for _, f := range files {
+		base, ext, ok := photo.SplitMedia(f.Name)
+		if !ok || f.AssetID == "" {
+			continue
+		}
+		key := f.Folder + "/" + base
+		p := pairs[key]
+		if p == nil {
+			p = &pair{}
+			pairs[key] = p
+			keys = append(keys, key)
+		}
+		switch ext {
+		case "JPG":
+			p.jpg = f.AssetID
+		case "RAF":
+			p.raf = f.AssetID
+		}
+	}
+	sort.Strings(keys)
+
+	stacked, failed := 0, 0
+	for _, key := range keys {
+		p := pairs[key]
+		if p.jpg == "" || p.raf == "" || p.jpg == p.raf {
+			continue
+		}
+		if err := client.CreateStack(ctx, []string{p.jpg, p.raf}); err != nil {
+			failed++
+			log.Printf("WARN: stack %s: %v", key, err)
+			continue
+		}
+		stacked++
+	}
+	log.Printf("Stacked %d RAF+JPG pair(s), %d failed", stacked, failed)
 }
 
 // Validate bulk-checks all files against Immich by checksum and returns the

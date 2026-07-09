@@ -313,6 +313,7 @@ func main() {
 	flag.StringVar(&o.ImmichURL, "immich-url", os.Getenv("IMMICH_URL"), "Immich URL")
 	flag.StringVar(&o.ImmichKey, "immich-key", os.Getenv("IMMICH_API_KEY"), "Immich API key")
 	flag.StringVar(&o.ImmichAlbum, "immich-album", "", "Immich album")
+	flag.BoolVar(&o.ImmichStack, "immich-stack", false, "stack RAF+JPG pairs in Immich")
 	flag.BoolVar(&o.SkipImmich, "skip-immich", false, "skip Immich")
 	flag.IntVar(&o.Retries, "retries", 3, "immich retries")
 	flag.IntVar(&o.UploadConc, "upload-concurrency", 4, "parallel uploads")

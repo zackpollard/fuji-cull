@@ -33,8 +33,8 @@ func main() {
 
 	log.Printf("=== fuji-import starting at %s ===", time.Now().Format(time.RFC3339))
 	log.Printf("dest=%s camera-root=%q", cfg.Dest, cfg.CameraRoot)
-	log.Printf("skip-pull=%v skip-immich=%v retries=%d upload-concurrency=%d",
-		cfg.SkipPull, cfg.SkipImmich, cfg.Retries, cfg.UploadConcurrency)
+	log.Printf("skip-pull=%v skip-immich=%v immich-stack=%v retries=%d upload-concurrency=%d",
+		cfg.SkipPull, cfg.SkipImmich, cfg.ImmichStack, cfg.Retries, cfg.UploadConcurrency)
 
 	checkTools(cfg)
 
@@ -88,6 +88,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.ImmichKey, "immich-key", os.Getenv("IMMICH_API_KEY"),
 		"Immich API key (or env IMMICH_API_KEY)")
 	flag.StringVar(&cfg.ImmichAlbum, "immich-album", "", "Immich album to add assets to (created if missing)")
+	flag.BoolVar(&cfg.ImmichStack, "immich-stack", false, "stack RAF+JPG pairs in Immich after upload (JPG as primary)")
 	flag.BoolVar(&cfg.SkipImmich, "skip-immich", false, "skip Immich upload + validation")
 	flag.BoolVar(&cfg.SkipPull, "skip-pull", false, "skip camera pull (validation-only mode)")
 	flag.IntVar(&cfg.Retries, "retries", 3, "retries for Immich upload validation gaps")
