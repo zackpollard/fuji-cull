@@ -321,6 +321,7 @@ func main() {
 	decodeBehind := flag.Int("decode-behind", 8, "decoded frames to hold behind the cursor")
 	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	setupBundleEnv()
 
 	// Prefer native Wayland over XWayland: SDL's X11 driver hands out a GLX
 	// context, and mpv's zero-copy VAAPI interop needs EGL — under GLX video

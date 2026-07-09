@@ -51,7 +51,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: install build deps
-        run: brew install sdl2 sdl2_ttf jpeg-turbo mpv pkgconf cmake libusb
+        run: brew install sdl2 sdl2_ttf jpeg-turbo mpv pkgconf cmake libusb gphoto2 libgphoto2 ffmpeg exiftool dylibbundler
       - run: chmod +x scripts/build-macos.sh && ./scripts/build-macos.sh
       - name: tests
         run: |
@@ -62,4 +62,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: fuji-cull-macos
-          path: dist/macos/*.tar.gz
+          path: dist/macos/*.dmg
