@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.0](https://github.com/zackpollard/fuji-cull/compare/v1.0.0...v1.1.0) (2026-07-09)
+
+
+### Features
+
+* macos builds ([#4](https://github.com/zackpollard/fuji-cull/issues/4)) ([28423ad](https://github.com/zackpollard/fuji-cull/commit/28423ad0ab8d28416b5a729c4471bcdea315dc8c))
+
+
+### Bug Fixes
+
+* adaptive frame cap - throttle only vsync-less spin frames ([87841e7](https://github.com/zackpollard/fuji-cull/commit/87841e75df21db3b957ea0931efe5f6efeaf76ca))
+* cap frame rate (wayland vsync does not block when unfocused) ([d8d7fee](https://github.com/zackpollard/fuji-cull/commit/d8d7feeea4c7a2a0baa83bf60aef904af70f7904))
+* park render loop in waiteventtimeout when vsync is not blocking ([deb5b69](https://github.com/zackpollard/fuji-cull/commit/deb5b69024ef1babccbfa7a48958ed6beb47c177))
+
 ## 1.0.0 (2026-07-09)
 
 
