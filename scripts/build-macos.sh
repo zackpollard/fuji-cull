@@ -1,25 +1,29 @@
 #!/usr/bin/env bash
-# Builds the macOS release tarball: all three binaries plus aft-mtp-cli-part
-# built from the vendored partial-read patch. Runtime tools (gphoto2, ffmpeg,
-# exiftool) and the GUI's dylibs come from Homebrew — see the bundled README.
+# Builds fuji-cull.app (drag-to-Applications dmg): the GUI plus every helper
+# tool it execs (gphoto2 + plugins, ffmpeg, exiftool, patched aft-mtp-cli)
+# with the full dylib closure bundled and install names rewritten, ad-hoc
+# signed. Unsigned-by-Apple: first launch needs right-click -> Open.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 WORK="$ROOT/dist/macos"
-OUT="$WORK/fuji-cull"
+APP="$WORK/fuji-cull.app"
 ARCH="$(uname -m)"
 BREW="$(brew --prefix)"
-rm -rf "$OUT"
-mkdir -p "$OUT"
+MACOS="$APP/Contents/MacOS"
+RES="$APP/Contents/Resources"
+LIBS="$APP/Contents/libs"
+rm -rf "$APP"
+mkdir -p "$MACOS" "$RES/perl5" "$LIBS"
 
 export CGO_CFLAGS="-I$BREW/include"
 export CGO_LDFLAGS="-L$BREW/lib"
 export PKG_CONFIG_PATH="$BREW/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
 echo "== go binaries"
-go build -trimpath -ldflags "-s -w" -o "$OUT/fuji-cull-gui" "$ROOT/cmd/fuji-cull-gui"
-go build -trimpath -ldflags "-s -w" -o "$OUT/fuji-cull" "$ROOT/cmd/fuji-cull"
-go build -trimpath -ldflags "-s -w" -o "$OUT/fuji-import" "$ROOT/cmd/fuji-import"
+go build -trimpath -ldflags "-s -w" -o "$MACOS/fuji-cull-gui" "$ROOT/cmd/fuji-cull-gui"
+go build -trimpath -ldflags "-s -w" -o "$MACOS/fuji-cull" "$ROOT/cmd/fuji-cull"
+go build -trimpath -ldflags "-s -w" -o "$MACOS/fuji-import" "$ROOT/cmd/fuji-import"
 
 echo "== patched aft-mtp-cli (partial reads)"
 AFT="$WORK/aft"
@@ -32,27 +36,71 @@ if [ ! -x "$AFT/build/cli/aft-mtp-cli" ]; then
     -DBUILD_QT_UI=OFF -DBUILD_FUSE=OFF -DBUILD_SHARED_LIB=OFF
   cmake --build "$AFT/build" -j"$(sysctl -n hw.ncpu)" --target aft-mtp-cli
 fi
-cp "$AFT/build/cli/aft-mtp-cli" "$OUT/aft-mtp-cli-part"
-ln -sf aft-mtp-cli-part "$OUT/aft-mtp-cli"
+cp "$AFT/build/cli/aft-mtp-cli" "$MACOS/aft-mtp-cli-part"
+cp "$AFT/build/cli/aft-mtp-cli" "$MACOS/aft-mtp-cli"
 
-cat > "$OUT/README.md" <<EOF
-# fuji-cull (macOS $ARCH)
+echo "== helper tools"
+cp "$BREW/bin/gphoto2" "$MACOS/"
+cp "$BREW/bin/ffmpeg" "$MACOS/"
+cp "$BREW/bin/exiftool" "$MACOS/"
+# exiftool's perl module tree (brew keeps it in libexec)
+EXIF_LIB="$(dirname "$(readlink -f "$BREW/bin/exiftool")")/../lib"
+cp -R "$EXIF_LIB/." "$RES/perl5/"
+# libgphoto2 plugin trees (dlopened at runtime via CAMLIBS/IOLIBS)
+cp -R "$(pkg-config --variable=driverdir libgphoto2)" "$RES/libgphoto2"
+cp -R "$(pkg-config --variable=driverdir libgphoto2_port)" "$RES/libgphoto2_port"
 
-Runtime dependencies come from Homebrew:
+echo "== dylib closure"
+brew list dylibbundler >/dev/null 2>&1 || brew install dylibbundler
+fixup() {
+  dylibbundler -of -b -x "$1" -d "$LIBS" -p @executable_path/../libs >/dev/null
+}
+fixup "$MACOS/fuji-cull-gui"
+fixup "$MACOS/aft-mtp-cli-part"
+fixup "$MACOS/aft-mtp-cli"
+fixup "$MACOS/gphoto2"
+fixup "$MACOS/ffmpeg"
+for plugin in "$RES/libgphoto2"/*.so "$RES/libgphoto2_port"/*.so; do
+  [ -f "$plugin" ] && fixup "$plugin"
+done
 
-    brew install sdl2 sdl2_ttf jpeg-turbo mpv libgphoto2 gphoto2 ffmpeg exiftool
-
-- \`fuji-cull-gui\` — native culling UI (links the brew dylibs above)
-- \`fuji-cull\` — web UI server (browse from any device)
-- \`fuji-import\` — headless bulk importer
-- \`aft-mtp-cli-part\` — patched MTP client (partial reads: thumbnails,
-  streaming); found automatically when kept next to the app binaries
-
-Keep the files in one directory and run from there, e.g.:
-
-    ./fuji-cull-gui --listen 127.0.0.1:8787
+echo "== bundle metadata"
+cat > "$APP/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>fuji-cull</string>
+  <key>CFBundleDisplayName</key><string>fuji-cull</string>
+  <key>CFBundleIdentifier</key><string>pro.zackpollard.fuji-cull</string>
+  <key>CFBundleVersion</key><string>${VERSION:-0.0.0}</string>
+  <key>CFBundleShortVersionString</key><string>${VERSION:-0.0.0}</string>
+  <key>CFBundleExecutable</key><string>fuji-cull-gui</string>
+  <key>CFBundleIconFile</key><string>fuji-cull</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>LSMinimumSystemVersion</key><string>12.0</string>
+</dict></plist>
 EOF
 
-TAR="$WORK/fuji-cull-macos-$ARCH.tar.gz"
-tar -czf "$TAR" -C "$WORK" fuji-cull
-echo "== done: $TAR"
+echo "== icon"
+ICONSET="$WORK/fuji-cull.iconset"
+rm -rf "$ICONSET"; mkdir -p "$ICONSET"
+for sz in 16 32 128 256 512; do
+  sips -z $sz $sz "$ROOT/assets/fuji-cull.png" --out "$ICONSET/icon_${sz}x${sz}.png" >/dev/null
+  sips -z $((sz*2)) $((sz*2)) "$ROOT/assets/fuji-cull.png" --out "$ICONSET/icon_${sz}x${sz}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$RES/fuji-cull.icns"
+
+echo "== ad-hoc sign"
+find "$LIBS" -name "*.dylib" -exec codesign --force -s - {} \;
+find "$RES/libgphoto2" "$RES/libgphoto2_port" -name "*.so" -exec codesign --force -s - {} \; 2>/dev/null || true
+for bin in "$MACOS"/*; do
+  [ -f "$bin" ] && file "$bin" | grep -q Mach-O && codesign --force -s - "$bin"
+done
+codesign --force -s - "$APP"
+
+echo "== dmg"
+DMG="$WORK/fuji-cull-macos-$ARCH.dmg"
+rm -f "$DMG"
+hdiutil create -volname fuji-cull -srcfolder "$APP" -ov -format UDZO "$DMG" >/dev/null
+echo "== done: $DMG"
