@@ -217,7 +217,7 @@ func (p *Prefetcher) fetchOrientBatch(ctx context.Context, batch []*photo.Shot) 
 			Dest:     filepath.Join(tmp, s.SafeID()+".bin"),
 		}
 	}
-	cctx, cancel := context.WithTimeout(ctx, 60*time.Second+time.Duration(len(batch))*500*time.Millisecond)
+	cctx, cancel := context.WithTimeout(ctx, 20*time.Second+time.Duration(len(batch))*100*time.Millisecond) // ~10s at healthy rate; a USB wedge costs <1 min, not 3
 	runErr := mtppart.GetParts(cctx, reqs)
 	canceled := ctx.Err() != nil || cctx.Err() != nil
 	cancel()
@@ -315,7 +315,7 @@ func (p *Prefetcher) fetchHealBatch(ctx context.Context, batch []*photo.Shot) {
 			Dest:     filepath.Join(tmp, s.SafeID()+".bin"),
 		}
 	}
-	cctx, cancel := context.WithTimeout(ctx, 60*time.Second+time.Duration(len(batch))*500*time.Millisecond)
+	cctx, cancel := context.WithTimeout(ctx, 20*time.Second+time.Duration(len(batch))*100*time.Millisecond) // ~10s at healthy rate; a USB wedge costs <1 min, not 3
 	runErr := mtppart.GetParts(cctx, reqs)
 	canceled := ctx.Err() != nil || cctx.Err() != nil
 	cancel()

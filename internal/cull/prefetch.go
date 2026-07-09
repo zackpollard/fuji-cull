@@ -856,7 +856,7 @@ func (p *Prefetcher) fetchVideoPosterBatch(ctx context.Context, batch []*photo.S
 			Dest:     filepath.Join(tmp, s.SafeID()+".mov"),
 		}
 	}
-	cctx, cancel := context.WithTimeout(ctx, 60*time.Second+time.Duration(len(batch))*5*time.Second)
+	cctx, cancel := context.WithTimeout(ctx, 20*time.Second+time.Duration(len(batch))*2*time.Second) // ~4s at healthy rate
 	runErr := mtppart.GetParts(cctx, reqs)
 	canceled := ctx.Err() != nil || cctx.Err() != nil
 	cancel()
