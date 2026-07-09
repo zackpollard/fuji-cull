@@ -38,7 +38,7 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	return c.HTTP.Do(req)
 }
 
-// uploadResponse matches Immich's /api/asset/upload response.
+// uploadResponse matches Immich's /api/assets response.
 type uploadResponse struct {
 	ID        string `json:"id"`
 	Status    string `json:"status"`    // newer API: "created" | "duplicate"
@@ -98,7 +98,7 @@ func (c *Client) Upload(ctx context.Context, f *photo.FileEntry) (string, bool, 
 		}
 	}()
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.URL+"/api/asset/upload", pr)
+	req, err := http.NewRequestWithContext(ctx, "POST", c.URL+"/api/assets", pr)
 	if err != nil {
 		return "", false, err
 	}
@@ -159,7 +159,7 @@ func (c *Client) BulkCheck(ctx context.Context, ids, checksumsB64 []string) (map
 		return nil, err
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, "POST",
-		c.URL+"/api/asset/bulk-upload-check", bytes.NewReader(body))
+		c.URL+"/api/assets/bulk-upload-check", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +189,7 @@ func (c *Client) BulkCheck(ctx context.Context, ids, checksumsB64 []string) (map
 // EnsureAlbum returns the id of an album with the given name, creating it if absent.
 func (c *Client) EnsureAlbum(ctx context.Context, name string) (string, error) {
 	// First search by name.
-	req, err := http.NewRequestWithContext(ctx, "GET", c.URL+"/api/album", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", c.URL+"/api/albums", nil)
 	if err != nil {
 		return "", err
 	}
@@ -217,7 +217,7 @@ func (c *Client) EnsureAlbum(ctx context.Context, name string) (string, error) {
 	}
 	// Create.
 	body, _ := json.Marshal(map[string]any{"albumName": name})
-	req, _ = http.NewRequestWithContext(ctx, "POST", c.URL+"/api/album", bytes.NewReader(body))
+	req, _ = http.NewRequestWithContext(ctx, "POST", c.URL+"/api/albums", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err = c.do(req)
 	if err != nil {
@@ -248,7 +248,7 @@ func (c *Client) AddToAlbum(ctx context.Context, albumID string, assetIDs []stri
 		}
 		body, _ := json.Marshal(map[string]any{"ids": assetIDs[start:end]})
 		req, err := http.NewRequestWithContext(ctx, "PUT",
-			c.URL+"/api/album/"+albumID+"/assets", bytes.NewReader(body))
+			c.URL+"/api/albums/"+albumID+"/assets", bytes.NewReader(body))
 		if err != nil {
 			return err
 		}
