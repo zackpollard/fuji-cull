@@ -34,6 +34,18 @@ func TestJpegmetaOrientation(t *testing.T) {
 	}
 }
 
+func TestJpegmetaRAF(t *testing.T) {
+	// RAF header: FUJIFILM magic, embedded-JPEG offset big-endian at byte 84
+	jpg := exifHead(6)
+	raf := make([]byte, 148)
+	copy(raf, "FUJIFILMCCD-RAW ")
+	raf[84], raf[85], raf[86], raf[87] = 0, 0, 0, 148
+	raf = append(raf, jpg...)
+	if got := jpegmeta.Orientation(raf); got != 6 {
+		t.Errorf("RAF-embedded orientation parsed as %d, want 6", got)
+	}
+}
+
 func TestNormalizeRGBA(t *testing.T) {
 	// 2x1 image: red at (0,0), blue at (1,0)
 	m := image.NewRGBA(image.Rect(0, 0, 2, 1))

@@ -4,6 +4,24 @@
 // APP1 sits directly after SOI; 128 KB is ample).
 package jpegmeta
 
+// jpegStream returns the JPEG byte stream inside data: data itself for JPEG
+// files, or the embedded preview JPEG for Fuji RAF files (whose header
+// stores the preview's offset big-endian at byte 84 — the preview and its
+// EXIF sit comfortably inside a 128 KB head read).
+func jpegStream(data []byte) []byte {
+	if len(data) >= 2 && data[0] == 0xFF && data[1] == 0xD8 {
+		return data
+	}
+	if len(data) < 92 || string(data[:8]) != "FUJIFILM" {
+		return nil
+	}
+	off := int(data[84])<<24 | int(data[85])<<16 | int(data[86])<<8 | int(data[87])
+	if off <= 0 || off+2 > len(data) || data[off] != 0xFF || data[off+1] != 0xD8 {
+		return nil
+	}
+	return data[off:]
+}
+
 // app1 returns the TIFF payload of the JPEG's APP1/Exif segment, or nil.
 func app1(data []byte) []byte {
 	i := 2
@@ -80,9 +98,9 @@ func (t tiff) findTag(ifd, tag int) int {
 }
 
 // Orientation extracts the EXIF orientation (1-8; 1 = upright) from a JPEG
-// byte stream. Returns 1 when no orientation tag is present.
+// or Fuji RAF byte stream. Returns 1 when no orientation tag is present.
 func Orientation(data []byte) int {
-	t, ok := newTIFF(app1(data))
+	t, ok := newTIFF(app1(jpegStream(data)))
 	if !ok {
 		return 1
 	}
@@ -99,7 +117,7 @@ func Orientation(data []byte) int {
 // embed the same 160×120 preview that MTP GetThumb serves, so a file head
 // can substitute for a thumbnail transfer entirely.
 func Thumbnail(data []byte) []byte {
-	t, ok := newTIFF(app1(data))
+	t, ok := newTIFF(app1(jpegStream(data)))
 	if !ok {
 		return nil
 	}

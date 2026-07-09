@@ -229,7 +229,7 @@ func (p *Prefetcher) fetchOrientBatch(ctx context.Context, batch []*photo.Shot) 
 		if err != nil || len(head) == 0 {
 			continue // not transferred (cancel/error); retry naturally
 		}
-		if head[0] != 0xFF || head[1] != 0xD8 {
+		if !mediaHead(head) {
 			garbage++
 			continue
 		}
@@ -253,22 +253,32 @@ func (p *Prefetcher) fetchOrientBatch(ctx context.Context, batch []*photo.Shot) 
 	}
 }
 
-/* ── head-heal sweep ──────────────────────────────────────── */
+/* ── head sweep (primary thumbnail + orientation path) ────── */
 
-// The camera cannot serve thumbnails for shots past its thumbnail-DB
-// capacity (the stale-buffer fragment bug), but every Fuji JPG embeds the
-// same 160×120 preview in its EXIF header — a 128 KB head pull heals a
-// thumbnail ~1000× cheaper than the old path (full 10 MB image pulled one
-// per session, decoded and downscaled: ~0.3 shots/s vs ~150 heads/s).
+// Every Fuji JPG embeds the same 160×120 preview MTP GetThumb serves (RAFs
+// embed a preview JPEG that carries one too), so a single 128 KB head pull
+// yields the thumbnail AND the EXIF orientation together — one pass at ~150
+// shots/s versus gphoto2's ~15 thumbs/s plus a separate orientation sweep.
+// It also sidesteps the camera's broken thumbnail DB entirely (the
+// stale-buffer fragment bug). gphoto2 remains the fallback when the
+// partial-read binary is missing or the breaker is tripped.
 const healHeadSize = 128 << 10
 
-// pickHealBatchLocked selects camera-impossible shots not yet head-healed.
+// mediaHead reports whether bytes begin like a JPEG or a Fuji RAF (whose
+// embedded preview jpegmeta reads transparently).
+func mediaHead(b []byte) bool {
+	return (len(b) >= 2 && b[0] == 0xFF && b[1] == 0xD8) ||
+		(len(b) >= 8 && string(b[:8]) == "FUJIFILM")
+}
+
+// pickHealBatchLocked selects photos still lacking thumbnails (fresh and
+// camera-impossible alike) that head reads haven't been tried on.
 func (p *Prefetcher) pickHealBatchLocked(n int) []*photo.Shot {
 	if !p.thumbRetryAt.IsZero() && time.Now().Before(p.thumbRetryAt) {
 		return nil
 	}
 	needs := func(s *photo.Shot) bool {
-		return s.Kind == "photo" && p.thumbs[s.ID] == thumbFailed &&
+		return s.Kind == "photo" && p.thumbs[s.ID] != thumbHave &&
 			!p.healTried[s.ID] && s.ObjectIDs[s.DisplayExt()] != ""
 	}
 	origin := p.thumbOriginLocked()
@@ -317,7 +327,7 @@ func (p *Prefetcher) fetchHealBatch(ctx context.Context, batch []*photo.Shot) {
 		if err != nil || len(head) == 0 {
 			continue // not transferred (cancel/error); retry naturally
 		}
-		if head[0] != 0xFF || head[1] != 0xD8 {
+		if !mediaHead(head) {
 			garbage++
 			continue
 		}
@@ -328,7 +338,9 @@ func (p *Prefetcher) fetchHealBatch(ctx context.Context, batch []*photo.Shot) {
 		p.healTried[s.ID] = true
 		th := jpegmeta.Thumbnail(head)
 		if th == nil {
-			bare++ // no embedded thumbnail: full-image generator's problem
+			// No embedded thumbnail: fresh shots fall through to the gphoto2
+			// sweep, camera-impossible ones to the full-image generator.
+			bare++
 			continue
 		}
 		tmpFile := p.ThumbPath(s) + ".heal"
@@ -345,7 +357,7 @@ func (p *Prefetcher) fetchHealBatch(ctx context.Context, batch []*photo.Shot) {
 	}
 	if garbage > 0 {
 		p.markPartSickLocked()
-		log.Printf("thumbs: %d/%d heal heads returned non-JPEG data — camera partial reads are UNTRUSTWORTHY — pausing partial reads (power-cycle the camera; probing every 3m)", garbage, len(batch))
+		log.Printf("thumbs: %d/%d head reads returned garbage — pausing partial reads (power-cycle the camera; probing every 20s)", garbage, len(batch))
 	}
 	p.mu.Unlock()
 

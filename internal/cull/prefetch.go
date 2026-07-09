@@ -465,20 +465,19 @@ func (p *Prefetcher) Run() {
 					break
 				}
 				if p.thumbFetcher != nil {
-					// Idle-work priority: orientation heads first (one batch
-					// covers 256 shots in ~5 s, most of it fixed session
-					// setup — the cheap sweep finishes before anything slow
-					// gets the link), then thumbnails (~15 s per 150-shot
-					// batch), then video posters (~8 MB for one video).
+					// Idle-work priority: the head sweep first — one 128 KB
+					// read per shot yields thumbnail AND orientation together
+					// (~150 shots/s), so it precedes the orientation-only
+					// sweep (which then only mops up shots that already had
+					// thumbs) and leaves the gphoto2 sweep as fallback for
+					// shots whose heads carry no embedded thumbnail or when
+					// partial reads are unavailable. Posters last.
 					if p.partBin != "" && !p.partSick {
-						if orientBatch = p.pickOrientBatchLocked(orientBatchSize); len(orientBatch) > 0 {
+						if healBatch = p.pickHealBatchLocked(orientBatchSize); len(healBatch) > 0 {
 							thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
 							break
 						}
-						// Camera-impossible thumbs heal from EXIF-embedded
-						// previews in file heads — same cost as the
-						// orientation sweep, ~1000× cheaper than full pulls.
-						if healBatch = p.pickHealBatchLocked(orientBatchSize); len(healBatch) > 0 {
+						if orientBatch = p.pickOrientBatchLocked(orientBatchSize); len(orientBatch) > 0 {
 							thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
 							break
 						}
