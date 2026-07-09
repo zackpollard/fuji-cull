@@ -17,7 +17,9 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -162,6 +164,13 @@ func (c *texCache) get(id string) *texEntry {
 	return e
 }
 
+func (c *texCache) flush() {
+	for k, e := range c.m {
+		e.tex.Destroy()
+		delete(c.m, k)
+	}
+}
+
 func (c *texCache) drop(id string) {
 	if e := c.m[id]; e != nil {
 		e.tex.Destroy()
@@ -211,8 +220,9 @@ type ui struct {
 	pool    *decodePool
 	ren     *sdl.Renderer
 	win     *sdl.Window
-	font    *ttf.Font
-	fontSm  *ttf.Font
+	font     *ttf.Font
+	fontSm   *ttf.Font
+	fontPath string
 
 	shots     []*photo.Shot
 	decisions map[string]string
@@ -281,6 +291,35 @@ const (
 	modeGrid
 	modeImport
 )
+
+// All layout happens in physical drawable pixels. dpr is the drawable/window
+// ratio (2 on macOS retina - drawing in window points would fill only the
+// top-left quarter); userScale is the Ctrl+/- UI zoom, persisted across runs.
+// Mouse events arrive in points and are scaled by dpr only.
+var (
+	dpr       = 1.0
+	userScale = 1.0
+)
+
+func sc(v int32) int32 { return int32(float64(v)*dpr*userScale + 0.5) }
+
+func uiScalePath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "fuji-cull", "ui-scale")
+}
+
+func loadUserScale() {
+	if raw, err := os.ReadFile(uiScalePath()); err == nil {
+		if v, err := strconv.ParseFloat(strings.TrimSpace(string(raw)), 64); err == nil && v >= 0.5 && v <= 3 {
+			userScale = v
+		}
+	}
+}
+
+func saveUserScale() {
+	_ = os.MkdirAll(filepath.Dir(uiScalePath()), 0o755)
+	_ = os.WriteFile(uiScalePath(), []byte(fmt.Sprintf("%.2f", userScale)), 0o644)
+}
 
 // videoPlayer is what the UI needs from an embedded player; satisfied by
 // both the GL (zero-copy) and software mpv wrappers.
@@ -396,19 +435,23 @@ func run(app *cull.App, apiBase string, decodeAhead, decodeBehind int) error {
 	}
 	defer ren.Destroy()
 
-	fontPath := findMonoFont()
-	font, err := ttf.OpenFont(fontPath, 15)
-	if err != nil {
-		return fmt.Errorf("font %s: %w", fontPath, err)
+	// physical drawable pixels per window point (2 on macOS retina)
+	if ow, _, err := ren.GetOutputSize(); err == nil {
+		if ww, _ := win.GetSize(); ww > 0 && ow > ww {
+			dpr = float64(ow) / float64(ww)
+			log.Printf("gui: hidpi drawable scale %.2f", dpr)
+		}
 	}
-	fontSm, _ := ttf.OpenFont(fontPath, 12)
+	loadUserScale()
+
+	fontPath := findMonoFont()
 
 	workers := runtime.NumCPU() - 2
 	if workers < 2 {
 		workers = 2
 	}
 	u := &ui{
-		app: app, apiBase: apiBase, ren: ren, win: win, font: font, fontSm: fontSm,
+		app: app, apiBase: apiBase, ren: ren, win: win, fontPath: fontPath,
 		pool:        newDecodePool(app, workers),
 		decodeAhead: decodeAhead, decodeBehind: decodeBehind,
 		full: newTexCache(16),
@@ -419,6 +462,9 @@ func run(app *cull.App, apiBase string, decodeAhead, decodeBehind int) error {
 		thumbs: newTexCache(1500),
 		texts:  newTexCache(256),
 		decisions: map[string]string{},
+	}
+	if err := u.reloadFonts(); err != nil {
+		return fmt.Errorf("font %s: %w", fontPath, err)
 	}
 	log.Printf("gui: %d turbo decode workers", workers)
 
@@ -480,7 +526,7 @@ func (u *ui) frame() bool {
 	}
 
 	// window resize: refit the viewer transform (zoomMem preserved)
-	if w, h := u.win.GetSize(); w != u.lastWinW || h != u.lastWinH {
+	if w, h := u.outSize(); w != u.lastWinW || h != u.lastWinH {
 		u.lastWinW, u.lastWinH = w, h
 		u.curTexID = ""
 	}
@@ -499,9 +545,9 @@ func (u *ui) frame() bool {
 			// Discovery retries forever; failure means no camera right now.
 			msg, sub = "WAITING FOR CAMERA", errMsg+" — retrying"
 		}
-		w, h := u.win.GetSize()
-		u.text(u.font, msg, colDim, w/2, h/2-14, true)
-		u.text(u.fontSm, sub, colDim, w/2, h/2+12, true)
+		w, h := u.outSize()
+		u.text(u.font, msg, colDim, w/2, h/2-sc(14), true)
+		u.text(u.fontSm, sub, colDim, w/2, h/2+sc(12), true)
 	} else {
 		u.frameN++
 		if u.fetchStates == nil || u.frameN%30 == 0 {
@@ -607,9 +653,19 @@ func (u *ui) uploadReady() {
 
 /* ── viewer draw + transform ──────────────────────────────── */
 
+// outSize is the renderer drawable size in physical pixels (differs from
+// the window size on macOS retina).
+func (u *ui) outSize() (int32, int32) {
+	w, h, err := u.ren.GetOutputSize()
+	if err != nil {
+		return u.win.GetSize()
+	}
+	return w, h
+}
+
 func (u *ui) stageRect() sdl.Rect {
-	w, h := u.win.GetSize()
-	return sdl.Rect{X: 10, Y: 44, W: w - 20, H: h - 44 - 66}
+	w, h := u.outSize()
+	return sdl.Rect{X: sc(10), Y: sc(44), W: w - sc(20), H: h - sc(44) - sc(66)}
 }
 
 func (u *ui) drawViewer() {
@@ -729,12 +785,12 @@ func (u *ui) zoomAt(px, py float64, newScale float64) {
 /* ── header + strip ───────────────────────────────────────── */
 
 func (u *ui) drawHeader() {
-	w, _ := u.win.GetSize()
-	u.fillRect(sdl.Rect{X: 0, Y: 0, W: w, H: 38}, colPanel)
+	w, _ := u.outSize()
+	u.fillRect(sdl.Rect{X: 0, Y: 0, W: w, H: sc(38)}, colPanel)
 	s := u.shots[u.cursor]
-	u.text(u.font, fmt.Sprintf("%04d/%04d", u.cursor+1, len(u.shots)), colFG, 14, 10, false)
+	u.text(u.font, fmt.Sprintf("%04d/%04d", u.cursor+1, len(u.shots)), colFG, sc(14), sc(10), false)
 	name := fmt.Sprintf("%s / %s", s.Folder, s.Base)
-	u.text(u.font, name, colFG, w/2, 10, true)
+	u.text(u.font, name, colFG, w/2, sc(10), true)
 	keep, rej := 0, 0
 	for _, d := range u.decisions {
 		if d == "keep" {
@@ -743,7 +799,7 @@ func (u *ui) drawHeader() {
 			rej++
 		}
 	}
-	u.text(u.font, fmt.Sprintf("K %d   X %d   · %d", keep, rej, len(u.shots)-keep-rej), colDim, w-260, 10, false)
+	u.text(u.font, fmt.Sprintf("K %d   X %d   · %d", keep, rej, len(u.shots)-keep-rej), colDim, w-sc(260), sc(10), false)
 	if states, have := u.app.ThumbProgress(); states != "" {
 		total, healing := 0, 0
 		for _, c := range states {
@@ -759,7 +815,7 @@ func (u *ui) drawHeader() {
 			if healing > 0 {
 				label += fmt.Sprintf(" · %d healing", healing)
 			}
-			u.text(u.fontSm, label, colDim, w-470, 12, false)
+			u.text(u.fontSm, label, colDim, w-sc(470), sc(12), false)
 		}
 	}
 	if u.orients != "" {
@@ -773,7 +829,7 @@ func (u *ui) drawHeader() {
 			}
 		}
 		if mdKnown < mdTotal {
-			u.text(u.fontSm, fmt.Sprintf("MD %d/%d", mdKnown, mdTotal), colDim, w-640, 12, false)
+			u.text(u.fontSm, fmt.Sprintf("MD %d/%d", mdKnown, mdTotal), colDim, w-sc(640), sc(12), false)
 		}
 	}
 	if u.camBulkSick || u.camPartSick {
@@ -783,19 +839,18 @@ func (u *ui) drawHeader() {
 			label = "CAMERA PARTIAL-READS SICK · POWER-CYCLE"
 		}
 		if u.frameN/30%2 == 0 {
-			u.text(u.fontSm, label, colReject, w-870, 12, false)
+			u.text(u.fontSm, label, colReject, w-sc(870), sc(12), false)
 		}
 	}
 }
 
-const tickW, tickH, tickGap = 26, 40, 2
 
 func (u *ui) drawStrip() {
-	w, h := u.win.GetSize()
-	stripY := h - 62
-	u.fillRect(sdl.Rect{X: 0, Y: stripY, W: w, H: 62}, colPanel)
+	w, h := u.outSize()
+	stripY := h - sc(62)
+	u.fillRect(sdl.Rect{X: 0, Y: stripY, W: w, H: sc(62)}, colPanel)
 
-	pitch := int32(tickW + tickGap)
+	pitch := sc(26) + sc(2)
 	visible := int(w/pitch) + 2
 	first := u.cursor - visible/2
 	for i := 0; i < visible; i++ {
@@ -805,12 +860,12 @@ func (u *ui) drawStrip() {
 		}
 		s := u.shots[idx]
 		x := int32(i)*pitch + (w-int32(visible)*pitch)/2
-		r := sdl.Rect{X: x, Y: stripY + 8, W: tickW, H: tickH}
+		r := sdl.Rect{X: x, Y: stripY + sc(8), W: sc(26), H: sc(40)}
 		u.fillRect(r, colTickBG)
 		if tp, ok := u.app.ThumbPathIfReady(s.ID); ok {
 			if te := u.thumbTex(s.ID, tp, u.orientAt(idx)); te != nil {
 				// cover-fit the (upright) thumb into the tick
-				src := coverSrc(te.w, te.h, tickW, tickH)
+				src := coverSrc(te.w, te.h, sc(26), sc(40))
 				u.ren.Copy(te.tex, &src, &r)
 			}
 		}
@@ -825,7 +880,7 @@ func (u *ui) drawStrip() {
 			stripe = &colBuffered
 		}
 		if stripe != nil {
-			u.fillRect(sdl.Rect{X: x, Y: stripY + 8, W: tickW, H: 3}, *stripe)
+			u.fillRect(sdl.Rect{X: x, Y: stripY + sc(8), W: sc(26), H: sc(3)}, *stripe)
 		}
 		// decision bar
 		if d := u.decisions[s.ID]; d != "" {
@@ -833,15 +888,15 @@ func (u *ui) drawStrip() {
 			if d == "reject" {
 				c = colReject
 			}
-			u.fillRect(sdl.Rect{X: x, Y: stripY + 8 + tickH - 4, W: tickW, H: 4}, c)
+			u.fillRect(sdl.Rect{X: x, Y: stripY + sc(8) + sc(40) - sc(4), W: sc(26), H: sc(4)}, c)
 		}
 		if idx == u.cursor {
 			u.ren.SetDrawColor(colFG.R, colFG.G, colFG.B, 255)
-			out := sdl.Rect{X: r.X - 2, Y: r.Y - 2, W: r.W + 4, H: r.H + 4}
+			out := sdl.Rect{X: r.X - sc(2), Y: r.Y - sc(2), W: r.W + sc(4), H: r.H + sc(4)}
 			u.ren.DrawRect(&out)
 		}
 	}
-	u.text(u.fontSm, "A/D ←→ nav   W/K keep   S/X reject   E/C clear   U undo   G next   T grid   I import   L video   Z 1:1   Space pause   ,/. seek   Ctrl+Q quit", colDim, w/2, h-16, true)
+	u.text(u.fontSm, "A/D ←→ nav   W/K keep   S/X reject   E/C clear   U undo   G next   T grid   I import   L video   Z 1:1   Space pause   ,/. seek   Ctrl+Q quit", colDim, w/2, h-sc(16), true)
 }
 
 func coverSrc(tw, th, dw, dh int32) sdl.Rect {
@@ -857,6 +912,44 @@ func coverSrc(tw, th, dw, dh int32) sdl.Rect {
 
 // orientAt is the shot's EXIF orientation per the server store (1 = upright
 // or unknown). Thumb files carry no EXIF, so rotation is applied here.
+// reloadFonts opens the UI fonts at the current effective scale.
+func (u *ui) reloadFonts() error {
+	f, err := ttf.OpenFont(u.fontPath, int(15*dpr*userScale+0.5))
+	if err != nil {
+		return err
+	}
+	fs, err := ttf.OpenFont(u.fontPath, int(12*dpr*userScale+0.5))
+	if err != nil {
+		f.Close()
+		return err
+	}
+	if u.font != nil {
+		u.font.Close()
+	}
+	if u.fontSm != nil {
+		u.fontSm.Close()
+	}
+	u.font, u.fontSm = f, fs
+	return nil
+}
+
+// applyScale re-derives everything that depends on the UI scale after a
+// Ctrl+/- change: fonts, cached text textures, and the viewer fit.
+func (u *ui) applyScale() {
+	if userScale < 0.5 {
+		userScale = 0.5
+	}
+	if userScale > 3 {
+		userScale = 3
+	}
+	if err := u.reloadFonts(); err != nil {
+		log.Printf("gui: font reload: %v", err)
+	}
+	u.texts.flush()
+	u.curTexID = "" // refit the viewer to the new stage rect
+	saveUserScale()
+}
+
 func (u *ui) orientAt(idx int) int {
 	if idx >= 0 && idx < len(u.orients) && u.orients[idx] > '1' && u.orients[idx] <= '8' {
 		return int(u.orients[idx] - '0')
@@ -955,6 +1048,22 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 			u.decide("")
 		case sdl.K_u:
 			u.undoLast()
+		// Ctrl +/-/0: UI zoom (persisted)
+		case sdl.K_EQUALS, sdl.K_KP_PLUS:
+			if e.Keysym.Mod&sdl.KMOD_CTRL != 0 {
+				userScale *= 1.1
+				u.applyScale()
+			}
+		case sdl.K_MINUS, sdl.K_KP_MINUS:
+			if e.Keysym.Mod&sdl.KMOD_CTRL != 0 {
+				userScale /= 1.1
+				u.applyScale()
+			}
+		case sdl.K_0:
+			if e.Keysym.Mod&sdl.KMOD_CTRL != 0 {
+				userScale = 1
+				u.applyScale()
+			}
 		case sdl.K_g:
 			u.nextUndecided()
 		case sdl.K_t:
@@ -1021,15 +1130,16 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 		if u.curTexID == "" {
 			return true
 		}
-		mx, my, _ := sdl.GetMouseState()
+		pmx, pmy, _ := sdl.GetMouseState()
 		st := u.stageRect()
 		factor := 1.0 + 0.15*float64(e.Y)
-		u.zoomAt(float64(mx-st.X), float64(my-st.Y), u.scale*factor)
+		u.zoomAt(float64(pmx)*dpr-float64(st.X), float64(pmy)*dpr-float64(st.Y), u.scale*factor)
 	case *sdl.MouseButtonEvent:
 		if e.Button == sdl.BUTTON_LEFT && u.shots != nil {
 			if e.Type == sdl.MOUSEBUTTONDOWN {
+				mx, my := int32(float64(e.X)*dpr+0.5), int32(float64(e.Y)*dpr+0.5)
 				if u.mode == modeGrid {
-					if idx := u.gridClick(e.X, e.Y); idx >= 0 {
+					if idx := u.gridClick(mx, my); idx >= 0 {
 						if idx == u.cursor {
 							u.mode = modeViewer // second click on selected opens it
 						}
@@ -1038,9 +1148,9 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 					return true
 				}
 				// filmstrip click-to-jump
-				_, h := u.win.GetSize()
-				if e.Y > h-62 {
-					if idx := u.stripClick(e.X); idx >= 0 {
+				_, h := u.outSize()
+				if my > h-sc(62) {
+					if idx := u.stripClick(mx); idx >= 0 {
 						u.nav(idx)
 					}
 					return true
@@ -1048,16 +1158,16 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 				// video seek-bar click
 				s := u.shots[u.cursor]
 				if s.Kind == "video" && u.mpv != nil && u.videoBar.W > 0 &&
-					e.Y >= u.videoBar.Y-6 && e.Y <= u.videoBar.Y+u.videoBar.H+6 &&
-					e.X >= u.videoBar.X && e.X <= u.videoBar.X+u.videoBar.W {
+					my >= u.videoBar.Y-sc(6) && my <= u.videoBar.Y+u.videoBar.H+sc(6) &&
+					mx >= u.videoBar.X && mx <= u.videoBar.X+u.videoBar.W {
 					_, dur := u.mpv.Position()
-					frac := float64(e.X-u.videoBar.X) / float64(u.videoBar.W)
+					frac := float64(mx-u.videoBar.X) / float64(u.videoBar.W)
 					u.mpv.Seek(frac*dur - func() float64 { p, _ := u.mpv.Position(); return p }())
 					return true
 				}
 				if u.scale > u.fit+1e-4 {
 					u.panning = true
-					u.panStart = [2]int32{e.X, e.Y}
+					u.panStart = [2]int32{mx, my}
 					u.panStartTx = [2]float64{u.tx, u.ty}
 				}
 			} else {
@@ -1066,8 +1176,8 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 		}
 	case *sdl.MouseMotionEvent:
 		if u.panning {
-			u.tx = u.panStartTx[0] + float64(e.X-u.panStart[0])
-			u.ty = u.panStartTx[1] + float64(e.Y-u.panStart[1])
+			u.tx = u.panStartTx[0] + float64(e.X)*dpr - float64(u.panStart[0])
+			u.ty = u.panStartTx[1] + float64(e.Y)*dpr - float64(u.panStart[1])
 			u.clampPan(u.stageRect())
 		}
 	}
@@ -1087,8 +1197,8 @@ func (u *ui) nav(i int) {
 
 // stripClick maps a click in the strip band to a shot index.
 func (u *ui) stripClick(mx int32) int {
-	w, _ := u.win.GetSize()
-	pitch := int32(tickW + tickGap)
+	w, _ := u.outSize()
+	pitch := sc(26) + sc(2)
 	visible := int(w/pitch) + 2
 	first := u.cursor - visible/2
 	off := (w - int32(visible)*pitch) / 2

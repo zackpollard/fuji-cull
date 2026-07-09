@@ -35,8 +35,8 @@ func (u *ui) drawVideo(st sdl.Rect) {
 		} else if state == "failed" {
 			msg, sub = "PULL FAILED", "press L to retry"
 		}
-		u.text(u.font, msg, colAmber, st.X+st.W/2, st.Y+st.H/2-14, true)
-		u.text(u.fontSm, sub, colDim, st.X+st.W/2, st.Y+st.H/2+12, true)
+		u.text(u.font, msg, colAmber, st.X+st.W/2, st.Y+st.H/2-sc(14), true)
+		u.text(u.fontSm, sub, colDim, st.X+st.W/2, st.Y+st.H/2+sc(12), true)
 		return
 	}
 
@@ -80,7 +80,7 @@ func (u *ui) drawVideo(st sdl.Rect) {
 		}
 	}
 	if streaming {
-		u.text(u.fontSm, "STREAMING FROM CAMERA · L pulls a local copy", colDim, st.X+st.W/2, st.Y+16, true)
+		u.text(u.fontSm, "STREAMING FROM CAMERA · L pulls a local copy", colDim, st.X+st.W/2, st.Y+sc(16), true)
 	}
 
 	// keep the video texture matched to the stage size. GL path: a TARGET
@@ -123,7 +123,7 @@ func (u *ui) drawVideo(st sdl.Rect) {
 	// seek bar
 	pos, dur := u.mpv.Position()
 	if dur > 0 {
-		bar := sdl.Rect{X: st.X + 20, Y: st.Y + st.H - 26, W: st.W - 40, H: 6}
+		bar := sdl.Rect{X: st.X + sc(20), Y: st.Y + st.H - sc(26), W: st.W - sc(40), H: sc(6)}
 		u.fillRect(bar, sdl.Color{R: 30, G: 32, B: 30, A: 220})
 		fill := bar
 		fill.W = int32(float64(bar.W) * (pos / dur))
@@ -133,7 +133,7 @@ func (u *ui) drawVideo(st sdl.Rect) {
 		if u.mpv.Paused() {
 			label += "  ⏸"
 		}
-		u.text(u.fontSm, label, colFG, st.X+st.W/2, st.Y+st.H-48, true)
+		u.text(u.fontSm, label, colFG, st.X+st.W/2, st.Y+st.H-sc(48), true)
 	}
 }
 

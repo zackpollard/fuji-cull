@@ -7,15 +7,16 @@ import (
 )
 
 // Grid view: full-window thumbnail contact sheet. Same culling keys as the
-// viewer; T/Escape return, Enter opens the shot in the viewer.
-const (
-	cellW, cellH, cellGap = 148, 100, 6
-	gridPad               = 12
-)
+// viewer; T/Escape return, Enter opens the shot in the viewer. Cell metrics
+// scale with the UI (see sc()).
+func cellW() int32 { return sc(148) }
+func cellH() int32 { return sc(100) }
+func cellGap() int32 { return sc(6) }
+func gridPad() int32 { return sc(12) }
 
 func (u *ui) gridCols() int {
-	w, _ := u.win.GetSize()
-	c := int((w - gridPad*2) / (cellW + cellGap))
+	w, _ := u.outSize()
+	c := int((w - gridPad()*2) / (cellW() + cellGap()))
 	if c < 1 {
 		c = 1
 	}
@@ -23,11 +24,11 @@ func (u *ui) gridCols() int {
 }
 
 func (u *ui) drawGrid() {
-	w, h := u.win.GetSize()
+	w, h := u.outSize()
 	cols := u.gridCols()
 	rows := (len(u.shots) + cols - 1) / cols
-	rowPitch := int32(cellH + cellGap)
-	viewRows := int(h-44-gridPad) / int(rowPitch)
+	rowPitch := cellH() + cellGap()
+	viewRows := int(h-sc(44)-gridPad()) / int(rowPitch)
 
 	// Keep the cursor visible only when it MOVES — snapping every frame
 	// fights manual scrolling and makes the rest of the grid unreachable.
@@ -71,9 +72,9 @@ func (u *ui) drawGrid() {
 				break
 			}
 			s := u.shots[idx]
-			x := int32(gridPad + c*(cellW+cellGap))
-			y := 44 + int32(r)*rowPitch
-			cell := sdl.Rect{X: x, Y: y, W: cellW, H: cellH}
+			x := gridPad() + int32(c)*(cellW()+cellGap())
+			y := sc(44) + int32(r)*rowPitch
+			cell := sdl.Rect{X: x, Y: y, W: cellW(), H: cellH()}
 			u.fillRect(cell, colTickBG)
 			if tp, ok := u.app.ThumbPathIfReady(s.ID); ok {
 				// Cached textures always draw; only NEW synchronous decodes
@@ -84,25 +85,25 @@ func (u *ui) drawGrid() {
 					decodes++
 				}
 				if te != nil {
-					src := coverSrc(te.w, te.h, cellW, cellH)
+					src := coverSrc(te.w, te.h, cellW(), cellH())
 					u.ren.Copy(te.tex, &src, &cell)
 				}
 			}
 			if s.Kind == "video" {
-				u.fillRect(sdl.Rect{X: x, Y: y, W: cellW, H: 3}, colAmber)
+				u.fillRect(sdl.Rect{X: x, Y: y, W: cellW(), H: sc(3)}, colAmber)
 			}
 			if d := u.decisions[s.ID]; d != "" {
 				col := colKeep
 				if d == "reject" {
 					col = colReject
 				}
-				u.fillRect(sdl.Rect{X: x, Y: y + cellH - 4, W: cellW, H: 4}, col)
+				u.fillRect(sdl.Rect{X: x, Y: y + cellH() - sc(4), W: cellW(), H: sc(4)}, col)
 			}
 			if idx == u.cursor {
 				u.ren.SetDrawColor(colFG.R, colFG.G, colFG.B, 255)
-				out := sdl.Rect{X: x - 2, Y: y - 2, W: cellW + 4, H: cellH + 4}
+				out := sdl.Rect{X: x - sc(2), Y: y - sc(2), W: cellW() + sc(4), H: cellH() + sc(4)}
 				u.ren.DrawRect(&out)
-				in := sdl.Rect{X: x - 1, Y: y - 1, W: cellW + 2, H: cellH + 2}
+				in := sdl.Rect{X: x - sc(1), Y: y - sc(1), W: cellW() + sc(2), H: cellH() + sc(2)}
 				u.ren.DrawRect(&in)
 			}
 		}
@@ -135,17 +136,17 @@ func (u *ui) drawGrid() {
 	}
 
 	u.text(u.fontSm, fmt.Sprintf("GRID  %d/%d   T/Esc close   Enter open   W/K keep   S/X reject   E/C clear", u.cursor+1, len(u.shots)),
-		colDim, w/2, h-16, true)
+		colDim, w/2, h-sc(16), true)
 }
 
 // gridClick maps a mouse click to a cell index (-1 when outside).
 func (u *ui) gridClick(mx, my int32) int {
 	cols := u.gridCols()
-	if my < 44 {
+	if my < sc(44) {
 		return -1
 	}
-	c := int(mx-gridPad) / (cellW + cellGap)
-	r := int(my-44) / (cellH + cellGap)
+	c := int(mx-gridPad()) / int(cellW()+cellGap())
+	r := int(my-sc(44)) / int(cellH()+cellGap())
 	if c < 0 || c >= cols {
 		return -1
 	}

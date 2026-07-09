@@ -8,8 +8,8 @@ import (
 
 // Import panel: keeper summary, destination/album text fields, progress.
 func (u *ui) drawImportPanel() {
-	w, h := u.win.GetSize()
-	pw, ph := int32(640), int32(330)
+	w, h := u.outSize()
+	pw, ph := sc(640), sc(330)
 	box := sdl.Rect{X: (w - pw) / 2, Y: (h - ph) / 2, W: pw, H: ph}
 	u.fillRect(sdl.Rect{X: 0, Y: 0, W: w, H: h}, sdl.Color{R: 0, G: 0, B: 0, A: 180})
 	u.fillRect(box, colPanel)
@@ -25,17 +25,17 @@ func (u *ui) drawImportPanel() {
 		nFiles += len(s.Files)
 		size += s.TotalSize()
 	}
-	y := box.Y + 20
-	u.text(u.font, "IMPORT KEEPERS", colAmber, box.X+24, y, false)
-	y += 34
+	y := box.Y + sc(20)
+	u.text(u.font, "IMPORT KEEPERS", colAmber, box.X+sc(24), y, false)
+	y += sc(34)
 	u.text(u.fontSm, fmt.Sprintf("shots marked keep: %d    files: %d    size: %.2f GB",
-		nShots, nFiles, float64(size)/1e9), colFG, box.X+24, y, false)
-	y += 34
+		nShots, nFiles, float64(size)/1e9), colFG, box.X+sc(24), y, false)
+	y += sc(34)
 
 	field := func(label, val string, active bool) {
-		u.text(u.fontSm, label, colDim, box.X+24, y, false)
-		y += 20
-		r := sdl.Rect{X: box.X + 24, Y: y, W: pw - 48, H: 26}
+		u.text(u.fontSm, label, colDim, box.X+sc(24), y, false)
+		y += sc(20)
+		r := sdl.Rect{X: box.X + sc(24), Y: y, W: pw - sc(48), H: sc(26)}
 		u.fillRect(r, colBG)
 		c := colDim
 		if active {
@@ -59,22 +59,22 @@ func (u *ui) drawImportPanel() {
 		if !st.Running {
 			label += " — finished"
 		}
-		u.text(u.fontSm, fmt.Sprintf("%s   %d / %d", label, st.Done, st.Total), colAmber, box.X+24, y, false)
+		u.text(u.fontSm, fmt.Sprintf("%s   %d / %d", label, st.Done, st.Total), colAmber, box.X+sc(24), y, false)
 		y += 22
-		bar := sdl.Rect{X: box.X + 24, Y: y, W: pw - 48, H: 8}
+		bar := sdl.Rect{X: box.X + sc(24), Y: y, W: pw - sc(48), H: 8}
 		u.fillRect(bar, colBG)
 		if st.Total > 0 {
 			fill := bar
 			fill.W = int32(float64(bar.W) * float64(st.Done) / float64(st.Total))
 			u.fillRect(fill, colKeep)
 		}
-		y += 20
+		y += sc(20)
 		if st.Error != "" {
-			u.text(u.fontSm, st.Error, colReject, box.X+24, y, false)
-			y += 20
+			u.text(u.fontSm, st.Error, colReject, box.X+sc(24), y, false)
+			y += sc(20)
 		}
 	}
-	u.text(u.fontSm, "Enter start import    Esc close", colDim, box.X+24, box.Y+ph-30, false)
+	u.text(u.fontSm, "Enter start import    Esc close", colDim, box.X+sc(24), box.Y+ph-30, false)
 }
 
 func (u *ui) importKey(e *sdl.KeyboardEvent) {
