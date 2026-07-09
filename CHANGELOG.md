@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.1](https://github.com/zackpollard/fuji-cull/compare/v1.2.0...v1.2.1) (2026-07-09)
+
+
+### Bug Fixes
+
+* bundle sdl3 for sdl2-compat dlopen in macos app ([fd2d001](https://github.com/zackpollard/fuji-cull/commit/fd2d001833f8721e3c8b4d04b606049a85ee2595))
+* dereference sdl3 symlink when bundling ([341e25d](https://github.com/zackpollard/fuji-cull/commit/341e25d7f716e0bac6c6ae4b90df2ac2a6138e97))
+* render in physical pixels (macos retina), ctrl +/- ui zoom ([f9b2cfc](https://github.com/zackpollard/fuji-cull/commit/f9b2cfc53ac70f915e7909e4cf8e7393ec5fc042))
+* ship sdl3 under the unversioned name sdl2-compat dlopens ([f0b19a5](https://github.com/zackpollard/fuji-cull/commit/f0b19a5b25fcc283d0c4844392909c4970f4977d))
+
 ## [1.2.0](https://github.com/zackpollard/fuji-cull/compare/v1.1.0...v1.2.0) (2026-07-09)
 
 
