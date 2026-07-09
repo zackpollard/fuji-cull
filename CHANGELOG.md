@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.2.0](https://github.com/zackpollard/fuji-cull/compare/v1.1.0...v1.2.0) (2026-07-09)
+
+
+### Features
+
+* head sweep is the primary thumbnail path ([2da444a](https://github.com/zackpollard/fuji-cull/commit/2da444ac9fbb3e4a43830e0d3c8f05893e016c30))
+* macos app bundle dmg ([#5](https://github.com/zackpollard/fuji-cull/issues/5)) ([344e5b2](https://github.com/zackpollard/fuji-cull/commit/344e5b2750b99e3f27ad005d9831dc03485f0c79))
+* remember import destination and album across sessions ([eafae21](https://github.com/zackpollard/fuji-cull/commit/eafae2117cecd8e3a6c723784dae3399b5416396))
+* stack RAF+JPG pairs in Immich after upload ([#7](https://github.com/zackpollard/fuji-cull/issues/7)) ([7b0ad61](https://github.com/zackpollard/fuji-cull/commit/7b0ad612ae77fb22679809b193c775ec0c0a7df5))
+
+
+### Bug Fixes
+
+* tighten head/poster batch timeouts so usb wedges cost seconds ([82182b5](https://github.com/zackpollard/fuji-cull/commit/82182b51318ff05bde451d9849fe2c4665eaa65c))
+
+
+### Performance Improvements
+
+* batch video poster head pulls, parallel ffmpeg extraction ([454a087](https://github.com/zackpollard/fuji-cull/commit/454a0876583763f7d70a96ad555f69ff341ea485))
+
 ## [1.1.0](https://github.com/zackpollard/fuji-cull/compare/v1.0.0...v1.1.0) (2026-07-09)
 
 
