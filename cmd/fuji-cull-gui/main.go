@@ -427,17 +427,20 @@ func run(app *cull.App, apiBase string, decodeAhead, decodeBehind int) error {
 		log.Printf("gui: renderer %q is not GL; software video path", info.Name)
 	}
 
-	// Explicit frame cap: PRESENTVSYNC does not reliably block under native
+	// Adaptive frame cap: PRESENTVSYNC does not reliably block under native
 	// Wayland — sway withholds frame callbacks from unfocused/occluded
 	// windows and present returns immediately, spinning this loop at a full
-	// core while "idle". With working vsync the sleep rounds to zero.
+	// core while "idle". Real vsync never completes a frame in under ~3 ms
+	// (that would be >300 Hz), so only such spin-frames are throttled — to
+	// ~125 fps, above any tabbing cadence — and a working vsync path is
+	// never slowed at all.
 	for {
 		start := time.Now()
 		if !u.frame() {
 			break
 		}
-		if dt := time.Since(start); dt < 15*time.Millisecond {
-			time.Sleep(15*time.Millisecond - dt)
+		if dt := time.Since(start); dt < 3*time.Millisecond {
+			time.Sleep(8*time.Millisecond - dt)
 		}
 	}
 	return nil
