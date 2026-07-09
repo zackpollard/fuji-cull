@@ -22,7 +22,7 @@ func setupBundleEnv() {
 	if _, err := os.Stat(filepath.Join(res, "libgphoto2")); err != nil {
 		return // not a bundle
 	}
-	os.Setenv("PATH", macos+":"+os.Getenv("PATH"))
+	os.Setenv("PATH", macos+":"+filepath.Join(res, "bin")+":"+os.Getenv("PATH"))
 	os.Setenv("CAMLIBS", filepath.Join(res, "libgphoto2"))
 	os.Setenv("IOLIBS", filepath.Join(res, "libgphoto2_port"))
 	os.Setenv("PERL5LIB", filepath.Join(res, "perl5")+":"+os.Getenv("PERL5LIB"))

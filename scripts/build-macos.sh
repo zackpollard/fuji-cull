@@ -42,7 +42,10 @@ cp "$AFT/build/cli/aft-mtp-cli" "$MACOS/aft-mtp-cli"
 echo "== helper tools"
 cp "$BREW/bin/gphoto2" "$MACOS/"
 cp "$BREW/bin/ffmpeg" "$MACOS/"
-cp "$BREW/bin/exiftool" "$MACOS/"
+# exiftool is a perl script: bundle signing rejects non-Mach-O in MacOS/,
+# so scripts live under Resources/bin (on PATH via setupBundleEnv)
+mkdir -p "$RES/bin"
+cp "$(readlink -f "$BREW/bin/exiftool")" "$RES/bin/exiftool"
 # exiftool's perl module tree: locate Image/ExifTool.pm under the formula
 # (brew layouts vary between lib and libexec across versions)
 EXIF_ROOT="$(dirname "$(dirname "$(readlink -f "$BREW/bin/exiftool")")")"
