@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -120,8 +121,13 @@ func (im *Importer) run(app *App, dest, album string, keepers []keeperFile) {
 // copied locally, and the remainder is pulled from the camera in per-folder
 // batches. Returns the FileEntry list for the pipeline.
 func (im *Importer) copyPhase(app *App, dest string, keepers []keeperFile) ([]photo.FileEntry, error) {
+	type pullItem struct {
+		it   fetchItem
+		size int64
+		kind string
+	}
 	files := make([]photo.FileEntry, len(keepers))
-	var toPull []fetchItem
+	var toPull []pullItem
 	done := 0
 
 	for i, k := range keepers {
@@ -147,35 +153,79 @@ func (im *Importer) copyPhase(app *App, dest string, keepers []keeperFile) ([]ph
 			}
 			os.Remove(tmp)
 		}
-		toPull = append(toPull, fetchItem{
-			CameraDir: k.shot.CameraDir, Name: name,
-			ObjectID: k.shot.ObjectIDs[k.ext], Dest: target + ".tmp",
+		kind := "jpg"
+		switch {
+		case k.ext == "RAF":
+			kind = "raf"
+		case k.shot.Kind == "video":
+			kind = "mov"
+		}
+		toPull = append(toPull, pullItem{
+			it: fetchItem{
+				CameraDir: k.shot.CameraDir, Name: name,
+				ObjectID: k.shot.ObjectIDs[k.ext], Dest: target + ".tmp",
+			},
+			size: wantSize, kind: kind,
 		})
 	}
 
+	// Pull in bounded chunks with per-file validation and retry. One
+	// unbounded 859-file session once wedged an import forever, and its
+	// first hiccup aborted the whole run — every landed file is committed
+	// immediately, so failures and re-runs only ever resume.
+	const importChunk = 24
 	if len(toPull) > 0 {
 		log.Printf("import: pulling %d files from camera (%d satisfied locally)", len(toPull), done)
-		fetchErr := app.backend.Fetch(context.Background(), toPull)
-		// Promote whatever landed so a re-run skips it, even on batch error.
-		for _, it := range toPull {
-			target := it.Dest[:len(it.Dest)-len(".tmp")]
-			st, err := os.Stat(it.Dest)
-			if err != nil || st.Size() == 0 {
-				os.Remove(it.Dest)
-				if fetchErr == nil {
-					fetchErr = fmt.Errorf("pull produced no data for %s/%s", it.CameraDir, it.Name)
+	}
+	pending := toPull
+	for round := 1; len(pending) > 0 && round <= 3; round++ {
+		if round > 1 {
+			log.Printf("import: retrying %d files (round %d/3)", len(pending), round)
+			time.Sleep(10 * time.Second)
+		}
+		var failed []pullItem
+		for start := 0; start < len(pending); start += importChunk {
+			end := start + importChunk
+			if end > len(pending) {
+				end = len(pending)
+			}
+			chunk := pending[start:end]
+			items := make([]fetchItem, len(chunk))
+			for i, c := range chunk {
+				items[i] = c.it
+			}
+			ctx, cancel := context.WithTimeout(context.Background(),
+				60*time.Second+time.Duration(len(items))*15*time.Second)
+			fetchErr := app.backend.Fetch(ctx, items)
+			cancel()
+			if fetchErr != nil {
+				log.Printf("import: chunk of %d: %v", len(items), fetchErr)
+			}
+			for _, c := range chunk {
+				target := strings.TrimSuffix(c.it.Dest, ".tmp")
+				st, err := os.Stat(c.it.Dest)
+				complete := err == nil && st.Size() > 0 && (c.size == 0 || st.Size() == c.size)
+				if complete && !mediaValid(c.it.Dest, c.kind) {
+					log.Printf("import: %s/%s: transfer is stale-buffer garbage — POWER-CYCLE the camera", c.it.CameraDir, c.it.Name)
+					complete = false
 				}
-				continue
+				if !complete {
+					os.Remove(c.it.Dest)
+					failed = append(failed, c)
+					continue
+				}
+				if err := commit(c.it.Dest, target); err != nil {
+					return nil, err
+				}
+				done++
+				im.update(func(s *ImportStatus) { s.Done = done })
 			}
-			if err := commit(it.Dest, target); err != nil {
-				return nil, err
-			}
-			done++
-			im.update(func(s *ImportStatus) { s.Done = done })
 		}
-		if fetchErr != nil {
-			return nil, fmt.Errorf("camera pull: %w", fetchErr)
-		}
+		pending = failed
+	}
+	if len(pending) > 0 {
+		return nil, fmt.Errorf("camera pull: %d files failed after 3 attempts (first: %s/%s) — everything else is copied; run import again to resume",
+			len(pending), pending[0].it.CameraDir, pending[0].it.Name)
 	}
 	return files, nil
 }
