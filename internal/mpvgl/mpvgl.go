@@ -159,11 +159,11 @@ import (
 
 // CurrentContext returns the GL context current on this thread (SDL's
 // renderer context, when captured right after renderer creation).
-func CurrentContext() uintptr { return uintptr(C.current_ctx()) }
+func CurrentContext() unsafe.Pointer { return C.current_ctx() }
 
 // MakeCurrent activates a GL context captured via CurrentContext.
-func MakeCurrent(win unsafe.Pointer, ctx uintptr) {
-	C.make_current(win, unsafe.Pointer(ctx))
+func MakeCurrent(win, ctx unsafe.Pointer) {
+	C.make_current(win, ctx)
 }
 
 // Flush issues glFlush — required after rendering so the shared texture's

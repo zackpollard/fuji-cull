@@ -250,7 +250,7 @@ type ui struct {
 
 	mpv        videoPlayer
 	glVideo    bool          // GL render path available (zero-copy hwdec)
-	sdlCtx     uintptr       // SDL renderer's GL context
+	sdlCtx     unsafe.Pointer // SDL renderer's GL context
 	mpvCtx     sdl.GLContext // dedicated shared context for mpv rendering
 	videoTexID uint32        // GL name of videoTex (GL path)
 	videoID    string
@@ -416,7 +416,7 @@ func run(app *cull.App, apiBase string, decodeAhead, decodeBehind int) error {
 	if info, err := ren.GetInfo(); err == nil && strings.HasPrefix(info.Name, "opengl") {
 		u.sdlCtx = mpvgl.CurrentContext()
 		sdl.GLSetAttribute(sdl.GL_SHARE_WITH_CURRENT_CONTEXT, 1)
-		if ctx, err := win.GLCreateContext(); err == nil && u.sdlCtx != 0 {
+		if ctx, err := win.GLCreateContext(); err == nil && u.sdlCtx != nil {
 			u.mpvCtx, u.glVideo = ctx, true
 			mpvgl.MakeCurrent(unsafe.Pointer(win), u.sdlCtx)
 			log.Printf("gui: GL video path active (zero-copy hwdec)")
