@@ -69,6 +69,17 @@ for plugin in "$RES/libgphoto2"/*.so "$RES/libgphoto2_port"/*.so; do
   [ -f "$plugin" ] && fixup "$plugin"
 done
 
+echo "== sdl3"
+# Homebrew's sdl2 is sdl2-compat, which dlopens the real SDL3 at RUNTIME —
+# invisible to dylibbundler's link-time walk, so without this the app dies
+# with "Failed loading SDL3 library" on any Mac without Homebrew. dlopen of
+# a bare library name searches the caller's/main executable's rpaths, so
+# bundle libSDL3 and point an rpath at the libs dir.
+cp -P "$BREW/lib/libSDL3"*.dylib "$LIBS/"
+install_name_tool -add_rpath "@executable_path/../libs" "$MACOS/fuji-cull-gui"
+test -e "$LIBS/libSDL3.0.dylib" || { echo "libSDL3 missing from bundle"; exit 1; }
+otool -l "$MACOS/fuji-cull-gui" | grep -q "@executable_path/../libs" || { echo "rpath missing"; exit 1; }
+
 echo "== bundle metadata"
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
