@@ -357,6 +357,16 @@ func findMonoFont() string {
 	if err == nil && len(out) > 0 {
 		return strings.TrimSpace(string(out))
 	}
+	// no fontconfig (e.g. macOS): well-known monospace locations
+	for _, p := range []string{
+		"/System/Library/Fonts/Menlo.ttc",
+		"/System/Library/Fonts/Monaco.ttf",
+		"/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
 	return "/usr/share/fonts/TTF/DejaVuSansMono.ttf"
 }
 

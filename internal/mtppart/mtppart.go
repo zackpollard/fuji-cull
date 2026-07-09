@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -19,10 +20,15 @@ func Bin() string {
 		return p
 	}
 	home, _ := os.UserHomeDir()
-	for _, p := range []string{
+	candidates := []string{
 		home + "/.local/bin/aft-mtp-cli-part",
 		home + "/Source/aft-partial/build/cli/aft-mtp-cli",
-	} {
+	}
+	// release tarballs ship aft-mtp-cli-part next to the app binary
+	if exe, err := os.Executable(); err == nil {
+		candidates = append([]string{filepath.Join(filepath.Dir(exe), "aft-mtp-cli-part")}, candidates...)
+	}
+	for _, p := range candidates {
 		if st, err := os.Stat(p); err == nil && st.Mode()&0o111 != 0 {
 			return p
 		}
