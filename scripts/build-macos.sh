@@ -43,9 +43,11 @@ echo "== helper tools"
 cp "$BREW/bin/gphoto2" "$MACOS/"
 cp "$BREW/bin/ffmpeg" "$MACOS/"
 cp "$BREW/bin/exiftool" "$MACOS/"
-# exiftool's perl module tree (brew keeps it in libexec)
-EXIF_LIB="$(dirname "$(readlink -f "$BREW/bin/exiftool")")/../lib"
-cp -R "$EXIF_LIB/." "$RES/perl5/"
+# exiftool's perl module tree: locate Image/ExifTool.pm under the formula
+# (brew layouts vary between lib and libexec across versions)
+EXIF_ROOT="$(dirname "$(dirname "$(readlink -f "$BREW/bin/exiftool")")")"
+PM="$(find "$EXIF_ROOT" -name ExifTool.pm -path "*Image*" | head -1)"
+cp -R "$(dirname "$(dirname "$PM")")/." "$RES/perl5/"
 # libgphoto2 plugin trees (dlopened at runtime via CAMLIBS/IOLIBS)
 cp -R "$(pkg-config --variable=driverdir libgphoto2)" "$RES/libgphoto2"
 cp -R "$(pkg-config --variable=driverdir libgphoto2_port)" "$RES/libgphoto2_port"
