@@ -43,6 +43,7 @@ func main() {
 	flag.StringVar(&o.ImmichURL, "immich-url", os.Getenv("IMMICH_URL"), "Immich server URL (or env IMMICH_URL)")
 	flag.StringVar(&o.ImmichKey, "immich-key", os.Getenv("IMMICH_API_KEY"), "Immich API key (or env IMMICH_API_KEY)")
 	flag.StringVar(&o.ImmichAlbum, "immich-album", "", "Immich album for imported keepers (created if missing)")
+	flag.BoolVar(&o.ImmichStack, "immich-stack", false, "stack RAF+JPG pairs in Immich after upload (JPG as primary)")
 	flag.BoolVar(&o.SkipImmich, "skip-immich", false, "import to disk only; skip Immich upload + validation")
 	flag.IntVar(&o.Retries, "retries", 3, "retries for Immich upload validation gaps")
 	flag.IntVar(&o.UploadConc, "upload-concurrency", 4, "parallel Immich uploads")

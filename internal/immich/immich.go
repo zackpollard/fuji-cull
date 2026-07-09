@@ -238,6 +238,32 @@ func (c *Client) EnsureAlbum(ctx context.Context, name string) (string, error) {
 	return created.ID, nil
 }
 
+// CreateStack groups assets into one stack; the first ID becomes the primary
+// asset. Safe to repeat: Immich merges/replaces any existing stack the assets
+// belong to.
+func (c *Client) CreateStack(ctx context.Context, assetIDs []string) error {
+	body, err := json.Marshal(map[string]any{"assetIds": assetIDs})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", c.URL+"/api/stacks", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("create stack: HTTP %d: %s",
+			resp.StatusCode, truncate(string(respBody), 400))
+	}
+	return nil
+}
+
 // AddToAlbum adds asset IDs to the given album. Idempotent on Immich's side (returns "duplicate" entries).
 func (c *Client) AddToAlbum(ctx context.Context, albumID string, assetIDs []string) error {
 	const batch = 200
