@@ -67,6 +67,7 @@ func (im *Importer) Start(app *App, dest, album string) error {
 		im.mu.Unlock()
 		return fmt.Errorf("an import is already running")
 	}
+	saveImportDefaults(dest, album) // prefill the panel next session
 	im.status = ImportStatus{
 		Running:   true,
 		Phase:     "copy",

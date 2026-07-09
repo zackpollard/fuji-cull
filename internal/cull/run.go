@@ -90,6 +90,15 @@ func Start(o Options) (*App, http.Handler, error) {
 		cache = filepath.Join(home, ".cache", "fuji-cull", o.SessionName)
 	}
 
+	// Flags win; otherwise prefill from whatever the last import ran with.
+	remembered := loadImportDefaults()
+	if o.Dest == "" {
+		o.Dest = remembered.Dest
+	}
+	if o.ImmichAlbum == "" {
+		o.ImmichAlbum = remembered.Album
+	}
+
 	app := &App{
 		backend:     backend,
 		session:     session,
