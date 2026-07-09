@@ -1,0 +1,53 @@
+name: release-please
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: rp
+        with:
+          release-type: go
+
+  release-assets:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: install system deps (cgo: sdl2, sdl2_ttf, libjpeg-turbo, libmpv)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libsdl2-dev libsdl2-ttf-dev libturbojpeg0-dev libmpv-dev
+      - name: build release binaries
+        run: |
+          mkdir -p dist
+          # web binary and headless importer are pure Go: fully static
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
+            -o dist/fuji-cull-linux-amd64 ./cmd/fuji-cull
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
+            -o dist/fuji-import-linux-amd64 ./cmd/fuji-import
+          # native GUI links system sdl2/sdl2_ttf/turbojpeg/mpv at runtime
+          go build -trimpath -ldflags "-s -w" \
+            -o dist/fuji-cull-gui-linux-amd64 ./cmd/fuji-cull-gui
+      - name: upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.release-please.outputs.tag_name }}" dist/* --clobber
