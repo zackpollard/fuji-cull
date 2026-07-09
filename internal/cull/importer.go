@@ -201,12 +201,13 @@ func (im *Importer) copyPhase(app *App, dest string, keepers []keeperFile) ([]ph
 			if fetchErr != nil {
 				log.Printf("import: chunk of %d: %v", len(items), fetchErr)
 			}
+			garbage := 0
 			for _, c := range chunk {
 				target := strings.TrimSuffix(c.it.Dest, ".tmp")
 				st, err := os.Stat(c.it.Dest)
 				complete := err == nil && st.Size() > 0 && (c.size == 0 || st.Size() == c.size)
 				if complete && !mediaValid(c.it.Dest, c.kind) {
-					log.Printf("import: %s/%s: transfer is stale-buffer garbage — POWER-CYCLE the camera", c.it.CameraDir, c.it.Name)
+					garbage++
 					complete = false
 				}
 				if !complete {
@@ -219,6 +220,18 @@ func (im *Importer) copyPhase(app *App, dest string, keepers []keeperFile) ([]ph
 				}
 				done++
 				im.update(func(s *ImportStatus) { s.Done = done })
+			}
+			if garbage > 0 {
+				// Trip the breaker so the UIs show CAMERA SICK; an
+				// all-garbage chunk means every further pull is wasted —
+				// only a power cycle cures the stale-buffer state.
+				log.Printf("import: %d/%d transfers in chunk were stale-buffer garbage — POWER-CYCLE the camera", garbage, len(chunk))
+				app.prefetch.mu.Lock()
+				app.prefetch.bulkSick, app.prefetch.bulkSickAt = true, time.Now()
+				app.prefetch.mu.Unlock()
+				if garbage == len(chunk) {
+					return nil, fmt.Errorf("camera is replaying stale buffers for every transfer — power-cycle it, then run import again (everything already copied is kept)")
+				}
 			}
 		}
 		pending = failed
