@@ -444,7 +444,7 @@ func (p *Prefetcher) Wait(ctx context.Context, id string) (string, error) {
 func (p *Prefetcher) Run() {
 	for {
 		p.mu.Lock()
-		var targets, thumbBatch, orientBatch, healBatch []*photo.Shot
+		var targets, thumbBatch, orientBatch, healBatch, posterBatch []*photo.Shot
 		var probePart bool
 		var thumbCtx context.Context
 		for {
@@ -487,8 +487,7 @@ func (p *Prefetcher) Run() {
 						break
 					}
 					if p.partBin != "" && !p.partSick {
-						if v := p.pickVideoPosterLocked(); v != nil {
-							thumbBatch = []*photo.Shot{v}
+						if posterBatch = p.pickVideoPosterBatchLocked(posterBatchSize); len(posterBatch) > 0 {
 							thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
 							break
 						}
@@ -527,8 +526,8 @@ func (p *Prefetcher) Run() {
 			p.fetchOrientBatch(thumbCtx, orientBatch)
 		case len(healBatch) > 0:
 			p.fetchHealBatch(thumbCtx, healBatch)
-		case len(thumbBatch) == 1 && thumbBatch[0].Kind == "video":
-			p.fetchVideoPoster(thumbCtx, thumbBatch[0])
+		case len(posterBatch) > 0:
+			p.fetchVideoPosterBatch(thumbCtx, posterBatch)
 		default:
 			p.fetchThumbBatch(thumbCtx, thumbBatch)
 		}
@@ -807,74 +806,123 @@ func (p *Prefetcher) saveThumbFailedLocked() {
 	}
 }
 
-// pickVideoPosterLocked selects the nearest video lacking a poster.
-func (p *Prefetcher) pickVideoPosterLocked() *photo.Shot {
+// posterBatchSize bounds one poster session: 12 heads × 8 MB ≈ 96 MB ≈ 2 s
+// of link time on top of the fixed session setup that used to be paid once
+// PER VIDEO (~1 poster/s sequential; batched ≈ 4-6/s).
+const posterBatchSize = 12
+
+// pickVideoPosterBatchLocked selects the nearest videos lacking posters.
+func (p *Prefetcher) pickVideoPosterBatchLocked(n int) []*photo.Shot {
 	if !p.thumbRetryAt.IsZero() && time.Now().Before(p.thumbRetryAt) {
 		return nil
 	}
+	needs := func(s *photo.Shot) bool {
+		return s.Kind == "video" && p.thumbs[s.ID] == thumbMissing &&
+			p.thumbStalls[s.ID] < 2 && s.ObjectIDs[s.DisplayExt()] != ""
+	}
 	origin := p.thumbOriginLocked()
-	for d := 0; d < len(p.cat.Shots); d++ {
+	var batch []*photo.Shot
+	for d := 0; d < len(p.cat.Shots) && len(batch) < n; d++ {
 		for _, i := range []int{origin + d, origin - d} {
-			if i < 0 || i >= len(p.cat.Shots) {
+			if len(batch) >= n || i < 0 || i >= len(p.cat.Shots) || (d == 0 && i != origin) {
 				continue
 			}
-			s := p.cat.Shots[i]
-			if s.Kind != "video" || p.thumbs[s.ID] != thumbMissing || p.thumbStalls[s.ID] >= 2 {
-				continue
+			if s := p.cat.Shots[i]; needs(s) {
+				batch = append(batch, s)
 			}
-			if s.ObjectIDs[s.DisplayExt()] == "" {
-				continue
-			}
-			return s
 		}
 	}
-	return nil
+	return batch
 }
 
-// fetchVideoPoster pulls the head of the video (Fuji writes moov at the
-// front, so ~8 MB carries the index plus the opening frames) and extracts a
-// 240px poster via ffmpeg.
-func (p *Prefetcher) fetchVideoPoster(ctx context.Context, s *photo.Shot) {
-	cctx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	defer cancel()
+// fetchVideoPosterBatch pulls the heads of a batch of videos in ONE
+// partial-read session (Fuji writes moov at the front, so ~8 MB carries the
+// index plus the opening frames) and extracts 240px posters via parallel
+// ffmpeg. Garbage heads trip the partial-read breaker without striking
+// shots — the data was garbage, not the video.
+func (p *Prefetcher) fetchVideoPosterBatch(ctx context.Context, batch []*photo.Shot) {
 	tmp, err := os.MkdirTemp(p.thumbDir, "vp-*")
 	if err != nil {
 		return
 	}
 	defer os.RemoveAll(tmp)
-	head := filepath.Join(tmp, "head.mov")
-	if err := mtppart.GetPart(cctx, s.ObjectIDs[s.DisplayExt()], 0, 8<<20, head); err != nil {
-		p.noteVideoPosterErr(s, err)
-		return
+
+	reqs := make([]mtppart.PartReq, len(batch))
+	for i, s := range batch {
+		reqs[i] = mtppart.PartReq{
+			ObjectID: s.ObjectIDs[s.DisplayExt()],
+			Offset:   0,
+			Size:     8 << 20,
+			Dest:     filepath.Join(tmp, s.SafeID()+".mov"),
+		}
 	}
-	// A real Fuji MOV head carries "ftyp" at offset 4. Anything else is the
-	// stale-buffer firmware bug — distrust partial reads entirely and leave
-	// the shot unstruck (the data was garbage, not the video).
-	if !mediaValid(head, "mov") {
+	cctx, cancel := context.WithTimeout(ctx, 60*time.Second+time.Duration(len(batch))*5*time.Second)
+	runErr := mtppart.GetParts(cctx, reqs)
+	canceled := ctx.Err() != nil || cctx.Err() != nil
+	cancel()
+	if runErr != nil && !canceled {
+		p.mu.Lock()
+		p.thumbRetryAt = time.Now().Add(15 * time.Second)
+		p.mu.Unlock()
+		log.Printf("video posters: batch: %v", runErr)
+	}
+
+	// Extract frames in parallel — ffmpeg is local CPU, the link is done.
+	sem := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	var cnt sync.Mutex
+	made, failed, garbage := 0, 0, 0
+	for i, s := range batch {
+		head := reqs[i].Dest
+		if st, err := os.Stat(head); err != nil || st.Size() == 0 {
+			continue // not transferred (cancel/error); retry naturally
+		}
+		if !mediaValid(head, "mov") {
+			garbage++
+			continue
+		}
+		wg.Add(1)
+		go func(s *photo.Shot, head string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			fctx, fcancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer fcancel()
+			poster := head + ".jpg"
+			out, err := exec.CommandContext(fctx, "ffmpeg", "-y", "-loglevel", "error",
+				"-i", head, "-frames:v", "1", "-vf", "scale=240:-2", "-q:v", "4", poster).CombinedOutput()
+			if err == nil && jpegComplete(poster) && os.Rename(poster, p.ThumbPath(s)) == nil {
+				p.mu.Lock()
+				p.thumbs[s.ID] = thumbHave
+				p.mu.Unlock()
+				cnt.Lock()
+				made++
+				cnt.Unlock()
+				return
+			}
+			log.Printf("video poster: %s: ffmpeg: %v: %.150s", s.ID, err, string(out))
+			p.mu.Lock()
+			p.thumbStalls[s.ID]++
+			if p.thumbStalls[s.ID] >= 2 {
+				p.thumbs[s.ID] = thumbFailed
+			}
+			p.mu.Unlock()
+			cnt.Lock()
+			failed++
+			cnt.Unlock()
+		}(s, head)
+	}
+	wg.Wait()
+
+	if garbage > 0 {
 		p.mu.Lock()
 		p.markPartSickLocked()
 		p.mu.Unlock()
-		log.Printf("video poster: %s: head is not a MOV — camera partial reads are UNTRUSTWORTHY — pausing partial reads (power-cycle the camera; probing every 20s)", s.ID)
-		return
+		log.Printf("video posters: %d/%d heads returned garbage — pausing partial reads (power-cycle the camera; probing every 20s)", garbage, len(batch))
 	}
-	poster := filepath.Join(tmp, "poster.jpg")
-	out, err := exec.CommandContext(cctx, "ffmpeg", "-y", "-loglevel", "error",
-		"-i", head, "-frames:v", "1", "-vf", "scale=240:-2", "-q:v", "4", poster).CombinedOutput()
-	if err != nil {
-		p.noteVideoPosterErr(s, fmt.Errorf("ffmpeg: %v: %.150s", err, string(out)))
-		return
+	if made > 0 || failed > 0 {
+		log.Printf("video posters: +%d from camera heads (%d failed)", made, failed)
 	}
-	if !jpegComplete(poster) {
-		p.noteVideoPosterErr(s, fmt.Errorf("poster not a valid jpeg"))
-		return
-	}
-	if err := os.Rename(poster, p.ThumbPath(s)); err != nil {
-		p.noteVideoPosterErr(s, err)
-		return
-	}
-	p.mu.Lock()
-	p.thumbs[s.ID] = thumbHave
-	p.mu.Unlock()
 }
 
 // mediaValid reports whether a file starts like the media it claims to be
@@ -962,16 +1010,6 @@ func (p *Prefetcher) bulkSickLocked() bool {
 	return p.bulkSick && time.Since(p.bulkSickAt) < sickProbeInterval
 }
 
-func (p *Prefetcher) noteVideoPosterErr(s *photo.Shot, err error) {
-	log.Printf("video poster: %s: %v", s.ID, err)
-	p.mu.Lock()
-	p.thumbStalls[s.ID]++
-	if p.thumbStalls[s.ID] >= 2 {
-		p.thumbs[s.ID] = thumbFailed
-	}
-	p.thumbRetryAt = time.Now().Add(3 * time.Second)
-	p.mu.Unlock()
-}
 
 // ThumbPath is the cache location of a shot's timeline thumbnail.
 func (p *Prefetcher) ThumbPath(s *photo.Shot) string {
