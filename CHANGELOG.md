@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2](https://github.com/zackpollard/fuji-cull/compare/v1.2.1...v1.2.2) (2026-07-10)
+
+
+### Bug Fixes
+
+* macos camera daemon contention and false healing accumulation ([be61cc3](https://github.com/zackpollard/fuji-cull/commit/be61cc3555c65d6d37ac206dd9839d5e2fe52293))
+
 ## [1.2.1](https://github.com/zackpollard/fuji-cull/compare/v1.2.0...v1.2.1) (2026-07-09)
 
 
