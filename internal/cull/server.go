@@ -66,7 +66,6 @@ func (a *App) isReady() bool {
 	return a.ready
 }
 
-
 // videoDirect reports whether videos can stream straight off the backend
 // (dir backend) or must be pulled to cache first (cli backend).
 func (a *App) videoDirect() bool {

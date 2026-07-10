@@ -9,8 +9,8 @@ import (
 // Grid view: full-window thumbnail contact sheet. Same culling keys as the
 // viewer; T/Escape return, Enter opens the shot in the viewer. Cell metrics
 // scale with the UI (see sc()).
-func cellW() int32 { return sc(148) }
-func cellH() int32 { return sc(100) }
+func cellW() int32   { return sc(148) }
+func cellH() int32   { return sc(100) }
 func cellGap() int32 { return sc(6) }
 func gridPad() int32 { return sc(12) }
 

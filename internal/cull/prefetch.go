@@ -54,9 +54,9 @@ type Prefetcher struct {
 
 	// Background thumbnail sweep: runs only when the camera link is otherwise
 	// idle, and is killed the moment interactive work arrives.
-	thumbFetcher ThumbFetcher
-	thumbDir     string
-	thumbs       map[string]byte // shot ID -> thumbMissing/Have/Failed
+	thumbFetcher  ThumbFetcher
+	thumbDir      string
+	thumbs        map[string]byte // shot ID -> thumbMissing/Have/Failed
 	thumbCancel   context.CancelFunc
 	thumbCursor   int            // sweep origin override (grid viewport hint); -1 = follow cursor
 	thumbRetryAt  time.Time      // backoff after transport errors (e.g. camera unplugged)
@@ -123,15 +123,15 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 		batch = 1
 	}
 	p := &Prefetcher{
-		cat:      cat,
-		backend:  backend,
-		cache:    cacheDir,
-		ahead:    ahead,
-		behind:   behind,
-		evict:    evictMargin,
-		batch:    batch,
-		cursor:   cursor,
-		demand:   map[string]bool{},
+		cat:         cat,
+		backend:     backend,
+		cache:       cacheDir,
+		ahead:       ahead,
+		behind:      behind,
+		evict:       evictMargin,
+		batch:       batch,
+		cursor:      cursor,
+		demand:      map[string]bool{},
 		state:       map[string]*fetchState{},
 		thumbs:      map[string]byte{},
 		thumbDir:    filepath.Join(cacheDir, "thumbs"),
@@ -482,7 +482,10 @@ func (p *Prefetcher) Run() {
 							break
 						}
 					}
-					if thumbBatch = p.pickThumbsLocked(150); len(thumbBatch) > 0 {
+					if (p.partBin == "" || !p.partSick) && len(thumbBatch) == 0 {
+						thumbBatch = p.pickThumbsLocked(150)
+					}
+					if len(thumbBatch) > 0 {
 						thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
 						break
 					}
@@ -997,8 +1000,37 @@ func (p *Prefetcher) probePartialReads() {
 	}
 	p.mu.Lock()
 	p.partSick = false
+	p.forgiveThumbFailuresLocked()
 	p.mu.Unlock()
-	log.Printf("prefetch: partial reads recovered (probe OK) — streaming, posters and healing re-enabled")
+	p.cond.Broadcast()
+	log.Printf("prefetch: partial reads recovered (probe OK) — streaming, posters and head sweep re-enabled")
+}
+
+// forgiveThumbFailuresLocked un-strikes every failed photo thumbnail after
+// the camera recovers from a stale-buffer episode. Strikes accumulated while
+// sick are false: the gphoto2 fallback harvested garbage blobs, not truth.
+// The head sweep re-serves the lot in seconds, so failure is never permanent
+// while partial reads exist (call with p.mu held).
+func (p *Prefetcher) forgiveThumbFailuresLocked() {
+	if p.partBin == "" {
+		return
+	}
+	forgiven := 0
+	for _, s := range p.cat.Shots {
+		if s.Kind != "photo" {
+			continue
+		}
+		delete(p.healTried, s.ID)
+		if p.thumbs[s.ID] == thumbFailed {
+			p.thumbs[s.ID] = thumbMissing
+			delete(p.thumbStalls, s.ID)
+			forgiven++
+		}
+	}
+	if forgiven > 0 {
+		p.saveThumbFailedLocked()
+		log.Printf("thumbs: forgave %d failed shots for the head sweep to retry", forgiven)
+	}
 }
 
 // bulkSickLocked reports whether automated pulls should pause because bulk
@@ -1009,7 +1041,6 @@ func (p *Prefetcher) probePartialReads() {
 func (p *Prefetcher) bulkSickLocked() bool {
 	return p.bulkSick && time.Since(p.bulkSickAt) < sickProbeInterval
 }
-
 
 // ThumbPath is the cache location of a shot's timeline thumbnail.
 func (p *Prefetcher) ThumbPath(s *photo.Shot) string {
@@ -1279,6 +1310,7 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 				// validation re-trips partSick if not.
 				if p.partSick {
 					p.partSick = false
+					p.forgiveThumbFailuresLocked()
 					log.Printf("prefetch: camera recovered — re-enabling partial reads")
 				} else {
 					log.Printf("prefetch: camera bulk reads recovered")

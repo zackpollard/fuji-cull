@@ -16,8 +16,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"runtime"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -215,11 +215,11 @@ func uploadRGBA(r *sdl.Renderer, img *turbo.Image) (*texEntry, error) {
 /* ── UI state ─────────────────────────────────────────────── */
 
 type ui struct {
-	app     *cull.App
-	apiBase string // in-process HTTP server, for mpv stream URLs
-	pool    *decodePool
-	ren     *sdl.Renderer
-	win     *sdl.Window
+	app      *cull.App
+	apiBase  string // in-process HTTP server, for mpv stream URLs
+	pool     *decodePool
+	ren      *sdl.Renderer
+	win      *sdl.Window
 	font     *ttf.Font
 	fontSm   *ttf.Font
 	fontPath string
@@ -259,10 +259,10 @@ type ui struct {
 	mode int // modeViewer | modeGrid | modeImport
 
 	mpv        videoPlayer
-	glVideo    bool          // GL render path available (zero-copy hwdec)
+	glVideo    bool           // GL render path available (zero-copy hwdec)
 	sdlCtx     unsafe.Pointer // SDL renderer's GL context
-	mpvCtx     sdl.GLContext // dedicated shared context for mpv rendering
-	videoTexID uint32        // GL name of videoTex (GL path)
+	mpvCtx     sdl.GLContext  // dedicated shared context for mpv rendering
+	videoTexID uint32         // GL name of videoTex (GL path)
 	videoID    string
 	videoSrc   string // what mpv is playing: local path or stream URL
 	videoDiag  bool   // decode-path diagnostic logged for this clip
@@ -459,8 +459,8 @@ func run(app *cull.App, apiBase string, decodeAhead, decodeBehind int) error {
 		// a 4K monitor ≈ 500 cells) — an undersized LRU evicts textures that
 		// are still on screen and the grid strobes as they cycle back in.
 		// ~77 KB GPU each, so generous is cheap.
-		thumbs: newTexCache(1500),
-		texts:  newTexCache(256),
+		thumbs:    newTexCache(1500),
+		texts:     newTexCache(256),
 		decisions: map[string]string{},
 	}
 	if err := u.reloadFonts(); err != nil {
@@ -843,7 +843,6 @@ func (u *ui) drawHeader() {
 		}
 	}
 }
-
 
 func (u *ui) drawStrip() {
 	w, h := u.outSize()
