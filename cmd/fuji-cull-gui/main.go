@@ -250,6 +250,7 @@ type ui struct {
 
 	fetchStates map[string]string // server-side disk-buffer states (blue stripe)
 	orients     string            // per-shot EXIF orientation chars ('1'-'8', '0' unknown)
+	immich      string            // per-shot Immich presence ('1' uploaded)
 	camBulkSick bool              // camera transfer breakers (stale-buffer bug)
 	camPartSick bool
 	frameN      int
@@ -553,6 +554,7 @@ func (u *ui) frame() bool {
 		if u.fetchStates == nil || u.frameN%30 == 0 {
 			u.fetchStates = u.app.FetchStates()
 			u.orients = u.app.Orientations()
+			u.immich = u.app.ImmichStates()
 			u.camBulkSick, u.camPartSick = u.app.CameraSick()
 		}
 		u.updateWants()
@@ -880,6 +882,10 @@ func (u *ui) drawStrip() {
 		}
 		if stripe != nil {
 			u.fillRect(sdl.Rect{X: x, Y: stripY + sc(8), W: sc(26), H: sc(3)}, *stripe)
+		}
+		// already-on-Immich badge (top-right corner)
+		if idx < len(u.immich) && u.immich[idx] == '1' {
+			u.fillRect(sdl.Rect{X: x + sc(26) - sc(8), Y: stripY + sc(13), W: sc(6), H: sc(6)}, colKeep)
 		}
 		// decision bar
 		if d := u.decisions[s.ID]; d != "" {

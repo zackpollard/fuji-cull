@@ -92,6 +92,10 @@ func (u *ui) drawGrid() {
 			if s.Kind == "video" {
 				u.fillRect(sdl.Rect{X: x, Y: y, W: cellW(), H: sc(3)}, colAmber)
 			}
+			// already-on-Immich badge (top-right corner)
+			if idx < len(u.immich) && u.immich[idx] == '1' {
+				u.fillRect(sdl.Rect{X: x + cellW() - sc(12), Y: y + sc(6), W: sc(8), H: sc(8)}, colKeep)
+			}
 			if d := u.decisions[s.ID]; d != "" {
 				col := colKeep
 				if d == "reject" {

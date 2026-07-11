@@ -94,6 +94,15 @@ func (a *App) ThumbProgress() (string, int) { return a.prefetch.ThumbStates() }
 // sensor orientation on disk; renderers rotate at display time.
 func (a *App) Orientations() string { return a.prefetch.OrientStates() }
 
+// ImmichStates returns one byte per catalog shot: 1 already on Immich,
+// 0 not uploaded, - unknown (or Immich not configured: empty string).
+func (a *App) ImmichStates() string {
+	if a.imcheck == nil {
+		return ""
+	}
+	return a.imcheck.States()
+}
+
 // CameraSick reports tripped camera-transfer circuit breakers (the X-H2S
 // stale-buffer bug); a power cycle is the only remedy.
 func (a *App) CameraSick() (bulk, partial bool) { return a.prefetch.LinkSick() }

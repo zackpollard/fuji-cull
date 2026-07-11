@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/zack/fuji-tools/internal/exif"
+	"github.com/zack/fuji-tools/internal/immich"
 	"github.com/zack/fuji-tools/internal/mtpcli"
 	"github.com/zack/fuji-tools/internal/pipeline"
 )
@@ -150,11 +151,21 @@ func Start(o Options) (*App, http.Handler, error) {
 			app.setDiscoveryError(err)
 			return
 		}
+		// Immich presence: hash camera-verbatim files as they land and
+		// bulk-check them so the UIs can badge already-uploaded shots.
+		if !o.SkipImmich && o.ImmichURL != "" && o.ImmichKey != "" {
+			client := immich.NewClient(strings.TrimRight(o.ImmichURL, "/"), o.ImmichKey)
+			app.imcheck = newImmichChecker(client, prefetch, catalog, cache)
+			prefetch.onReady = app.imcheck.Enqueue
+		}
 		go prefetch.Run()
 		if prefetch.thumbFetcher != nil {
 			go prefetch.localThumbGen()
 		}
 		app.finishInit(catalog, prefetch)
+		if app.imcheck != nil {
+			go app.imcheck.Backfill()
+		}
 		log.Printf("fuji-cull ready: http://%s  (session=%s, backend=%s, %d shots, buffer %d ahead / %d behind)",
 			o.Listen, o.SessionName, backend.Name(), len(catalog.Shots), o.Ahead, o.Behind)
 	}()

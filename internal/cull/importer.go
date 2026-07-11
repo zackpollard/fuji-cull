@@ -114,6 +114,18 @@ func (im *Importer) run(app *App, dest, album string, keepers []keeperFile) {
 		log.Printf("import failed: %v", err)
 	} else {
 		log.Printf("import complete: %d files -> %s", len(files), dest)
+		if app.imcheck != nil {
+			// the pipeline just validated these on the server: badge them
+			seen := map[string]bool{}
+			var ids []string
+			for _, k := range keepers {
+				if !seen[k.shot.ID] {
+					seen[k.shot.ID] = true
+					ids = append(ids, k.shot.ID)
+				}
+			}
+			app.imcheck.MarkUploaded(ids)
+		}
 	}
 }
 

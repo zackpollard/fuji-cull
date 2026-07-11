@@ -73,6 +73,8 @@ type Prefetcher struct {
 	orient      map[string]uint8 // shot ID -> EXIF orientation (absent = unknown)
 	orientDirty bool
 	healTried   map[string]bool // camera-impossible shots already head-healed (or attempted)
+
+	onReady func(*photo.Shot) // optional hook: a verbatim file just landed
 }
 
 type photoRank struct {
@@ -1301,6 +1303,9 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 		} else {
 			p.setState(targets[i].ID, "ready", "")
 			p.harvestOrient(targets[i])
+			if p.onReady != nil {
+				p.onReady(targets[i])
+			}
 			p.mu.Lock()
 			if p.bulkSick {
 				p.bulkSick = false

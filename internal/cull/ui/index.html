@@ -146,6 +146,14 @@
   /* The current marker is a single overlay moved by transform: any per-tick
      class change on navigation invalidates styles across the 19k-item strip
      (~40 ms paid at the next forced layout flush). */
+  /* already-on-Immich badge (top-right corner of ticks and grid cells) */
+  .tick i.up, .cell i.up {
+    position: absolute; top: 4px; right: 1px; width: 6px; height: 6px;
+    background: var(--keep); z-index: 3; pointer-events: none;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, .6);
+  }
+  .cell i.up { top: 5px; right: 5px; width: 8px; height: 8px; }
+
   #stripCursor {
     position: absolute; top: 6px; height: 38px; width: 24px; left: 14px;
     outline: 2px solid var(--fg); outline-offset: 1px;
@@ -799,7 +807,20 @@ async function boot() {
    Thumb files are stored in sensor orientation; the server rotates portrait
    shots at delivery once orientation is known, so the URL carries the
    orientation as a cache buster and imgs re-fetch when it arrives late. */
-let thumbStates = "", orientStates = "";
+let thumbStates = "", orientStates = "", immichStates = "";
+
+function upBadge() {
+  const b = document.createElement("i");
+  b.className = "up";
+  return b;
+}
+
+function syncBadge(holder, uploaded) {
+  if (!holder) return;
+  const has = holder.querySelector("i.up");
+  if (uploaded && !has) holder.appendChild(upBadge());
+  else if (!uploaded && has) has.remove();
+}
 
 function thumbSrc(i) {
   let src = "/api/thumb?id=" + encodeURIComponent(shots[i].id);
@@ -834,9 +855,16 @@ async function syncThumbs() {
     const t = await api("/api/thumbs");
     s = t.states || "";
     const o = t.orient || "";
+    const im = t.immich || "";
     const prevOrient = orientStates;
+    const prevIm = immichStates;
     orientStates = o; // before the loop so attach/refresh build fresh URLs
+    immichStates = im;
     for (let i = 0; i < s.length; i++) {
+      if (im[i] !== prevIm[i]) {
+        syncBadge(ticks[i], im[i] === "1");
+        syncBadge(cells[i], im[i] === "1");
+      }
       if (s[i] !== "1") continue;
       if (thumbStates[i] !== "1") attachThumb(i);
       else if (o[i] > "1" && o[i] !== prevOrient[i]) refreshThumb(i);
@@ -851,7 +879,7 @@ async function syncThumbs() {
     const mdKnown = mdEligible - (o.match(/0/g) || []).length;
     $("metaProg").textContent = mdKnown < mdEligible ? "MD " + mdKnown + "/" + mdEligible : "";
   } catch (e) { /* transient */ }
-  if (!s || s.includes("0") || orientStates.includes("0"))
+  if (!s || s.includes("0") || orientStates.includes("0") || immichStates.includes("-"))
     setTimeout(syncThumbs, gridOpen ? 2000 : 4000);
 }
 
@@ -868,6 +896,7 @@ function buildGrid() {
     c.onclick = () => nav(i);
     c.ondblclick = () => { nav(i); toggleGrid(false); };
     if (thumbStates[i] === "1") c.appendChild(thumbImg(i));
+    if (immichStates[i] === "1") c.appendChild(upBadge());
     frag.appendChild(c);
     return c;
   });

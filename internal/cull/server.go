@@ -26,6 +26,7 @@ type App struct {
 	session      *Session
 	prefetch     *Prefetcher
 	importer     *Importer
+	imcheck      *immichChecker
 	pipelineOpts pipeline.Options
 	sessionName  string
 	dest         string
@@ -240,7 +241,8 @@ func (a *App) handler() http.Handler {
 
 	mux.HandleFunc("GET /api/thumbs", func(w http.ResponseWriter, r *http.Request) {
 		states, have := a.prefetch.ThumbStates()
-		writeJSON(w, map[string]any{"states": states, "have": have, "orient": a.prefetch.OrientStates()})
+		writeJSON(w, map[string]any{"states": states, "have": have,
+			"orient": a.prefetch.OrientStates(), "immich": a.ImmichStates()})
 	})
 
 	mux.HandleFunc("POST /api/thumbhint", func(w http.ResponseWriter, r *http.Request) {
