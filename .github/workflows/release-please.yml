@@ -89,7 +89,7 @@ jobs:
 
   release-assets-android:
     needs: release-please
-    if: always() && (needs.release-please.outputs.release_created == true || github.event_name == workflow_dispatch)
+    if: always() && (needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       contents: write
