@@ -86,3 +86,56 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ needs.release-please.outputs.tag_name || inputs.tag }}" dist/macos/*.dmg --clobber
+
+  release-assets-android:
+    needs: release-please
+    if: always() && (needs.release-please.outputs.release_created == true || github.event_name == workflow_dispatch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: install ndk
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.3.11579264" >/dev/null
+      - name: gomobile bind (engine aar)
+        env:
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/26.3.11579264
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          mkdir -p android/app/libs
+          "$(go env GOPATH)/bin/gomobile" bind -target=android/arm64 -androidapi 29 \
+            -o android/app/libs/engine.aar ./mobile
+      - name: build patched aft for android
+        env:
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/26.3.11579264
+        run: |
+          git clone https://github.com/whoozle/android-file-transfer-linux.git /tmp/aft
+          git -C /tmp/aft checkout "$(cat $PWD/third_party/aft-partial/UPSTREAM_COMMIT)"
+          git -C /tmp/aft apply "$PWD/third_party/aft-partial/partial-reads.patch"
+          cmake -S /tmp/aft -B /tmp/aft/build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 \
+            -DBUILD_QT_UI=OFF -DBUILD_FUSE=OFF -DBUILD_SHARED_LIB=OFF \
+            -DCMAKE_DISABLE_FIND_PACKAGE_Readline=TRUE
+          cmake --build /tmp/aft/build -j"$(nproc)" --target aft-mtp-cli
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          cp /tmp/aft/build/cli/aft-mtp-cli android/app/src/main/jniLibs/arm64-v8a/libaftcli.so
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - name: assemble apk
+        run: |
+          gradle -p android :app:assembleDebug
+          cp android/app/build/outputs/apk/debug/app-debug.apk fuji-cull-android-arm64.apk
+      - name: upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.release-please.outputs.tag_name || inputs.tag }}" fuji-cull-android-arm64.apk --clobber
