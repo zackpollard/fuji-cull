@@ -45,7 +45,7 @@ class EngineService : Service() {
                 prefs.getString("url", "") ?: "",
                 prefs.getString("key", "") ?: "",
             )
-            Log.i(TAG, "engine started on port ${engine?.port}")
+            Log.i(TAG, "engine started on port ${engine?.port()}")
         }
         return START_STICKY
     }

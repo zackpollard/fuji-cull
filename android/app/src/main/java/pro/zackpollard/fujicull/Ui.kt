@@ -69,7 +69,7 @@ fun CullApp(service: EngineService?, importDest: String) {
         if (!ready || engine == null) {
             ConnectScreen(status)
         } else {
-            CullScreen(Api(engine.port), importDest)
+            CullScreen(Api(engine.port()), importDest)
         }
     }
 }
