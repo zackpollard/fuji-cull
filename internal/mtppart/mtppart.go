@@ -75,7 +75,8 @@ func GetParts(ctx context.Context, reqs []PartReq) error {
 			case <-time.After(500 * time.Millisecond):
 			}
 		}
-		c := exec.CommandContext(ctx, bin, "-b")
+		c := exec.CommandContext(ctx, bin, usbArgs()...)
+		c.ExtraFiles = usbExtraFiles()
 		c.Cancel = func() error { return c.Process.Signal(os.Interrupt) }
 		c.WaitDelay = 3 * time.Second
 		c.Stdin = strings.NewReader(cmds.String())

@@ -55,7 +55,14 @@ func RunBatch(ctx context.Context, cmds ...string) (string, error) {
 
 func runBatchOnce(ctx context.Context, cmds ...string) (string, error) {
 	stdin := strings.NewReader(strings.Join(cmds, "\n") + "\n")
-	c := exec.CommandContext(ctx, "aft-mtp-cli", "-b")
+	args := []string{"-b"}
+	var extra []*os.File
+	if f := USBFile(); f != nil {
+		args = append(args, "--device-fd", "3") // ExtraFiles[0] lands at fd 3
+		extra = []*os.File{f}
+	}
+	c := exec.CommandContext(ctx, AftBin(), args...)
+	c.ExtraFiles = extra
 	// On cancellation, interrupt instead of SIGKILL: a hard kill mid-USB
 	// transaction wedges the camera's MTP session and the next invocation's
 	// first command hangs on the stale state.

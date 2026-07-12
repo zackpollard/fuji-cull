@@ -35,7 +35,8 @@ func StartServer() (*Server, error) {
 	if bin == "" {
 		return nil, fmt.Errorf("aft-mtp-cli-part not found")
 	}
-	c := exec.Command(bin, "-b")
+	c := exec.Command(bin, usbArgs()...)
+	c.ExtraFiles = usbExtraFiles()
 	in, err := c.StdinPipe()
 	if err != nil {
 		return nil, err

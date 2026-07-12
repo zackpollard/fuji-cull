@@ -64,7 +64,8 @@ type Prefetcher struct {
 	thumbTimeouts int            // consecutive errored batches; drives escalating settle backoff
 	thumbRank     map[string]int // shot ID -> 1-based file index within its camera folder
 	photoSeq      []photoRank    // photos in catalog order with ranks, for density scans
-	partBin       string         // patched aft-mtp-cli with get-part; "" = video posters off
+	partBin       string         // patched aft-mtp-cli with get-part; "" = partial reads off
+	noFfmpeg      bool           // ffmpeg missing: posters off, heads unaffected
 	partSick      bool           // partial reads returned stale-buffer garbage
 	partSickAt    time.Time      // drives the recovery probe
 	bulkSick      bool           // bulk reads (get-id) returned stale-buffer garbage
@@ -152,15 +153,14 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 			p.thumbFetcher = tf
 		}
 	}
-	if p.thumbFetcher != nil {
-		if bin := mtppart.Bin(); bin != "" {
-			if _, err := exec.LookPath("ffmpeg"); err == nil {
-				p.partBin = bin
-				log.Printf("video posters enabled via %s", bin)
-			}
+	if bin := mtppart.Bin(); bin != "" {
+		p.partBin = bin
+		if _, err := exec.LookPath("ffmpeg"); err != nil {
+			log.Printf("ffmpeg not found: video posters disabled (head sweep unaffected)")
+			p.noFfmpeg = true
 		}
 	}
-	if p.thumbFetcher != nil {
+	if p.thumbFetcher != nil || p.partBin != "" {
 		if err := os.MkdirAll(p.thumbDir, 0o755); err != nil {
 			return nil, err
 		}
@@ -176,7 +176,8 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 		}
 		log.Printf("thumbs: %d/%d already cached", have, len(cat.Shots))
 		p.loadThumbFailed()
-
+	}
+	if p.thumbFetcher != nil {
 		// gphoto2 selects by 1-based position within the folder; compute each
 		// shot's display-file rank among all files in its folder (name order,
 		// which matches the camera's object order).
@@ -466,7 +467,7 @@ func (p *Prefetcher) Run() {
 					probePart = true
 					break
 				}
-				if p.thumbFetcher != nil {
+				if p.thumbFetcher != nil || p.partBin != "" {
 					// Idle-work priority: the head sweep first — one 128 KB
 					// read per shot yields thumbnail AND orientation together
 					// (~150 shots/s), so it precedes the orientation-only
@@ -484,14 +485,14 @@ func (p *Prefetcher) Run() {
 							break
 						}
 					}
-					if (p.partBin == "" || !p.partSick) && len(thumbBatch) == 0 {
+					if p.thumbFetcher != nil && (p.partBin == "" || !p.partSick) && len(thumbBatch) == 0 {
 						thumbBatch = p.pickThumbsLocked(150)
 					}
 					if len(thumbBatch) > 0 {
 						thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
 						break
 					}
-					if p.partBin != "" && !p.partSick {
+					if p.partBin != "" && !p.partSick && !p.noFfmpeg {
 						if posterBatch = p.pickVideoPosterBatchLocked(posterBatchSize); len(posterBatch) > 0 {
 							thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
 							break
@@ -1057,7 +1058,7 @@ func (p *Prefetcher) ThumbStates() (string, int) {
 	buf := make([]byte, len(p.cat.Shots))
 	have := 0
 	for i, s := range p.cat.Shots {
-		if p.thumbFetcher == nil || (s.Kind != "photo" && p.partBin == "") {
+		if (p.thumbFetcher == nil && p.partBin == "") || (s.Kind != "photo" && p.partBin == "") {
 			buf[i] = '-'
 			continue
 		}

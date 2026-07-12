@@ -159,7 +159,7 @@ func Start(o Options) (*App, http.Handler, error) {
 			prefetch.onReady = app.imcheck.Enqueue
 		}
 		go prefetch.Run()
-		if prefetch.thumbFetcher != nil {
+		if prefetch.thumbFetcher != nil || prefetch.partBin != "" {
 			go prefetch.localThumbGen()
 		}
 		app.finishInit(catalog, prefetch)
