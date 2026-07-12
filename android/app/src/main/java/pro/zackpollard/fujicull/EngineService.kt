@@ -27,6 +27,8 @@ class EngineService : Service() {
     private val binder = LocalBinder()
     var engine: Engine? = null
         private set
+    var startError: String? = null
+        private set
     private var usb: UsbDeviceConnection? = null
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -34,18 +36,24 @@ class EngineService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(1, buildNotification())
         if (engine == null) {
-            val dataDir = File(filesDir, "data").apply { mkdirs() }
-            val cacheDir = File(cacheDir, "buffer").apply { mkdirs() }
-            val aft = File(applicationInfo.nativeLibraryDir, "libaftcli.so")
-            val prefs = getSharedPreferences("immich", MODE_PRIVATE)
-            engine = Mobile.start(
-                dataDir.absolutePath,
-                cacheDir.absolutePath,
-                if (aft.exists()) aft.absolutePath else "",
-                prefs.getString("url", "") ?: "",
-                prefs.getString("key", "") ?: "",
-            )
-            Log.i(TAG, "engine started on port ${engine?.port()}")
+            try {
+                val dataDir = File(filesDir, "data").apply { mkdirs() }
+                val bufDir = File(cacheDir, "buffer").apply { mkdirs() }
+                val aft = File(applicationInfo.nativeLibraryDir, "libaftcli.so")
+                val prefs = getSharedPreferences("immich", MODE_PRIVATE)
+                engine = Mobile.start(
+                    dataDir.absolutePath,
+                    bufDir.absolutePath,
+                    if (aft.exists()) aft.absolutePath else "",
+                    prefs.getString("url", "") ?: "",
+                    prefs.getString("key", "") ?: "",
+                )
+                startError = null
+                Log.i(TAG, "engine started on port ${engine?.port()}")
+            } catch (t: Throwable) {
+                startError = t.message ?: t.toString()
+                Log.e(TAG, "engine start failed", t)
+            }
         }
         return START_STICKY
     }

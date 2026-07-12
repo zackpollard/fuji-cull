@@ -56,8 +56,11 @@ fun CullApp(service: EngineService?, importDest: String) {
 
         LaunchedEffect(engine) {
             while (true) {
+                val err = service?.startError
                 val e = service?.engine
-                if (e != null) {
+                if (err != null) {
+                    status = "engine failed: " + err
+                } else if (e != null) {
                     ready = e.ready()
                     status = if (ready) "ready" else e.discoveryStatus()
                 }

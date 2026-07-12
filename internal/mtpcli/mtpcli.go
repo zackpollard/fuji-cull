@@ -21,7 +21,14 @@ import (
 
 // Ensure checks that aft-mtp-cli is installed.
 func Ensure() error {
-	if _, err := exec.LookPath("aft-mtp-cli"); err != nil {
+	bin := AftBin()
+	if p := os.Getenv("FUJI_AFT"); p != "" {
+		if st, err := os.Stat(p); err == nil && st.Mode()&0o111 != 0 {
+			return nil
+		}
+		return fmt.Errorf("FUJI_AFT points at %q but it is not executable", p)
+	}
+	if _, err := exec.LookPath(bin); err != nil {
 		return fmt.Errorf("aft-mtp-cli not in PATH (pacman -S android-file-transfer)")
 	}
 	return nil
