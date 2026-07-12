@@ -91,8 +91,8 @@ jobs:
           ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/26.3.11579264
         run: |
           git clone https://github.com/whoozle/android-file-transfer-linux.git /tmp/aft
-          git -C /tmp/aft checkout "$(cat third_party/aft-partial/UPSTREAM_COMMIT)"
-          git -C /tmp/aft apply third_party/aft-partial/partial-reads.patch
+          git -C /tmp/aft checkout "$(cat $PWD/third_party/aft-partial/UPSTREAM_COMMIT)"
+          git -C /tmp/aft apply "$PWD/third_party/aft-partial/partial-reads.patch"
           cmake -S /tmp/aft -B /tmp/aft/build -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 \
