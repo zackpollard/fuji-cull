@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.FujiCull" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#0B0C0B</item>
+        <item name="android:statusBarColor">#0B0C0B</item>
+    </style>
+</resources>
