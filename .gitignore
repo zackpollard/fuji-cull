@@ -1,3 +1,10 @@
 /fuji-import
 /fuji-cull
 /bin/
+
+# android local build artifacts (CI builds engine.aar + jniLibs itself)
+/android/.gradle/
+/android/app/build/
+/android/app/libs/
+/android/app/src/main/jniLibs/
+/fuji-cull-gui

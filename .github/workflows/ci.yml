@@ -84,7 +84,7 @@ jobs:
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
           mkdir -p android/app/libs
-          "$(go env GOPATH)/bin/gomobile" bind -target=android/arm64 -androidapi 29 \
+          "$(go env GOPATH)/bin/gomobile" bind -target=android/arm64,android/amd64 -androidapi 29 \
             -o android/app/libs/engine.aar ./mobile
       - name: build patched aft for android
         env:
@@ -93,14 +93,16 @@ jobs:
           git clone https://github.com/whoozle/android-file-transfer-linux.git /tmp/aft
           git -C /tmp/aft checkout "$(cat $PWD/third_party/aft-partial/UPSTREAM_COMMIT)"
           git -C /tmp/aft apply "$PWD/third_party/aft-partial/partial-reads.patch"
-          cmake -S /tmp/aft -B /tmp/aft/build -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 \
-            -DBUILD_QT_UI=OFF -DBUILD_FUSE=OFF -DBUILD_SHARED_LIB=OFF \
-            -DCMAKE_DISABLE_FIND_PACKAGE_Readline=TRUE
-          cmake --build /tmp/aft/build -j"$(nproc)" --target aft-mtp-cli
-          mkdir -p android/app/src/main/jniLibs/arm64-v8a
-          cp /tmp/aft/build/cli/aft-mtp-cli android/app/src/main/jniLibs/arm64-v8a/libaftcli.so
+          for abi in arm64-v8a x86_64; do
+            cmake -S /tmp/aft -B "/tmp/aft/build-$abi" -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+              -DANDROID_ABI="$abi" -DANDROID_PLATFORM=android-29 \
+              -DBUILD_QT_UI=OFF -DBUILD_FUSE=OFF -DBUILD_SHARED_LIB=OFF \
+              -DCMAKE_DISABLE_FIND_PACKAGE_Readline=TRUE -DBUILD_TAGLIB=OFF
+            cmake --build "/tmp/aft/build-$abi" -j"$(nproc)" --target aft-mtp-cli
+            mkdir -p "android/app/src/main/jniLibs/$abi"
+            cp "/tmp/aft/build-$abi/cli/aft-mtp-cli" "android/app/src/main/jniLibs/$abi/libaftcli.so"
+          done
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
