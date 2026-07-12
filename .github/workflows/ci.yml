@@ -34,7 +34,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libsdl2-dev libsdl2-ttf-dev libturbojpeg0-dev libmpv-dev \
-            libgphoto2-dev gphoto2 libimage-exiftool-perl \
+            libgphoto2-dev gphoto2 \
             cmake g++ libusb-1.0-0-dev libmagic-dev zlib1g-dev libssl-dev \
             libfuse2 file
       - run: chmod +x scripts/build-appimage.sh && ./scripts/build-appimage.sh
@@ -51,7 +51,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: install build deps
-        run: brew install sdl2 sdl2_ttf jpeg-turbo mpv pkgconf cmake libusb gphoto2 libgphoto2 ffmpeg exiftool dylibbundler
+        run: brew install sdl2 sdl2_ttf jpeg-turbo mpv pkgconf cmake libusb gphoto2 libgphoto2 ffmpeg dylibbundler
       - run: chmod +x scripts/build-macos.sh && ./scripts/build-macos.sh
       - name: tests
         run: |

@@ -2,7 +2,7 @@
 # Builds a self-contained fuji-cull-gui AppImage: the cgo library closure
 # (sdl2, sdl2_ttf, turbojpeg, mpv) plus every external tool the app execs at
 # runtime — gphoto2 (with its camlib/iolib plugins), a static ffmpeg,
-# exiftool, and aft-mtp-cli-part built from the vendored partial-read patch.
+# and aft-mtp-cli-part built from the vendored partial-read patch.
 #
 # Designed for ubuntu CI (apt package layout); run from the repo root.
 set -euo pipefail
@@ -12,7 +12,7 @@ WORK="$ROOT/dist/appimage"
 APPDIR="$WORK/AppDir"
 ARCH="$(uname -m)"
 rm -rf "$APPDIR"
-mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/perl5"
+mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib"
 
 echo "== fuji-cull-gui"
 go build -trimpath -ldflags "-s -w" -o "$APPDIR/usr/bin/fuji-cull-gui" "$ROOT/cmd/fuji-cull-gui"
@@ -39,11 +39,6 @@ IOLIB_DIR="$(pkg-config --variable=driverdir libgphoto2_port)"
 cp -r "$CAMLIB_DIR" "$APPDIR/usr/lib/libgphoto2"
 cp -r "$IOLIB_DIR" "$APPDIR/usr/lib/libgphoto2_port"
 
-echo "== exiftool (perl script + module tree)"
-cp "$(command -v exiftool)" "$APPDIR/usr/bin/"
-cp -r /usr/share/perl5/Image "$APPDIR/usr/share/perl5/"
-cp -r /usr/share/perl5/File "$APPDIR/usr/share/perl5/" 2>/dev/null || true
-
 echo "== static ffmpeg"
 FF="$WORK/ffmpeg-static"
 if [ ! -x "$FF/ffmpeg" ]; then
@@ -69,7 +64,7 @@ if [ ! -x "$LD" ]; then
   chmod +x "$LD"
 fi
 # collect shared-library closures for the dynamic executables and plugins;
-# ffmpeg is static and exiftool is a script, so they need no closure
+# ffmpeg is static, so it needs no closure
 export APPIMAGE_EXTRACT_AND_RUN=1
 export LDAI_OUTPUT="$WORK/fuji-cull-gui-$ARCH.AppImage"
 "$LD" --appdir "$APPDIR" \

@@ -112,6 +112,41 @@ func Orientation(data []byte) int {
 	return 1
 }
 
+// DateTimeOriginal extracts the EXIF capture time ("2006:01:02 15:04:05")
+// from a JPEG or Fuji RAF byte stream, falling back to IFD0's ModifyDate.
+// Returns "" when absent.
+func DateTimeOriginal(data []byte) string {
+	t, ok := newTIFF(app1(jpegStream(data)))
+	if !ok {
+		return ""
+	}
+	ifd0 := t.u32(4)
+	// DateTimeOriginal (0x9003) lives in the Exif sub-IFD (pointer 0x8769)
+	if v := t.findTag(ifd0, 0x8769); v >= 0 {
+		if s := t.ascii(t.findTag(t.u32(v), 0x9003)); s != "" {
+			return s
+		}
+	}
+	return t.ascii(t.findTag(ifd0, 0x0132))
+}
+
+// ascii reads an EXIF ASCII value: the value field holds an offset into the
+// TIFF payload for strings longer than 4 bytes (dates always are).
+func (t tiff) ascii(valueOff int) string {
+	if valueOff < 0 {
+		return ""
+	}
+	off := t.u32(valueOff)
+	end := off
+	for end < len(t.d) && t.d[end] != 0 && end-off < 32 {
+		end++
+	}
+	if end <= off {
+		return ""
+	}
+	return string(t.d[off:end])
+}
+
 // Thumbnail extracts the EXIF-embedded thumbnail JPEG (IFD1's
 // JPEGInterchangeFormat), or nil when absent or truncated. Fuji cameras
 // embed the same 160×120 preview that MTP GetThumb serves, so a file head

@@ -34,6 +34,26 @@ func TestJpegmetaOrientation(t *testing.T) {
 	}
 }
 
+func TestJpegmetaDateTimeOriginal(t *testing.T) {
+	// TIFF: IFD0 with an ExifIFD pointer; sub-IFD carries DateTimeOriginal
+	tiff := []byte{
+		'M', 'M', 0, 42, 0, 0, 0, 8, // header, IFD0 at 8
+		0, 1, // IFD0: one entry
+		0x87, 0x69, 0, 4, 0, 0, 0, 1, 0, 0, 0, 26, // ExifIFD -> 26
+		0, 0, 0, 0, // next IFD
+		0, 1, // ExifIFD: one entry
+		0x90, 0x03, 0, 2, 0, 0, 0, 20, 0, 0, 0, 44, // DateTimeOriginal -> 44
+		0, 0, 0, 0, // next IFD
+	}
+	tiff = append(tiff, []byte("2026:07:12 10:20:30\x00")...)
+	app1 := append([]byte("Exif\x00\x00"), tiff...)
+	jpg := []byte{0xFF, 0xD8, 0xFF, 0xE1, byte((len(app1) + 2) >> 8), byte(len(app1) + 2)}
+	jpg = append(jpg, app1...)
+	if got := jpegmeta.DateTimeOriginal(jpg); got != "2026:07:12 10:20:30" {
+		t.Errorf("DateTimeOriginal = %q", got)
+	}
+}
+
 func TestJpegmetaRAF(t *testing.T) {
 	// RAF header: FUJIFILM magic, embedded-JPEG offset big-endian at byte 84
 	jpg := exifHead(6)

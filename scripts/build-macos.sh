@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds fuji-cull.app (drag-to-Applications dmg): the GUI plus every helper
-# tool it execs (gphoto2 + plugins, ffmpeg, exiftool, patched aft-mtp-cli)
+# tool it execs (gphoto2 + plugins, ffmpeg, patched aft-mtp-cli)
 # with the full dylib closure bundled and install names rewritten, ad-hoc
 # signed. Unsigned-by-Apple: first launch needs right-click -> Open.
 set -euo pipefail
@@ -14,7 +14,7 @@ MACOS="$APP/Contents/MacOS"
 RES="$APP/Contents/Resources"
 LIBS="$APP/Contents/libs"
 rm -rf "$APP"
-mkdir -p "$MACOS" "$RES/perl5" "$LIBS"
+mkdir -p "$MACOS" "$RES/bin" "$LIBS"
 
 export CGO_CFLAGS="-I$BREW/include"
 export CGO_LDFLAGS="-L$BREW/lib"
@@ -42,15 +42,6 @@ cp "$AFT/build/cli/aft-mtp-cli" "$MACOS/aft-mtp-cli"
 echo "== helper tools"
 cp "$BREW/bin/gphoto2" "$MACOS/"
 cp "$BREW/bin/ffmpeg" "$MACOS/"
-# exiftool is a perl script: bundle signing rejects non-Mach-O in MacOS/,
-# so scripts live under Resources/bin (on PATH via setupBundleEnv)
-mkdir -p "$RES/bin"
-cp "$(readlink -f "$BREW/bin/exiftool")" "$RES/bin/exiftool"
-# exiftool's perl module tree: locate Image/ExifTool.pm under the formula
-# (brew layouts vary between lib and libexec across versions)
-EXIF_ROOT="$(dirname "$(dirname "$(readlink -f "$BREW/bin/exiftool")")")"
-PM="$(find "$EXIF_ROOT" -name ExifTool.pm -path "*Image*" | head -1)"
-cp -R "$(dirname "$(dirname "$PM")")/." "$RES/perl5/"
 # libgphoto2 plugin trees (dlopened at runtime via CAMLIBS/IOLIBS)
 cp -R "$(pkg-config --variable=driverdir libgphoto2)" "$RES/libgphoto2"
 cp -R "$(pkg-config --variable=driverdir libgphoto2_port)" "$RES/libgphoto2_port"
