@@ -232,3 +232,16 @@ index 9c40999..79945e2 100644
  
  		u8 GetAddress() const
  		{ return _addr; }
+diff --git a/mtp/backend/posix/Exception.cpp b/mtp/backend/posix/Exception.cpp
+index d9caed9..736da2c 100644
+--- a/mtp/backend/posix/Exception.cpp
++++ b/mtp/backend/posix/Exception.cpp
+@@ -35,7 +35,7 @@ namespace mtp { namespace posix
+ 	std::string Exception::GetErrorMessage(int returnCode)
+ 	{
+ 		char buf[1024];
+-#if defined(_GNU_SOURCE) && defined(__GLIBC__)
++#if (defined(_GNU_SOURCE) && defined(__GLIBC__)) || (defined(__ANDROID__) && defined(_GNU_SOURCE))
+ 		std::string text(strerror_r(returnCode, buf, sizeof(buf)));
+ #else
+ 		int r = strerror_r(returnCode, buf, sizeof(buf));
