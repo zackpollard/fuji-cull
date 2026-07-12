@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.3.0](https://github.com/zackpollard/fuji-cull/compare/v1.2.2...v1.3.0) (2026-07-12)
+
+
+### Features
+
+* aft patch gains --device-fd for android usb host api ([56150aa](https://github.com/zackpollard/fuji-cull/commit/56150aaffbc5fe3bd0cb055f56ee007550987871))
+* android app scaffold — kotlin/compose culling mvp ([bf6401d](https://github.com/zackpollard/fuji-cull/commit/bf6401d61102bca114801f00d8d89a982d2b9f13))
+* android groundwork — usb fd plumbing and gomobile facade ([c881ed9](https://github.com/zackpollard/fuji-cull/commit/c881ed9db366c0432bf5715bce600b1a47ddc61d))
+* badge shots already uploaded to immich ([93a1b5d](https://github.com/zackpollard/fuji-cull/commit/93a1b5dddb5eb295d8e622a23ec22ca9ae80d814))
+* pure-go exif restamping and raf preview extraction ([2f23e47](https://github.com/zackpollard/fuji-cull/commit/2f23e47111cadb7b61698581d6b726006bfb59f0))
+
+
+### Bug Fixes
+
+* android crash on launch — defer connected-device fgs until usb grant ([7479749](https://github.com/zackpollard/fuji-cull/commit/74797495cf3c227a1d5e7912c89a5ae16b90c942))
+* android startup — honor FUJI_AFT in ensure, surface engine errors on screen ([8d5093c](https://github.com/zackpollard/fuji-cull/commit/8d5093c01b183b7ac54cd0b34cb95e6963bce722))
+* gomobile getters are methods in kotlin ([eb02f3e](https://github.com/zackpollard/fuji-cull/commit/eb02f3e58c2d0071a64ba812dc8003212f3a4f28))
+
 ## [1.2.2](https://github.com/zackpollard/fuji-cull/compare/v1.2.1...v1.2.2) (2026-07-10)
 
 
