@@ -42,7 +42,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        startForegroundService(Intent(this, EngineService::class.java))
+        startService(Intent(this, EngineService::class.java))
         bindService(Intent(this, EngineService::class.java), connection, Context.BIND_AUTO_CREATE)
         val filter = IntentFilter(ACTION_USB_PERMISSION)
         if (Build.VERSION.SDK_INT >= 33) {

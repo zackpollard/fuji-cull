@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.hardware.usb.UsbDeviceConnection
 import android.os.Binder
 import android.os.IBinder
@@ -34,7 +35,6 @@ class EngineService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(1, buildNotification())
         if (engine == null) {
             try {
                 val dataDir = File(filesDir, "data").apply { mkdirs() }
@@ -64,6 +64,13 @@ class EngineService : Service() {
         usb = connection
         engine?.setUSBFD(connection.fileDescriptor.toLong())
         Log.i(TAG, "usb fd ${connection.fileDescriptor} attached")
+        // connectedDevice FGS is only permitted while we hold a USB device
+        // grant, so promotion has to wait until a camera is attached
+        try {
+            startForeground(1, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        } catch (t: Throwable) {
+            Log.w(TAG, "foreground promotion failed, staying background", t)
+        }
     }
 
     override fun onDestroy() {
