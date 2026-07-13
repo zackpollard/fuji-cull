@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.0](https://github.com/zackpollard/fuji-cull/compare/v1.3.0...v1.4.0) (2026-07-13)
+
+
+### Features
+
+* android usb diagnostics on connect screen, ptp interface claim, detach handling ([28334dc](https://github.com/zackpollard/fuji-cull/commit/28334dcecdac35f3a5ceb8942c8c3381c1da86bd))
+
+
+### Bug Fixes
+
+* swallow the ghost TEXTINPUT from the keypress that opens the import panel ([#11](https://github.com/zackpollard/fuji-cull/issues/11)) ([86702c5](https://github.com/zackpollard/fuji-cull/commit/86702c5482c01de506ce866e5d99fef164cc8f0f))
+
 ## [1.3.0](https://github.com/zackpollard/fuji-cull/compare/v1.2.2...v1.3.0) (2026-07-12)
 
 
