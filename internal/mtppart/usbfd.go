@@ -11,7 +11,11 @@ import (
 // API — see mtpcli.SetUSBFD).
 func usbArgs() []string {
 	if mtpcli.USBFile() != nil {
-		return []string{"-b", "--device-fd", "3"}
+		args := []string{"-b", "--device-fd", "3"}
+		if mtpcli.ConsumeReset() {
+			args = append(args, "-R")
+		}
+		return args
 	}
 	return []string{"-b"}
 }

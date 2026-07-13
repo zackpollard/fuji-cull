@@ -145,7 +145,10 @@ func Start(dataDir, cacheDir, aftPath, immichURL, immichKey, session string, imm
 // SetUSBFD hands the engine a USB device opened by the platform (Android's
 // UsbDeviceConnection.getFileDescriptor()). Discovery retries pick it up
 // within seconds; call again after replugging.
-func (e *Engine) SetUSBFD(fd int) { mtpcli.SetUSBFD(fd) }
+func (e *Engine) SetUSBFD(fd int) {
+	mtpcli.SetUSBFD(fd)
+	e.app.Nudge() // fresh link: breakers and backoffs probe immediately
+}
 
 // ClearUSBFD forgets the descriptor after the platform reports the device
 // detached, so aft stops being handed a dead fd.

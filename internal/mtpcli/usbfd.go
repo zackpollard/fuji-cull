@@ -3,6 +3,7 @@ package mtpcli
 import (
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -38,7 +39,37 @@ func SetUSBFD(fd int) {
 func ClearUSBFD() {
 	usbMu.Lock()
 	usbFile = nil
+	resetPending = false
 	usbMu.Unlock()
+}
+
+var resetPending bool
+
+// RequestReset schedules a best-effort USBDEVFS_RESET (aft -R) on the next
+// invocation — the software equivalent of replugging the cable, for links
+// that reconnect in a degraded state (URB submissions failing).
+func RequestReset() {
+	usbMu.Lock()
+	resetPending = true
+	usbMu.Unlock()
+}
+
+// ConsumeReset reports whether the next invocation should reset the device,
+// clearing the flag (one attempt per request).
+func ConsumeReset() bool {
+	usbMu.Lock()
+	defer usbMu.Unlock()
+	if resetPending && usbFile != nil {
+		resetPending = false
+		return true
+	}
+	return false
+}
+
+// TransportBroken recognizes stderr from a degraded USB link that a device
+// reset may cure (seen after the camera drops off the bus and reconnects).
+func TransportBroken(out string) bool {
+	return strings.Contains(out, "submitting urb") || strings.Contains(out, "REAPURB")
 }
 
 // USBFile returns the shared descriptor wrapper, or nil in normal

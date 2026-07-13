@@ -83,7 +83,7 @@ index a2df6b6..83049ce 100644
  		void GetThumb(const LocalPath &dst, mtp::ObjectId srcId)
  		{ Get(dst, srcId, true); }
 diff --git a/cli/cli.cpp b/cli/cli.cpp
-index 8907ee9..3bca093 100644
+index 8907ee9..1caee8a 100644
 --- a/cli/cli.cpp
 +++ b/cli/cli.cpp
 @@ -74,6 +74,7 @@ int main(int argc, char **argv)
@@ -147,7 +147,7 @@ index 8907ee9..3bca093 100644
  	if (listDevices) {
  		for (usb::DeviceDescriptorPtr desc : ctx->GetDevices())
  		{
-@@ -207,7 +222,15 @@ int main(int argc, char **argv)
+@@ -207,7 +222,27 @@ int main(int argc, char **argv)
  
  	try
  	{
@@ -157,7 +157,19 @@ index 8907ee9..3bca093 100644
 +		{
 +			// android usb host api: java opens the device and hands us the fd
 +			auto desc = std::make_shared<usb::DeviceDescriptor>(deviceFd);
-+			device = Device::Open(ctx, desc, claimInterface, resetDevice);
++			if (resetDevice)
++			{
++				// best-effort software replug for a degraded link (urb
++				// errors); a failed reset must not block the open
++				try
++				{
++					if (auto d = desc->TryOpen(ctx))
++						d->Reset();
++				}
++				catch (const std::exception &ex)
++				{ error("device reset failed: ", ex.what()); }
++			}
++			device = Device::Open(ctx, desc, claimInterface, false);
 +		}
 +		else
 +			device = Device::FindFirst(ctx, deviceFilter, claimInterface, resetDevice);

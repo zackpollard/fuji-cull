@@ -54,6 +54,9 @@ func RunBatch(ctx context.Context, cmds ...string) (string, error) {
 		}
 		out, err = runBatchOnce(ctx, cmds...)
 		if err == nil || !strings.Contains(out, "already used") {
+			if err != nil && TransportBroken(out) {
+				RequestReset()
+			}
 			return out, err
 		}
 	}
@@ -67,6 +70,10 @@ func runBatchOnce(ctx context.Context, cmds ...string) (string, error) {
 	if f := USBFile(); f != nil {
 		args = append(args, "--device-fd", "3") // ExtraFiles[0] lands at fd 3
 		extra = []*os.File{f}
+		if ConsumeReset() {
+			args = append(args, "-R")
+			log.Printf("usb: link degraded — attempting device reset on this invocation")
+		}
 	}
 	c := exec.CommandContext(ctx, AftBin(), args...)
 	c.ExtraFiles = extra
