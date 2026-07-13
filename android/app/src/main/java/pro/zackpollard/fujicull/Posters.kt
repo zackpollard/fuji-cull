@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.io.File
 
 /**
@@ -30,22 +31,29 @@ object Posters {
         return lock.withLock {
             if (f.exists()) return@withLock f
             withContext(Dispatchers.IO) {
-                runCatching {
-                    val mmr = MediaMetadataRetriever()
-                    try {
-                        mmr.setDataSource(api.videoUrl(shot.id), emptyMap())
-                        val bmp = mmr.frameAtTime ?: return@runCatching null
-                        val scaled = if (bmp.width > 480) {
-                            Bitmap.createScaledBitmap(bmp, 480, bmp.height * 480 / bmp.width, true)
-                        } else bmp
-                        f.parentFile?.mkdirs()
-                        val tmp = File(f.path + ".tmp")
-                        tmp.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, 80, it) }
-                        if (tmp.renameTo(f)) f else null
-                    } finally {
-                        mmr.release()
+                val result = runCatching {
+                    withTimeout(60_000) {
+                        val mmr = MediaMetadataRetriever()
+                        try {
+                            mmr.setDataSource(api.videoUrl(shot.id), emptyMap())
+                            val bmp = mmr.frameAtTime ?: return@withTimeout null
+                            val scaled = if (bmp.width > 480) {
+                                Bitmap.createScaledBitmap(bmp, 480, bmp.height * 480 / bmp.width, true)
+                            } else bmp
+                            f.parentFile?.mkdirs()
+                            val tmp = File(f.path + ".tmp")
+                            tmp.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, 80, it) }
+                            if (tmp.renameTo(f)) f else null
+                        } finally {
+                            mmr.release()
+                        }
                     }
                 }.getOrNull()
+                // hand the camera back NOW — the streaming session would
+                // otherwise hold the claim (and pause all sweeps) for the
+                // 20s idle-janitor interval per video
+                api.releaseStream()
+                result
             }
         }
     }

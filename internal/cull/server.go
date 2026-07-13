@@ -323,6 +323,14 @@ func (a *App) handler() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	// Poster extraction reads one frame off a streaming session and is done;
+	// without an explicit release the session idles for 20s holding the
+	// camera claim — per video, the sweep freezes for the janitor interval.
+	mux.HandleFunc("POST /api/releasestream", func(w http.ResponseWriter, r *http.Request) {
+		a.prefetch.CloseStream()
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	mux.HandleFunc("POST /api/retry", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ID string `json:"id"`

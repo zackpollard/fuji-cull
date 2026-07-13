@@ -546,6 +546,24 @@ func (p *Prefetcher) Wait(ctx context.Context, id string) (string, error) {
 // Run is the single fetch worker; call in a goroutine. Interactive image
 // fetches always win; thumbnail sweeps fill the idle gaps.
 func (p *Prefetcher) Run() {
+	// Scheduler heartbeat: backoffs (thumbRetryAt) and breaker probe timers
+	// are only evaluated when the worker wakes, and cond.Wait has no timeout
+	// — without a periodic broadcast an expired backoff sleeps until the
+	// next user interaction (on the phone that read as "camera idle until I
+	// scroll, then a burst").
+	go func() {
+		tick := time.NewTicker(2 * time.Second)
+		defer tick.Stop()
+		for range tick.C {
+			p.mu.Lock()
+			closed := p.closed
+			p.mu.Unlock()
+			if closed {
+				return
+			}
+			p.cond.Broadcast()
+		}
+	}()
 	for {
 		p.mu.Lock()
 		var targets, thumbBatch, orientBatch, healBatch, posterBatch []*photo.Shot

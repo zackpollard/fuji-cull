@@ -75,6 +75,11 @@ class Api(private val port: Long) {
         runCatching { post("/api/retry", JSONObject().put("id", id)) }
     }
 
+    /** Hands the camera back after a one-shot stream use (poster grab). */
+    suspend fun releaseStream() = withContext(Dispatchers.IO) {
+        runCatching { post("/api/releasestream", JSONObject()) }
+    }
+
     private fun get(path: String): String {
         val c = URL(base + path).openConnection() as HttpURLConnection
         c.connectTimeout = 5000

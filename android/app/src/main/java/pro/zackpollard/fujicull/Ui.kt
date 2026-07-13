@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.activity.compose.BackHandler
 import androidx.compose.ui.window.Dialog
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
@@ -205,6 +206,7 @@ private fun ConnectScreen(
 
 @Composable
 private fun SettingsScreen(initial: Settings, onSave: (Settings) -> Unit, onClose: () -> Unit) {
+    BackHandler { onClose() }
     var url by remember { mutableStateOf(initial.url) }
     var apiKey by remember { mutableStateOf(initial.key) }
     var session by remember { mutableStateOf(initial.session) }
@@ -304,10 +306,19 @@ private fun CullScreen(
         return
     }
 
+    // hoisted above the viewer branch so grid scroll position survives
+    // opening and closing the viewer
+    val gridState = rememberLazyGridState()
+    var returnTo by remember { mutableIntStateOf(-1) }
+
     if (viewing >= 0) {
         Viewer(
             api, shots, thumbStates, orient, resumeTick, decisions,
-            start = viewing, onClose = { viewing = -1 },
+            start = viewing,
+            onClose = { page ->
+                viewing = -1
+                returnTo = page
+            },
         )
         return
     }
@@ -342,7 +353,13 @@ private fun CullScreen(
             }
         }
 
-        val gridState = rememberLazyGridState()
+        LaunchedEffect(returnTo) {
+            // land the grid where the viewer left off
+            if (returnTo >= 0) {
+                gridState.scrollToItem((returnTo - 4).coerceAtLeast(0))
+                returnTo = -1
+            }
+        }
         LaunchedEffect(shots.isEmpty()) {
             // steer the thumbnail sweep at whatever the user is looking at
             snapshotFlow {
@@ -466,11 +483,13 @@ private fun GridCell(
 private fun Viewer(
     api: Api, shots: List<Shot>, thumbStates: String, orient: String, tick: Int,
     decisions: androidx.compose.runtime.MutableState<MutableMap<String, String>>,
-    start: Int, onClose: () -> Unit,
+    start: Int, onClose: (Int) -> Unit,
 ) {
     val pager = rememberPagerState(initialPage = start) { shots.size }
     val scope = rememberCoroutineScope()
     val film = rememberLazyListState()
+
+    BackHandler { onClose(pager.currentPage) }
 
     LaunchedEffect(pager.currentPage) {
         // the buffer window and the timeline both follow the swipe
@@ -484,7 +503,10 @@ private fun Viewer(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("‹ grid", color = Amber, modifier = Modifier.clickable(onClick = onClose).padding(8.dp))
+            Text(
+                "‹ grid", color = Amber,
+                modifier = Modifier.clickable { onClose(pager.currentPage) }.padding(8.dp),
+            )
             val shot = shots[pager.currentPage]
             Text("${shot.folder}/${shot.base}", color = Color.White)
             Text("${pager.currentPage + 1}/${shots.size}", color = Dim)
