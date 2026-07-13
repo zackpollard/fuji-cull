@@ -19,6 +19,14 @@ func (a *App) Discovery() (stage string, files int, errMsg string) {
 	return a.discStage, a.discFiles, a.discErr
 }
 
+// Nudge pokes the fetch pipeline: breakers and backoffs become eligible for
+// an immediate probe. The mobile app calls it on foreground resume.
+func (a *App) Nudge() {
+	if a.isReady() {
+		a.prefetch.Nudge()
+	}
+}
+
 // Shots returns the catalog in display order. Only valid once Ready.
 func (a *App) Shots() []*photo.Shot { return a.catalog.Shots }
 

@@ -14,6 +14,7 @@ import android.os.IBinder
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.lifecycleScope
@@ -25,6 +26,7 @@ class MainActivity : ComponentActivity() {
 
     private var service by mutableStateOf<EngineService?>(null)
     private var usbDiag by mutableStateOf("scanning usb…")
+    private var resumeTick by mutableIntStateOf(0)
     private val requested = mutableSetOf<String>()
 
     private val connection = object : ServiceConnection {
@@ -73,9 +75,19 @@ class MainActivity : ComponentActivity() {
             CullApp(
                 service = service,
                 usbDiag = usbDiag,
+                resumeTick = resumeTick,
                 importDest = File(getExternalFilesDir(null), "import").absolutePath,
             )
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // returning from background: reprobe breakers immediately and let
+        // Coil retry any cells that failed while the process was frozen
+        resumeTick++
+        runCatching { service?.engine?.nudge() }
+        refreshUsb()
     }
 
     override fun onNewIntent(intent: Intent) {

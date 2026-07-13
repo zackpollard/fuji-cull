@@ -1,6 +1,7 @@
 package pro.zackpollard.fujicull
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,9 +13,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed as listItemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.Button
@@ -30,9 +36,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -43,15 +51,18 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 private val Keep = Color(0xFF37D67A)
 private val Reject = Color(0xFFFF5A3C)
 private val Amber = Color(0xFFFFB42E)
 private val Panel = Color(0xFF121412)
+private val Dim = Color(0xFF7D817B)
 
 @Composable
-fun CullApp(service: EngineService?, usbDiag: String, importDest: String) {
+fun CullApp(service: EngineService?, usbDiag: String, resumeTick: Int, importDest: String) {
     MaterialTheme(colorScheme = darkColorScheme(primary = Amber, surface = Panel)) {
         val engine = service?.engine
         var ready by remember { mutableStateOf(false) }
@@ -60,14 +71,18 @@ fun CullApp(service: EngineService?, usbDiag: String, importDest: String) {
 
         LaunchedEffect(engine) {
             while (true) {
-                val err = service?.startError
-                val e = service?.engine
-                if (err != null) {
-                    status = "engine failed: " + err
-                } else if (e != null) {
-                    ready = e.ready()
-                    status = if (ready) "ready" else e.discoveryStatus()
-                    logTail = e.recentLog()
+                try {
+                    val err = service?.startError
+                    val e = service?.engine
+                    if (err != null) {
+                        status = "engine failed: " + err
+                    } else if (e != null) {
+                        ready = e.ready()
+                        status = if (ready) "ready" else e.discoveryStatus()
+                        logTail = e.recentLog()
+                    }
+                } catch (t: Throwable) {
+                    status = "engine: ${t.message}"
                 }
                 if (ready) break
                 delay(700)
@@ -77,7 +92,7 @@ fun CullApp(service: EngineService?, usbDiag: String, importDest: String) {
         if (!ready || engine == null) {
             ConnectScreen(status, usbDiag, logTail)
         } else {
-            CullScreen(Api(engine.port()), importDest)
+            CullScreen(Api(engine.port()), importDest, resumeTick)
         }
     }
 }
@@ -92,7 +107,7 @@ private fun ConnectScreen(status: String, usbDiag: String = "", logTail: String 
         CircularProgressIndicator(color = Amber)
         Text(
             status,
-            color = Color(0xFF7D817B),
+            color = Dim,
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(24.dp),
             textAlign = TextAlign.Center,
@@ -101,7 +116,7 @@ private fun ConnectScreen(status: String, usbDiag: String = "", logTail: String 
             "set the camera to USB card-reader mode and make sure\n" +
                 "the phone is the usb host (usb notification →\n" +
                 "“USB controlled by: this device”)",
-            color = Color(0xFF7D817B),
+            color = Dim,
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,
         )
@@ -128,28 +143,43 @@ private fun ConnectScreen(status: String, usbDiag: String = "", logTail: String 
 }
 
 @Composable
-private fun CullScreen(api: Api, importDest: String) {
+private fun CullScreen(api: Api, importDest: String, resumeTick: Int) {
     var shots by remember { mutableStateOf(listOf<Shot>()) }
     val decisions = remember { mutableStateOf(mutableMapOf<String, String>()) }
     var thumbStates by remember { mutableStateOf("") }
     var orient by remember { mutableStateOf("") }
     var immich by remember { mutableStateOf("") }
+    var sick by remember { mutableStateOf(false) }
     var viewing by remember { mutableIntStateOf(-1) }
     var importing by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
-        val (s, d) = api.state()
-        shots = s
-        decisions.value = d
+        while (shots.isEmpty()) {
+            try {
+                val (s, d) = api.state()
+                shots = s
+                decisions.value = d
+            } catch (_: Throwable) {
+            }
+            if (shots.isEmpty()) delay(1000)
+        }
         while (true) {
-            val (t, o, im) = api.thumbStates()
-            thumbStates = t; orient = o; immich = im
-            if (importing.isNotEmpty()) {
-                val st = api.importStatus()
-                importing = if (st.optBoolean("running")) {
-                    "importing ${st.optInt("done")}/${st.optInt("total")}"
-                } else st.optString("error").ifEmpty { "import done" }
+            // one failed poll (process freeze while backgrounded, engine
+            // restart) must not kill this loop — a dead loop is exactly
+            // "thumbnails never load again until app restart"
+            try {
+                val (t, o, im) = api.thumbStates()
+                thumbStates = t; orient = o; immich = im
+                val st = api.status()
+                sick = st.optBoolean("bulkSick") || st.optBoolean("partSick")
+                val imp = st.getJSONObject("import")
+                if (imp.optBoolean("running")) {
+                    importing = "importing ${imp.optInt("done")}/${imp.optInt("total")}"
+                } else if (importing.isNotEmpty() && importing != "import done") {
+                    importing = imp.optString("error").ifEmpty { "import done" }
+                }
+            } catch (_: Throwable) {
             }
             delay(2000)
         }
@@ -161,7 +191,10 @@ private fun CullScreen(api: Api, importDest: String) {
     }
 
     if (viewing >= 0) {
-        Viewer(api, shots, decisions, start = viewing, onClose = { viewing = -1 })
+        Viewer(
+            api, shots, thumbStates, orient, resumeTick, decisions,
+            start = viewing, onClose = { viewing = -1 },
+        )
         return
     }
 
@@ -173,14 +206,35 @@ private fun CullScreen(api: Api, importDest: String) {
         ) {
             val kept = decisions.value.count { it.value == "keep" }
             val rejected = decisions.value.count { it.value == "reject" }
-            Text("K $kept  X $rejected  · ${shots.size - kept - rejected}", color = Color.White)
+            Column {
+                Text("K $kept  X $rejected  · ${shots.size - kept - rejected}", color = Color.White)
+                val have = thumbStates.count { it == '1' }
+                Text(
+                    if (sick) "thumbs $have/${shots.size} · CAMERA SICK" else "thumbs $have/${shots.size}",
+                    color = if (sick) Reject else Dim,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             if (importing.isNotEmpty()) Text(importing, color = Amber)
             Button(onClick = {
                 importing = "importing…"
-                scope.launch { api.startImport(importDest, "") }
+                scope.launch { runCatching { api.startImport(importDest, "") } }
             }) { Text("IMPORT") }
         }
-        LazyVerticalGrid(columns = GridCells.Adaptive(110.dp), Modifier.fillMaxSize()) {
+
+        val gridState = rememberLazyGridState()
+        LaunchedEffect(shots.isEmpty()) {
+            // steer the thumbnail sweep at whatever the user is looking at
+            snapshotFlow {
+                gridState.firstVisibleItemIndex + gridState.layoutInfo.visibleItemsInfo.size / 2
+            }
+                .distinctUntilChanged()
+                .collectLatest {
+                    delay(400) // settle after flings
+                    api.thumbHint(it.coerceIn(0, shots.size - 1))
+                }
+        }
+        LazyVerticalGrid(columns = GridCells.Adaptive(110.dp), Modifier.fillMaxSize(), state = gridState) {
             itemsIndexed(shots, key = { _, s -> s.id }) { i, shot ->
                 GridCell(
                     api, shot,
@@ -188,6 +242,7 @@ private fun CullScreen(api: Api, importDest: String) {
                     orientC = orient.getOrNull(i) ?: '0',
                     uploaded = immich.getOrNull(i) == '1',
                     decision = decisions.value[shot.id] ?: "",
+                    tick = resumeTick,
                     onClick = { viewing = i },
                 )
             }
@@ -198,17 +253,17 @@ private fun CullScreen(api: Api, importDest: String) {
 @Composable
 private fun GridCell(
     api: Api, shot: Shot, hasThumb: Boolean, orientC: Char,
-    uploaded: Boolean, decision: String, onClick: () -> Unit,
+    uploaded: Boolean, decision: String, tick: Int, onClick: () -> Unit,
 ) {
     Box(
         Modifier.padding(1.dp).aspectRatio(1.48f).background(Color(0xFF1D201D)).clickable(onClick = onClick),
     ) {
         if (hasThumb) {
             AsyncImage(
-                model = api.thumbUrl(shot.id, orientC),
+                model = api.thumbUrl(shot.id, orientC, tick),
                 contentDescription = shot.base,
                 modifier = Modifier.fillMaxSize(),
-                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                contentScale = ContentScale.Crop,
             )
         }
         if (shot.kind == "video") {
@@ -229,12 +284,19 @@ private fun GridCell(
 
 @Composable
 private fun Viewer(
-    api: Api, shots: List<Shot>,
+    api: Api, shots: List<Shot>, thumbStates: String, orient: String, tick: Int,
     decisions: androidx.compose.runtime.MutableState<MutableMap<String, String>>,
     start: Int, onClose: () -> Unit,
 ) {
     val pager = rememberPagerState(initialPage = start) { shots.size }
     val scope = rememberCoroutineScope()
+    val film = rememberLazyListState()
+
+    LaunchedEffect(pager.currentPage) {
+        // the buffer window and the timeline both follow the swipe
+        api.cursor(pager.currentPage)
+        film.animateScrollToItem((pager.currentPage - 2).coerceAtLeast(0))
+    }
 
     Column(Modifier.fillMaxSize().background(Color.Black)) {
         Row(
@@ -245,7 +307,7 @@ private fun Viewer(
             Text("‹ grid", color = Amber, modifier = Modifier.clickable(onClick = onClose).padding(8.dp))
             val shot = shots[pager.currentPage]
             Text("${shot.folder}/${shot.base}", color = Color.White)
-            Text("${pager.currentPage + 1}/${shots.size}", color = Color(0xFF7D817B))
+            Text("${pager.currentPage + 1}/${shots.size}", color = Dim)
         }
 
         HorizontalPager(state = pager, modifier = Modifier.weight(1f), beyondViewportPageCount = 2) { page ->
@@ -257,8 +319,37 @@ private fun Viewer(
                     model = api.imageUrl(shot.id),
                     contentDescription = shot.base,
                     modifier = Modifier.fillMaxSize(),
-                    contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                    contentScale = ContentScale.Fit,
                 )
+            }
+        }
+
+        // timeline: tap to jump, amber outline marks the current shot
+        LazyRow(state = film, modifier = Modifier.fillMaxWidth().background(Panel)) {
+            listItemsIndexed(shots, key = { _, s -> s.id }) { i, shot ->
+                val current = i == pager.currentPage
+                Box(
+                    Modifier.padding(2.dp).width(64.dp).height(44.dp)
+                        .background(Color(0xFF1D201D))
+                        .then(if (current) Modifier.border(2.dp, Amber) else Modifier)
+                        .clickable { scope.launch { pager.scrollToPage(i) } },
+                ) {
+                    if (thumbStates.getOrNull(i) == '1') {
+                        AsyncImage(
+                            model = api.thumbUrl(shot.id, orient.getOrNull(i) ?: '0', tick),
+                            contentDescription = shot.base,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop,
+                        )
+                    }
+                    decisions.value[shot.id]?.let { d ->
+                        Box(
+                            Modifier.fillMaxWidth().height(3.dp)
+                                .background(if (d == "keep") Keep else Reject)
+                                .align(Alignment.BottomStart),
+                        )
+                    }
+                }
             }
         }
 
@@ -296,7 +387,7 @@ private suspend fun setDecision(
     val next = decisions.value.toMutableMap()
     if (value.isEmpty()) next.remove(id) else next[id] = value
     decisions.value = next
-    api.decide(id, value)
+    runCatching { api.decide(id, value) }
 }
 
 @Composable

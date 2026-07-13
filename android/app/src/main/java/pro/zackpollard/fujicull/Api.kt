@@ -14,9 +14,12 @@ data class Shot(val id: String, val folder: String, val base: String, val kind: 
 class Api(private val port: Long) {
     val base get() = "http://127.0.0.1:$port"
 
-    fun thumbUrl(id: String, orient: Char = '0'): String {
+    fun thumbUrl(id: String, orient: Char = '0', tick: Int = 0): String {
         var u = "$base/api/thumb?id=" + URLEncoder.encode(id, "UTF-8")
         if (orient > '1') u += "&o=$orient"
+        // resume counter: busts Coil's per-URL cache so cells that failed
+        // while the process was frozen retry after foregrounding
+        if (tick > 0) u += "&rt=$tick"
         return u
     }
 
@@ -53,8 +56,18 @@ class Api(private val port: Long) {
         post("/api/import", JSONObject().put("dest", dest).put("album", album))
     }
 
-    suspend fun importStatus(): JSONObject = withContext(Dispatchers.IO) {
-        JSONObject(get("/api/status")).getJSONObject("import")
+    suspend fun status(): JSONObject = withContext(Dispatchers.IO) {
+        JSONObject(get("/api/status"))
+    }
+
+    /** Sweep origin for thumbnail work — call as the grid viewport moves. */
+    suspend fun thumbHint(index: Int) = withContext(Dispatchers.IO) {
+        runCatching { post("/api/thumbhint", JSONObject().put("index", index)) }
+    }
+
+    /** Buffer-window center — call as the viewer page changes. */
+    suspend fun cursor(index: Int) = withContext(Dispatchers.IO) {
+        runCatching { post("/api/cursor", JSONObject().put("index", index)) }
     }
 
     private fun get(path: String): String {

@@ -74,6 +74,7 @@ type Prefetcher struct {
 	orient      map[string]uint8 // shot ID -> EXIF orientation (absent = unknown)
 	orientDirty bool
 	healTried   map[string]bool // camera-impossible shots already head-healed (or attempted)
+	imageTurn   bool            // last non-demand cycle was a window fill; heads go next
 
 	onReady func(*photo.Shot) // optional hook: a verbatim file just landed
 }
@@ -350,6 +351,23 @@ func (p *Prefetcher) interruptImagesLocked(id string) {
 	p.imgCancel()
 }
 
+// Nudge wakes the worker and makes tripped breakers and backoffs eligible
+// for an immediate probe — the mobile app calls it on foreground resume,
+// where "wait out the 20s probe interval" reads as a hang.
+func (p *Prefetcher) Nudge() {
+	p.mu.Lock()
+	p.thumbRetryAt = time.Time{}
+	p.thumbTimeouts = 0
+	if p.partSick {
+		p.partSickAt = time.Now().Add(-sickProbeInterval - time.Second)
+	}
+	if p.bulkSick {
+		p.bulkSickAt = time.Now().Add(-sickProbeInterval - time.Second)
+	}
+	p.mu.Unlock()
+	p.cond.Broadcast()
+}
+
 // Retry clears a failed state so the worker attempts the shot again.
 func (p *Prefetcher) Retry(id string) {
 	p.mu.Lock()
@@ -456,7 +474,22 @@ func (p *Prefetcher) Run() {
 				return
 			}
 			if p.pause == 0 {
+				// Grid-first fairness: window image fills and the head sweep
+				// take turns while both have work — a cold buffer would
+				// otherwise starve the grid of thumbnails for the entire
+				// window fill (minutes of full-size pulls on phone-class
+				// links). Demands are user-blocking and always win.
+				if p.imageTurn && len(p.demand) == 0 && p.partBin != "" && !p.partSick {
+					if healBatch = p.pickHealBatchLocked(orientBatchSize); len(healBatch) > 0 {
+						p.imageTurn = false
+						thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
+						break
+					}
+				}
 				if targets = p.pickLocked(); len(targets) > 0 {
+					if len(p.demand) == 0 {
+						p.imageTurn = true
+					}
 					break
 				}
 				// Tripped partial-read breaker: probe recovery every 3

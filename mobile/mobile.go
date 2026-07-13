@@ -121,6 +121,10 @@ func (e *Engine) ClearUSBFD() { mtpcli.ClearUSBFD() }
 // RecentLog returns the last engine log lines for on-screen diagnostics.
 func (e *Engine) RecentLog() string { return engineLog.tail(10) }
 
+// Nudge wakes the fetch pipeline after the app returns to the foreground —
+// breakers and backoffs probe immediately instead of waiting out their timers.
+func (e *Engine) Nudge() { e.app.Nudge() }
+
 // Port is where the HTTP API and web assets are served on 127.0.0.1.
 func (e *Engine) Port() int { return e.port }
 
