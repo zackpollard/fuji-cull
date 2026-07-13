@@ -83,7 +83,7 @@ index a2df6b6..83049ce 100644
  		void GetThumb(const LocalPath &dst, mtp::ObjectId srcId)
  		{ Get(dst, srcId, true); }
 diff --git a/cli/cli.cpp b/cli/cli.cpp
-index 8907ee9..e0491e4 100644
+index 8907ee9..3bca093 100644
 --- a/cli/cli.cpp
 +++ b/cli/cli.cpp
 @@ -74,6 +74,7 @@ int main(int argc, char **argv)
@@ -129,7 +129,25 @@ index 8907ee9..e0491e4 100644
  			"-l\t--device-list\tlist devices\n"
  			"-V\t--version\tshow version information"
  			);
-@@ -207,7 +213,15 @@ int main(int argc, char **argv)
+@@ -184,7 +190,16 @@ int main(int argc, char **argv)
+ 		exit(0);
+ 	}
+ 
+-	usb::ContextPtr ctx(new usb::Context);
++	usb::ContextPtr ctx;
++	try
++	{ ctx = std::make_shared<usb::Context>(); }
++	catch (const std::exception & ex)
++	{
++		// no /sys/dev scan rights (android): --device-fd needs no context
++		if (deviceFd < 0)
++			throw;
++		error("usb context unavailable: ", ex.what(), " (continuing with --device-fd)");
++	}
+ 	if (listDevices) {
+ 		for (usb::DeviceDescriptorPtr desc : ctx->GetDevices())
+ 		{
+@@ -207,7 +222,15 @@ int main(int argc, char **argv)
  
  	try
  	{
@@ -147,7 +165,7 @@ index 8907ee9..e0491e4 100644
  		{
  			error("device not found (filter = '", deviceFilter, "'");
 diff --git a/mtp/backend/linux/usb/DeviceDescriptor.cpp b/mtp/backend/linux/usb/DeviceDescriptor.cpp
-index d57d5d0..e2db149 100644
+index d57d5d0..8efa386 100644
 --- a/mtp/backend/linux/usb/DeviceDescriptor.cpp
 +++ b/mtp/backend/linux/usb/DeviceDescriptor.cpp
 @@ -25,6 +25,7 @@
@@ -158,7 +176,7 @@ index d57d5d0..e2db149 100644
  
  namespace mtp { namespace usb
  {
-@@ -39,6 +40,23 @@ namespace mtp { namespace usb
+@@ -39,6 +40,74 @@ namespace mtp { namespace usb
  		_configurationValue = Directory::ReadInt(path + "/bConfigurationValue", 10);
  	}
  
@@ -177,12 +195,63 @@ index d57d5d0..e2db149 100644
 +		_deviceNumber		= -1;
 +		_controlEp			= std::make_shared<Endpoint>(0, blob[7], EndpointDirection::Both, EndpointType::Control);
 +		_configurationValue	= blob[18 + 5]; // first configuration descriptor
++
++		// no sysfs on this path: synthesize configurations/interfaces/endpoints
++		// from the raw descriptor set that usbfs returns after the device
++		// descriptor (Device::Open finds MTP by class 6 subclass 1)
++		int confIndex = -1, currentInterface = -1;
++		u8 klass = 0, subclass = 0;
++		std::vector<EndpointPtr> eps;
++		auto flushInterface = [&]() {
++			if (confIndex >= 0 && currentInterface >= 0)
++				AddInterface(confIndex, currentInterface,
++					std::make_shared<Interface>(currentInterface, klass, subclass, std::move(eps)));
++			eps.clear();
++			currentInterface = -1;
++		};
++		size_t off = 0;
++		while (off + 2 <= blob.size())
++		{
++			u8 dlen = blob[off], dtype = blob[off + 1];
++			if (dlen < 2 || off + dlen > blob.size())
++				break;
++			switch (dtype)
++			{
++			case 2: // configuration
++				flushInterface();
++				++confIndex;
++				break;
++			case 4: // interface, alt-setting 0 only
++				flushInterface();
++				if (blob[off + 3] == 0)
++				{
++					currentInterface = blob[off + 2];
++					klass = blob[off + 5];
++					subclass = blob[off + 6];
++				}
++				break;
++			case 5: // endpoint
++				if (currentInterface >= 0 && dlen >= 7)
++				{
++					u8 addr = blob[off + 2];
++					u8 attrs = blob[off + 3] & 3;
++					u16 mps = blob[off + 4] | (blob[off + 5] << 8);
++					eps.push_back(std::make_shared<Endpoint>(addr, mps,
++						(addr & 0x80) ? EndpointDirection::In : EndpointDirection::Out,
++						static_cast<EndpointType>(attrs)));
++				}
++				break;
++			}
++			off += dlen;
++		}
++		flushInterface();
++		debug("fd descriptor parse: ", GetConfigurationsCount(), " configuration(s)");
 +	}
 +
  	DevicePtr DeviceDescriptor::Open(ContextPtr context)
  	{
  		DevicePtr device = TryOpen(context);
-@@ -49,6 +67,13 @@ namespace mtp { namespace usb
+@@ -49,6 +118,13 @@ namespace mtp { namespace usb
  
  	DevicePtr DeviceDescriptor::TryOpen(ContextPtr context)
  	{
@@ -197,7 +266,7 @@ index d57d5d0..e2db149 100644
  		snprintf(fname, sizeof(fname), "/dev/bus/usb/%03d/%03u", _busId, _deviceNumber);
  		int fd = open(fname, O_RDWR);
 diff --git a/mtp/backend/linux/usb/DeviceDescriptor.h b/mtp/backend/linux/usb/DeviceDescriptor.h
-index 01682a1..400e93a 100644
+index 01682a1..e8d0eb8 100644
 --- a/mtp/backend/linux/usb/DeviceDescriptor.h
 +++ b/mtp/backend/linux/usb/DeviceDescriptor.h
 @@ -30,6 +30,7 @@ namespace mtp { namespace usb
@@ -208,7 +277,19 @@ index 01682a1..400e93a 100644
  	public:
  		Configuration() { }
  
-@@ -63,7 +64,10 @@ namespace mtp { namespace usb
+@@ -49,6 +50,11 @@ namespace mtp { namespace usb
+ 		{
+ 			_interfaces[index] = std::make_shared<Interface>(index, path);
+ 		}
++
++		void AddInterface(int index, InterfacePtr iface)
++		{
++			_interfaces[index] = iface;
++		}
+ 	};
+ 
+ 	class DeviceDescriptor
+@@ -63,7 +69,10 @@ namespace mtp { namespace usb
  		EndpointPtr						_controlEp;
  		ByteArray						_descriptor;
  
@@ -219,6 +300,24 @@ index 01682a1..400e93a 100644
  		DeviceDescriptor(int busId, const std::string &path);
  		~DeviceDescriptor();
  
+@@ -92,6 +101,17 @@ namespace mtp { namespace usb
+ 			conf->AddInterface(interface, path);
+ 		}
+ 
++		void AddInterface(int confIndex, int interface, InterfacePtr iface)
++		{
++			ConfigurationPtr &conf = _configurationMap[confIndex];
++			if (!conf)
++			{
++				conf = std::make_shared<Configuration>();
++				_configuration.push_back(conf);
++			}
++			conf->AddInterface(interface, iface);
++		}
++
+ 		ByteArray GetDescriptor() const
+ 		{ return _descriptor; }
+ 	};
 diff --git a/mtp/backend/linux/usb/Endpoint.h b/mtp/backend/linux/usb/Endpoint.h
 index 9c40999..79945e2 100644
 --- a/mtp/backend/linux/usb/Endpoint.h
@@ -232,6 +331,20 @@ index 9c40999..79945e2 100644
  
  		u8 GetAddress() const
  		{ return _addr; }
+diff --git a/mtp/backend/linux/usb/Interface.h b/mtp/backend/linux/usb/Interface.h
+index cb93ca3..336c040 100644
+--- a/mtp/backend/linux/usb/Interface.h
++++ b/mtp/backend/linux/usb/Interface.h
+@@ -45,6 +45,9 @@ namespace mtp { namespace usb
+ 
+ 	public:
+ 		Interface(int index, const std::string &path);
++		// built straight from raw configuration descriptors (fd path: no sysfs)
++		Interface(int index, u8 klass, u8 subclass, std::vector<EndpointPtr> endpoints):
++			_endpoints(std::move(endpoints)), _class(klass), _subclass(subclass), _index(index) { }
+ 
+ 		u8 GetClass() const
+ 		{ return _class; }
 diff --git a/mtp/backend/posix/Exception.cpp b/mtp/backend/posix/Exception.cpp
 index d9caed9..736da2c 100644
 --- a/mtp/backend/posix/Exception.cpp
