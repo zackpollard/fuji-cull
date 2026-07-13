@@ -34,46 +34,52 @@ object Posters {
     suspend fun load(ctx: Context, api: Api, shot: Shot): File? {
         val f = file(ctx, shot)
         if (f.exists()) return f
-        val fail = File(f.path + ".fail")
+        // .fail2: fresh namespace — markers from older extraction logic
+        // shouldn't permanently doom a video
+        val fail = File(f.path + ".fail2")
         if (fail.exists()) return null
         return lock.withLock {
             if (f.exists()) return@withLock f
             if (fail.exists()) return@withLock null
             withContext(Dispatchers.IO) {
                 val head = File(ctx.cacheDir, "posters/${f.nameWithoutExtension}.head")
+                // /api/videohead rides the shared partial-read session —
+                // no streaming claim, no readahead, exactly 8 MB. A 503
+                // means the link is busy (streaming/import): transient,
+                // do NOT mark the video failed.
                 val fetched = runCatching {
-                    val c = URL(api.videoUrl(shot.id)).openConnection() as HttpURLConnection
-                    c.setRequestProperty("Range", "bytes=0-${HEAD_BYTES - 1}")
+                    val c = URL(api.videoHeadUrl(shot.id)).openConnection() as HttpURLConnection
                     c.connectTimeout = 5000
-                    c.readTimeout = 90000
+                    c.readTimeout = 120000
+                    if (c.responseCode != 200) return@runCatching false
                     head.parentFile?.mkdirs()
                     c.inputStream.use { ins -> head.outputStream().use { ins.copyTo(it) } }
                     head.length() > 0
                 }.getOrDefault(false)
-                api.releaseStream() // camera goes back to sweeping NOW
-
-                var bmp: Bitmap? = null
-                var diag = "fetched=$fetched"
-                if (fetched) {
-                    runCatching { patchTruncatedBoxes(head) }
-                    bmp = runCatching {
-                        val mmr = MediaMetadataRetriever()
-                        try {
-                            mmr.setDataSource(head.absolutePath)
-                            diag += " mime=" + mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE) +
-                                " w=" + mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
-                            // frame 0 explicitly: the no-arg "representative
-                            // frame" often seeks mid-video, past the head
-                            mmr.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                        } finally {
-                            mmr.release()
-                        }
-                    }.onFailure { diag += " err=${it.message}" }.getOrNull()
+                if (!fetched) {
+                    head.delete()
+                    return@withContext null // transient: retried on a later recomposition
                 }
+
+                var diag = ""
+                runCatching { patchTruncatedBoxes(head) }
+                val bmp: Bitmap? = runCatching {
+                    val mmr = MediaMetadataRetriever()
+                    try {
+                        mmr.setDataSource(head.absolutePath)
+                        diag = "mime=" + mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE) +
+                            " w=" + mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                        // frame 0 explicitly: the no-arg "representative
+                        // frame" often seeks mid-video, past the head
+                        mmr.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    } finally {
+                        mmr.release()
+                    }
+                }.onFailure { diag += " err=${it.message}" }.getOrNull()
                 head.delete()
 
                 if (bmp == null) {
-                    api.logEvent("poster: ${shot.base} failed ($diag; marked, no retry)")
+                    api.logEvent("poster: ${shot.base} undecodable ($diag; marked, no retry)")
                     fail.parentFile?.mkdirs()
                     fail.writeText("")
                     null

@@ -29,6 +29,9 @@ class Api(private val port: Long) {
     fun videoUrl(id: String): String =
         "$base/api/video?id=" + URLEncoder.encode(id, "UTF-8")
 
+    fun videoHeadUrl(id: String): String =
+        "$base/api/videohead?id=" + URLEncoder.encode(id, "UTF-8")
+
     suspend fun state(): Pair<List<Shot>, MutableMap<String, String>> = withContext(Dispatchers.IO) {
         val o = JSONObject(get("/api/state"))
         val shots = mutableListOf<Shot>()

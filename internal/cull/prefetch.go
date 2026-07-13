@@ -434,6 +434,41 @@ func (p *Prefetcher) closePartsServer() {
 	}
 }
 
+// VideoHead returns the first 8 MB of a video via the shared partial-read
+// session — enough for moov plus the opening frames, which is all poster
+// extraction needs. Refuses (rather than queues) while streaming, import or
+// a tripped breaker owns the link: the caller treats that as transient.
+func (p *Prefetcher) VideoHead(s *photo.Shot, ext string) ([]byte, error) {
+	if p.partBin == "" || s == nil || s.ObjectIDs[ext] == "" {
+		return nil, fmt.Errorf("video head unavailable")
+	}
+	p.streamMu.Lock()
+	busy := p.stream != nil
+	p.streamMu.Unlock()
+	p.mu.Lock()
+	if p.pause > 0 || p.partSick {
+		busy = true
+	}
+	p.mu.Unlock()
+	if busy {
+		return nil, fmt.Errorf("camera link busy")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	data, err := p.partsReadAt(ctx, s.ObjectIDs[ext], 0, 8<<20)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) < 8 || string(data[4:8]) != "ftyp" {
+		p.mu.Lock()
+		p.markPartSickLocked()
+		p.mu.Unlock()
+		p.closePartsServer()
+		return nil, fmt.Errorf("camera returned stale-buffer garbage")
+	}
+	return data, nil
+}
+
 // Nudge wakes the worker and makes tripped breakers and backoffs eligible
 // for an immediate probe — the mobile app calls it on foreground resume,
 // where "wait out the 20s probe interval" reads as a hang.

@@ -71,6 +71,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.activity.compose.BackHandler
 import androidx.compose.ui.window.Dialog
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
@@ -591,7 +593,7 @@ private fun Viewer(
         HorizontalPager(state = pager, modifier = Modifier.weight(1f), beyondViewportPageCount = 2) { page ->
             val shot = shots[page]
             if (shot.kind == "video") {
-                VideoPlayer(api.videoUrl(shot.id), active = page == pager.currentPage)
+                VideoPlayer(api, shot, active = page == pager.currentPage)
             } else {
                 ZoomableImage(api, shot)
             }
@@ -798,15 +800,42 @@ private fun CullButton(label: String, color: Color, active: Boolean, onClick: ()
 }
 
 @Composable
-private fun VideoPlayer(url: String, active: Boolean) {
+private fun VideoPlayer(api: Api, shot: Shot, active: Boolean) {
     val context = LocalContext.current
+    if (!active) {
+        // a neighbor page building a player would open a competing camera
+        // stream and steal the session from the video actually playing —
+        // show the cached poster instead until this page is current
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            val poster = Posters.cached(context, shot)
+            if (poster != null) {
+                AsyncImage(
+                    model = poster,
+                    contentDescription = shot.base,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit,
+                )
+            } else {
+                Text("video", color = Dim)
+            }
+        }
+        return
+    }
+    val scope = rememberCoroutineScope()
     val player = remember {
         ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(url))
+            addListener(object : Player.Listener {
+                override fun onPlayerError(error: PlaybackException) {
+                    scope.launch {
+                        api.logEvent("video ${shot.base}: ${error.errorCodeName} ${error.message}")
+                    }
+                }
+            })
+            setMediaItem(MediaItem.fromUri(api.videoUrl(shot.id)))
             prepare()
+            playWhenReady = true
         }
     }
-    LaunchedEffect(active) { player.playWhenReady = active }
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose { player.release() }
     }

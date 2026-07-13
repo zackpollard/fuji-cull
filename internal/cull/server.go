@@ -323,6 +323,32 @@ func (a *App) handler() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	// First 8 MB of a video for client-side poster extraction — via the
+	// shared partial-read session, so it never steals the streaming claim
+	// or triggers stream readahead. 503 = link busy, try again later.
+	mux.HandleFunc("GET /api/videohead", func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("id")
+		s := a.catalog.Get(id)
+		if s == nil || s.Kind != "video" {
+			http.Error(w, "unknown video", http.StatusNotFound)
+			return
+		}
+		var ext string
+		for _, e := range []string{"MOV", "MP4"} {
+			if _, ok := s.Files[e]; ok {
+				ext = e
+				break
+			}
+		}
+		data, err := a.prefetch.VideoHead(s, ext)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "video/quicktime")
+		w.Write(data)
+	})
+
 	// Poster extraction reads one frame off a streaming session and is done;
 	// without an explicit release the session idles for 20s holding the
 	// camera claim — per video, the sweep freezes for the janitor interval.
