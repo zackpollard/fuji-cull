@@ -68,8 +68,9 @@ type Engine struct {
 // Start launches the engine. dataDir holds sessions and settings, cacheDir
 // the image buffer and thumbnails; aftPath is the bundled patched aft binary
 // (Android: nativeLibraryDir + "/libaftcli.so"). immichURL/immichKey may be
-// empty to disable Immich integration.
-func Start(dataDir, cacheDir, aftPath, immichURL, immichKey string) (*Engine, error) {
+// empty to disable Immich integration; session defaults to "default";
+// immichStack stacks RAF+JPG pairs after upload.
+func Start(dataDir, cacheDir, aftPath, immichURL, immichKey, session string, immichStack bool) (*Engine, error) {
 	// The engine resolves sessions/settings under HOME.
 	os.Setenv("HOME", dataDir)
 	// stderr still reaches logcat (GoLog); the ring feeds the connect screen
@@ -78,11 +79,15 @@ func Start(dataDir, cacheDir, aftPath, immichURL, immichKey string) (*Engine, er
 		os.Setenv("FUJI_AFT", aftPath)      // bulk transfers
 		os.Setenv("FUJI_AFT_PART", aftPath) // partial reads (same patched binary)
 	}
+	if session == "" {
+		session = "default"
+	}
 
 	o := cull.Options{
 		BackendName: "cli",
 		CameraRoot:  "/SLOT 1/DCIM,/SLOT 2/DCIM",
-		SessionName: "default",
+		SessionName: session,
+		ImmichStack: immichStack,
 		CacheDir:    cacheDir,
 		Ahead:       80,
 		Behind:      30,
@@ -124,6 +129,11 @@ func (e *Engine) RecentLog() string { return engineLog.tail(10) }
 // Nudge wakes the fetch pipeline after the app returns to the foreground —
 // breakers and backoffs probe immediately instead of waiting out their timers.
 func (e *Engine) Nudge() { e.app.Nudge() }
+
+// SetEnv sets a process environment variable through the Go runtime.
+// Android's android.system.Os.setenv only mutates the C environ, which Go
+// snapshotted at startup — values set there never reach exec'd children.
+func SetEnv(key, value string) { os.Setenv(key, value) }
 
 // Port is where the HTTP API and web assets are served on 127.0.0.1.
 func (e *Engine) Port() int { return e.port }

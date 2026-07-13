@@ -39,27 +39,63 @@ class EngineService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (engine == null) {
-            try {
-                val dataDir = File(filesDir, "data").apply { mkdirs() }
-                val bufDir = File(cacheDir, "buffer").apply { mkdirs() }
-                val aft = File(applicationInfo.nativeLibraryDir, "libaftcli.so")
-                val prefs = getSharedPreferences("immich", MODE_PRIVATE)
-                engine = Mobile.start(
-                    dataDir.absolutePath,
-                    bufDir.absolutePath,
-                    if (aft.exists()) aft.absolutePath else "",
-                    prefs.getString("url", "") ?: "",
-                    prefs.getString("key", "") ?: "",
-                )
-                startError = null
-                Log.i(TAG, "engine started on port ${engine?.port()}")
-            } catch (t: Throwable) {
-                startError = t.message ?: t.toString()
-                Log.e(TAG, "engine start failed", t)
-            }
-        }
+        if (engine == null) startEngine()
         return START_STICKY
+    }
+
+    private fun startEngine() {
+        try {
+            val dataDir = File(filesDir, "data").apply { mkdirs() }
+            val bufDir = File(cacheDir, "buffer").apply { mkdirs() }
+            val prefs = getSharedPreferences("immich", MODE_PRIVATE)
+            engine = Mobile.start(
+                dataDir.absolutePath,
+                bufDir.absolutePath,
+                aftPath(),
+                prefs.getString("url", "") ?: "",
+                prefs.getString("key", "") ?: "",
+                prefs.getString("session", "") ?: "",
+                prefs.getBoolean("stack", false),
+            )
+            startError = null
+            usb?.let { engine?.setUSBFD(it.fileDescriptor.toLong()) }
+            Log.i(TAG, "engine started on port ${engine?.port()}")
+        } catch (t: Throwable) {
+            startError = t.message ?: t.toString()
+            Log.e(TAG, "engine start failed", t)
+        }
+    }
+
+    /** Applies new settings by restarting the engine (USB fd survives). */
+    fun restartEngine() {
+        try {
+            engine?.stop()
+        } catch (_: Throwable) {
+        }
+        engine = null
+        startError = null
+        startEngine()
+    }
+
+    /**
+     * Resolves the camera binary. Dev builds fall back to the aft-sim fake
+     * (libaftsim.so) when a populated fakecam dir exists in external files —
+     * the emulator harness pushes a corpus there to test the whole app
+     * without hardware.
+     */
+    private fun aftPath(): String {
+        val fakeRoot = File(getExternalFilesDir(null), "fakecam")
+        val sim = File(applicationInfo.nativeLibraryDir, "libaftsim.so")
+        if (sim.exists() && fakeRoot.isDirectory && !fakeRoot.list().isNullOrEmpty()) {
+            // must go through Go's env, not Os.setenv — Go snapshots environ
+            // at startup and exec'd children inherit the Go copy
+            Mobile.setEnv("FUJI_FAKE_ROOT", fakeRoot.absolutePath)
+            Mobile.setEnv("FUJI_FAKE_SETUP_MS", "400")
+            Log.w(TAG, "FAKE CAMERA MODE: $fakeRoot")
+            return sim.absolutePath
+        }
+        val aft = File(applicationInfo.nativeLibraryDir, "libaftcli.so")
+        return if (aft.exists()) aft.absolutePath else ""
     }
 
     /** Hands a freshly-opened camera connection to the engine. */

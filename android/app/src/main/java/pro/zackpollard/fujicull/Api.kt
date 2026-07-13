@@ -70,6 +70,11 @@ class Api(private val port: Long) {
         runCatching { post("/api/cursor", JSONObject().put("index", index)) }
     }
 
+    /** Clears a failed fetch so the engine tries the shot again now. */
+    suspend fun retryShot(id: String) = withContext(Dispatchers.IO) {
+        runCatching { post("/api/retry", JSONObject().put("id", id)) }
+    }
+
     private fun get(path: String): String {
         val c = URL(base + path).openConnection() as HttpURLConnection
         c.connectTimeout = 5000

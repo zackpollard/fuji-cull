@@ -26,11 +26,22 @@ import okhttp3.OkHttpClient
 import java.io.File
 import java.util.concurrent.TimeUnit
 
+/** Engine settings persisted in prefs; changes restart the engine. */
+data class Settings(
+    val url: String = "",
+    val key: String = "",
+    val session: String = "",
+    val stack: Boolean = false,
+    val album: String = "",
+)
+
 class MainActivity : ComponentActivity() {
 
     private var service by mutableStateOf<EngineService?>(null)
     private var usbDiag by mutableStateOf("scanning usb…")
     private var resumeTick by mutableIntStateOf(0)
+    private var engineEpoch by mutableIntStateOf(0)
+    private var settings by mutableStateOf(Settings())
     private val requested = mutableSetOf<String>()
 
     private val connection = object : ServiceConnection {
@@ -64,6 +75,7 @@ class MainActivity : ComponentActivity() {
                 )
                 .build(),
         )
+        settings = loadSettings()
         startService(Intent(this, EngineService::class.java))
         bindService(Intent(this, EngineService::class.java), connection, Context.BIND_AUTO_CREATE)
         val filter = IntentFilter().apply {
@@ -91,7 +103,19 @@ class MainActivity : ComponentActivity() {
                 service = service,
                 usbDiag = usbDiag,
                 resumeTick = resumeTick,
+                epoch = engineEpoch,
                 importDest = File(getExternalFilesDir(null), "import").absolutePath,
+                settings = settings,
+                onSaveSettings = { s ->
+                    saveSettings(s)
+                    settings = s
+                    service?.restartEngine()
+                    engineEpoch++
+                },
+                onAlbumUsed = { album ->
+                    prefs().edit().putString("album", album).apply()
+                    settings = settings.copy(album = album)
+                },
             )
         }
     }
@@ -114,6 +138,28 @@ class MainActivity : ComponentActivity() {
         unregisterReceiver(usbReceiver)
         unbindService(connection)
         super.onDestroy()
+    }
+
+    private fun prefs() = getSharedPreferences("immich", MODE_PRIVATE)
+
+    private fun loadSettings() = prefs().let {
+        Settings(
+            url = it.getString("url", "") ?: "",
+            key = it.getString("key", "") ?: "",
+            session = it.getString("session", "") ?: "",
+            stack = it.getBoolean("stack", false),
+            album = it.getString("album", "") ?: "",
+        )
+    }
+
+    private fun saveSettings(s: Settings) {
+        prefs().edit()
+            .putString("url", s.url.trim().trimEnd('/'))
+            .putString("key", s.key.trim())
+            .putString("session", s.session.trim())
+            .putBoolean("stack", s.stack)
+            .putString("album", s.album)
+            .apply()
     }
 
     /** Rebuilds the usb diagnostic line and attaches the camera when possible. */

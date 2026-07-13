@@ -3,6 +3,12 @@ package pro.zackpollard.fujicull
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,34 +30,52 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
+import coil.request.ImageRequest
+import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -64,43 +88,68 @@ private val Panel = Color(0xFF121412)
 private val Dim = Color(0xFF7D817B)
 
 @Composable
-fun CullApp(service: EngineService?, usbDiag: String, resumeTick: Int, importDest: String) {
+fun CullApp(
+    service: EngineService?,
+    usbDiag: String,
+    resumeTick: Int,
+    epoch: Int,
+    importDest: String,
+    settings: Settings,
+    onSaveSettings: (Settings) -> Unit,
+    onAlbumUsed: (String) -> Unit,
+) {
     MaterialTheme(colorScheme = darkColorScheme(primary = Amber, surface = Panel)) {
-        val engine = service?.engine
-        var ready by remember { mutableStateOf(false) }
-        var status by remember { mutableStateOf("starting engine…") }
-        var logTail by remember { mutableStateOf("") }
+        // epoch changes on engine restart (settings save): rebuild everything
+        key(epoch) {
+            val engine = service?.engine
+            var ready by remember { mutableStateOf(false) }
+            var status by remember { mutableStateOf("starting engine…") }
+            var logTail by remember { mutableStateOf("") }
+            var showSettings by remember { mutableStateOf(false) }
 
-        LaunchedEffect(engine) {
-            while (true) {
-                try {
-                    val err = service?.startError
-                    val e = service?.engine
-                    if (err != null) {
-                        status = "engine failed: " + err
-                    } else if (e != null) {
-                        ready = e.ready()
-                        status = if (ready) "ready" else e.discoveryStatus()
-                        logTail = e.recentLog()
+            LaunchedEffect(engine) {
+                while (true) {
+                    try {
+                        val err = service?.startError
+                        val e = service?.engine
+                        if (err != null) {
+                            status = "engine failed: " + err
+                        } else if (e != null) {
+                            ready = e.ready()
+                            status = if (ready) "ready" else e.discoveryStatus()
+                            logTail = e.recentLog()
+                        }
+                    } catch (t: Throwable) {
+                        status = "engine: ${t.message}"
                     }
-                } catch (t: Throwable) {
-                    status = "engine: ${t.message}"
+                    if (ready) break
+                    delay(700)
                 }
-                if (ready) break
-                delay(700)
             }
-        }
 
-        if (!ready || engine == null) {
-            ConnectScreen(status, usbDiag, logTail)
-        } else {
-            CullScreen(Api(engine.port()), importDest, resumeTick)
+            when {
+                showSettings -> SettingsScreen(
+                    settings,
+                    onSave = { onSaveSettings(it); showSettings = false },
+                    onClose = { showSettings = false },
+                )
+                !ready || engine == null ->
+                    ConnectScreen(status, usbDiag, logTail, onSettings = { showSettings = true })
+                else -> CullScreen(
+                    Api(engine.port()), importDest, resumeTick, settings,
+                    onSettings = { showSettings = true },
+                    onAlbumUsed = onAlbumUsed,
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun ConnectScreen(status: String, usbDiag: String = "", logTail: String = "") {
+private fun ConnectScreen(
+    status: String, usbDiag: String = "", logTail: String = "",
+    onSettings: (() -> Unit)? = null,
+) {
     Column(
         // background first so it fills behind the bars; content stays clear
         // of the status bar, gesture areas and camera cutouts
@@ -133,6 +182,14 @@ private fun ConnectScreen(status: String, usbDiag: String = "", logTail: String 
                 textAlign = TextAlign.Center,
             )
         }
+        if (onSettings != null) {
+            Text(
+                "settings",
+                color = Dim,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 20.dp).clickable(onClick = onSettings).padding(8.dp),
+            )
+        }
         if (logTail.isNotEmpty()) {
             Text(
                 logTail,
@@ -140,14 +197,66 @@ private fun ConnectScreen(status: String, usbDiag: String = "", logTail: String 
                 fontFamily = FontFamily.Monospace,
                 fontSize = 9.sp,
                 lineHeight = 13.sp,
-                modifier = Modifier.padding(top = 20.dp).fillMaxWidth(),
+                modifier = Modifier.padding(top = 12.dp).fillMaxWidth(),
             )
         }
     }
 }
 
 @Composable
-private fun CullScreen(api: Api, importDest: String, resumeTick: Int) {
+private fun SettingsScreen(initial: Settings, onSave: (Settings) -> Unit, onClose: () -> Unit) {
+    var url by remember { mutableStateOf(initial.url) }
+    var apiKey by remember { mutableStateOf(initial.key) }
+    var session by remember { mutableStateOf(initial.session) }
+    var stack by remember { mutableStateOf(initial.stack) }
+
+    Column(
+        Modifier.fillMaxSize().background(Color(0xFF0B0C0B)).safeDrawingPadding()
+            .verticalScroll(rememberScrollState()).padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Text("settings", color = Amber, style = MaterialTheme.typography.titleLarge)
+        Text(
+            "saving restarts the engine (camera connection survives)",
+            color = Dim, style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedTextField(
+            value = url, onValueChange = { url = it },
+            label = { Text("immich server url") },
+            placeholder = { Text("https://immich.example.com") },
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = apiKey, onValueChange = { apiKey = it },
+            label = { Text("immich api key") },
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = session, onValueChange = { session = it },
+            label = { Text("session name (empty = default)") },
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked = stack, onCheckedChange = { stack = it })
+            Text(
+                "stack RAF+JPG pairs in Immich after upload",
+                color = Color.White, modifier = Modifier.padding(start = 10.dp),
+            )
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = onClose) { Text("CANCEL", color = Dim) }
+            Button(onClick = {
+                onSave(initial.copy(url = url, key = apiKey, session = session, stack = stack))
+            }) { Text("SAVE") }
+        }
+    }
+}
+
+@Composable
+private fun CullScreen(
+    api: Api, importDest: String, resumeTick: Int, settings: Settings,
+    onSettings: () -> Unit, onAlbumUsed: (String) -> Unit,
+) {
     var shots by remember { mutableStateOf(listOf<Shot>()) }
     val decisions = remember { mutableStateOf(mutableMapOf<String, String>()) }
     var thumbStates by remember { mutableStateOf("") }
@@ -156,6 +265,7 @@ private fun CullScreen(api: Api, importDest: String, resumeTick: Int) {
     var sick by remember { mutableStateOf(false) }
     var viewing by remember { mutableIntStateOf(-1) }
     var importing by remember { mutableStateOf("") }
+    var showImport by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
@@ -213,17 +323,23 @@ private fun CullScreen(api: Api, importDest: String, resumeTick: Int) {
             Column {
                 Text("K $kept  X $rejected  · ${shots.size - kept - rejected}", color = Color.White)
                 val have = thumbStates.count { it == '1' }
+                val exKnown = orient.count { it in '1'..'8' }
+                val exTotal = orient.count { it != '-' }
                 Text(
-                    if (sick) "thumbs $have/${shots.size} · CAMERA SICK" else "thumbs $have/${shots.size}",
+                    "th $have/${shots.size} · ex $exKnown/$exTotal" + if (sick) " · CAMERA SICK" else "",
                     color = if (sick) Reject else Dim,
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
             if (importing.isNotEmpty()) Text(importing, color = Amber)
-            Button(onClick = {
-                importing = "importing…"
-                scope.launch { runCatching { api.startImport(importDest, "") } }
-            }) { Text("IMPORT") }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "⚙",
+                    color = Dim, fontSize = 22.sp,
+                    modifier = Modifier.clickable(onClick = onSettings).padding(horizontal = 10.dp),
+                )
+                Button(onClick = { showImport = true }) { Text("IMPORT") }
+            }
         }
 
         val gridState = rememberLazyGridState()
@@ -252,6 +368,55 @@ private fun CullScreen(api: Api, importDest: String, resumeTick: Int) {
             }
         }
     }
+
+    if (showImport) {
+        ImportDialog(
+            initialAlbum = settings.album,
+            immichConfigured = settings.url.isNotEmpty() && settings.key.isNotEmpty(),
+            onStart = { album ->
+                importing = "importing…"
+                onAlbumUsed(album)
+                scope.launch { runCatching { api.startImport(importDest, album) } }
+                showImport = false
+            },
+            onCancel = { showImport = false },
+        )
+    }
+}
+
+@Composable
+private fun ImportDialog(
+    initialAlbum: String, immichConfigured: Boolean,
+    onStart: (String) -> Unit, onCancel: () -> Unit,
+) {
+    var album by remember { mutableStateOf(initialAlbum) }
+    Dialog(onDismissRequest = onCancel) {
+        Column(
+            Modifier.background(Panel).padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("import keepers", color = Amber, style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (immichConfigured) {
+                    "copies keepers to phone storage, then uploads to Immich"
+                } else {
+                    "copies keepers to phone storage\n(configure Immich in settings to upload)"
+                },
+                color = Dim, style = MaterialTheme.typography.bodySmall,
+            )
+            if (immichConfigured) {
+                OutlinedTextField(
+                    value = album, onValueChange = { album = it },
+                    label = { Text("immich album (optional)") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onCancel) { Text("CANCEL", color = Dim) }
+                Button(onClick = { onStart(album) }) { Text("START") }
+            }
+        }
+    }
 }
 
 @Composable
@@ -262,16 +427,27 @@ private fun GridCell(
     Box(
         Modifier.padding(1.dp).aspectRatio(1.48f).background(Color(0xFF1D201D)).clickable(onClick = onClick),
     ) {
-        if (hasThumb) {
+        if (shot.kind == "video") {
+            val ctx = LocalContext.current
+            val poster by produceState(initialValue = Posters.cached(ctx, shot), shot.id) {
+                if (value == null) value = Posters.load(ctx, api, shot)
+            }
+            poster?.let {
+                AsyncImage(
+                    model = it,
+                    contentDescription = shot.base,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            }
+            Box(Modifier.fillMaxWidth().height(3.dp).background(Amber).align(Alignment.TopStart))
+        } else if (hasThumb) {
             AsyncImage(
                 model = api.thumbUrl(shot.id, orientC, tick),
                 contentDescription = shot.base,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
             )
-        }
-        if (shot.kind == "video") {
-            Box(Modifier.fillMaxWidth().height(3.dp).background(Amber).align(Alignment.TopStart))
         }
         if (uploaded) {
             Box(Modifier.padding(4.dp).size(8.dp).background(Keep).align(Alignment.TopEnd))
@@ -319,28 +495,7 @@ private fun Viewer(
             if (shot.kind == "video") {
                 VideoPlayer(api.videoUrl(shot.id), active = page == pager.currentPage)
             } else {
-                // pulling off the camera can take a while when the link is
-                // busy sweeping thumbnails: show progress, allow retry
-                var retry by remember(shot.id) { mutableIntStateOf(0) }
-                SubcomposeAsyncImage(
-                    model = api.imageUrl(shot.id) + if (retry > 0) "&r=$retry" else "",
-                    loading = {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = Amber)
-                        }
-                    },
-                    error = {
-                        Box(
-                            Modifier.fillMaxSize().clickable { retry++ },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text("load failed — tap to retry", color = Reject)
-                        }
-                    },
-                    contentDescription = shot.base,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Fit,
-                )
+                ZoomableImage(api, shot)
             }
         }
 
@@ -354,9 +509,14 @@ private fun Viewer(
                         .then(if (current) Modifier.border(2.dp, Amber) else Modifier)
                         .clickable { scope.launch { pager.scrollToPage(i) } },
                 ) {
-                    if (thumbStates.getOrNull(i) == '1') {
+                    val model: Any? = if (shot.kind == "video") {
+                        Posters.cached(LocalContext.current, shot)
+                    } else if (thumbStates.getOrNull(i) == '1') {
+                        api.thumbUrl(shot.id, orient.getOrNull(i) ?: '0', tick)
+                    } else null
+                    model?.let {
                         AsyncImage(
-                            model = api.thumbUrl(shot.id, orient.getOrNull(i) ?: '0', tick),
+                            model = it,
                             contentDescription = shot.base,
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Crop,
@@ -399,6 +559,123 @@ private fun Viewer(
     }
 }
 
+/**
+ * Full-screen photo with pinch-zoom, pan and double-tap. At 1x, touches
+ * pass through to the pager (swipe navigation); once pinching starts or the
+ * image is zoomed, gestures are consumed here. Browsing loads a 4096px
+ * decode; zooming in overlays the full-resolution image for 100% sharpness
+ * checks (only for the page being zoomed — 26 MP bitmaps are ~100 MB each).
+ */
+@Composable
+private fun ZoomableImage(api: Api, shot: Shot) {
+    var retry by remember(shot.id) { mutableIntStateOf(0) }
+    var scale by remember(shot.id) { mutableFloatStateOf(1f) }
+    var offset by remember(shot.id) { mutableStateOf(Offset.Zero) }
+    var box by remember { mutableStateOf(IntSize.Zero) }
+    val scope = rememberCoroutineScope()
+
+    fun clamp() {
+        val maxX = box.width * (scale - 1f) / 2f
+        val maxY = box.height * (scale - 1f) / 2f
+        offset = Offset(offset.x.coerceIn(-maxX, maxX), offset.y.coerceIn(-maxY, maxY))
+    }
+
+    Box(
+        Modifier.fillMaxSize()
+            .onSizeChanged { box = it }
+            .pointerInput(shot.id) {
+                awaitEachGesture {
+                    var pinching = false
+                    awaitFirstDown(requireUnconsumed = false)
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.changes.none { it.pressed }) break
+                        if (event.changes.size > 1) pinching = true
+                        if (!pinching && scale <= 1.01f) continue // pager owns 1x swipes
+                        val zoom = event.calculateZoom()
+                        val pan = event.calculatePan()
+                        val centroid = event.calculateCentroid()
+                        val newScale = (scale * zoom).coerceIn(1f, 8f)
+                        if (centroid.isSpecified && box != IntSize.Zero) {
+                            val center = Offset(box.width / 2f, box.height / 2f)
+                            val rel = centroid - center
+                            offset = (offset + pan - rel) * (newScale / scale) + rel
+                        } else {
+                            offset += pan
+                        }
+                        scale = newScale
+                        clamp()
+                        event.changes.forEach { it.consume() }
+                    }
+                    if (scale <= 1.01f) {
+                        scale = 1f
+                        offset = Offset.Zero
+                    }
+                }
+            }
+            .pointerInput("tap-" + shot.id) {
+                detectTapGestures(onDoubleTap = { tap ->
+                    if (scale > 1.01f) {
+                        scale = 1f
+                        offset = Offset.Zero
+                    } else if (box != IntSize.Zero) {
+                        scale = 3f
+                        val center = Offset(box.width / 2f, box.height / 2f)
+                        offset = (center - tap) * scale
+                        clamp()
+                    }
+                })
+            },
+    ) {
+        Box(
+            Modifier.fillMaxSize().graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                translationX = offset.x
+                translationY = offset.y
+            },
+        ) {
+            SubcomposeAsyncImage(
+                model = ImageRequest.Builder(LocalContext.current)
+                    .data(api.imageUrl(shot.id) + if (retry > 0) "&r=$retry" else "")
+                    .size(4096)
+                    .build(),
+                loading = {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = Amber)
+                    }
+                },
+                error = {
+                    Box(
+                        Modifier.fillMaxSize().clickable {
+                            retry++
+                            scope.launch { api.retryShot(shot.id) }
+                        },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("load failed — tap to retry", color = Reject)
+                    }
+                },
+                contentDescription = shot.base,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit,
+            )
+            if (scale > 1.3f) {
+                // full-res overlay: invisible until decoded, then pixel-sharp
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(api.imageUrl(shot.id))
+                        .size(coil.size.Size.ORIGINAL)
+                        .build(),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit,
+                )
+            }
+        }
+    }
+}
+
 private suspend fun setDecision(
     api: Api,
     decisions: androidx.compose.runtime.MutableState<MutableMap<String, String>>,
@@ -424,7 +701,7 @@ private fun CullButton(label: String, color: Color, active: Boolean, onClick: ()
 
 @Composable
 private fun VideoPlayer(url: String, active: Boolean) {
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
     val player = remember {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(url))
