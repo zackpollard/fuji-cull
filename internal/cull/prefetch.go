@@ -76,6 +76,14 @@ type Prefetcher struct {
 	healTried   map[string]bool // camera-impossible shots already head-healed (or attempted)
 	imageTurn   bool            // last non-demand cycle was a window fill; heads go next
 
+	// Shared persistent partial-read session: heads, orientation sweeps,
+	// posters and probes all ride one serve-parts process, paying session
+	// setup once instead of per batch (the difference between ~4s per batch
+	// and ~0 — vital on phone-class links). Closed whenever one-shot work
+	// (bulk pulls, gphoto2, import, streaming) needs the device claim.
+	partsMu  sync.Mutex
+	partsSrv *mtppart.Server
+
 	onReady func(*photo.Shot) // optional hook: a verbatim file just landed
 }
 
@@ -305,6 +313,7 @@ func (p *Prefetcher) PauseAndDrain() {
 		p.cond.Wait()
 	}
 	p.mu.Unlock()
+	p.closePartsServer() // pause owners (import, streaming) take the claim
 }
 
 func (p *Prefetcher) Resume() {
@@ -321,6 +330,7 @@ func (p *Prefetcher) Close() {
 	p.closed = true
 	p.mu.Unlock()
 	p.cond.Broadcast()
+	p.closePartsServer()
 }
 
 // Ensure queues a shot (e.g. a video) for fetching without blocking.
@@ -349,6 +359,79 @@ func (p *Prefetcher) interruptImagesLocked(id string) {
 		return
 	}
 	p.imgCancel()
+}
+
+// partsReadAt reads via the shared persistent partial-read session, opening
+// it on demand. A watchdog closes the session if the camera wedges mid-read
+// (Close EOFs the blocked read), so a stale-buffer wedge costs seconds, not
+// a hang.
+func (p *Prefetcher) partsReadAt(ctx context.Context, objID string, off, size int64) ([]byte, error) {
+	p.partsMu.Lock()
+	srv := p.partsSrv
+	if srv == nil {
+		var err error
+		srv, err = mtppart.StartServer()
+		if err != nil {
+			p.partsMu.Unlock()
+			return nil, err
+		}
+		p.partsSrv = srv
+	}
+	p.partsMu.Unlock()
+
+	type res struct {
+		data []byte
+		err  error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		d, err := srv.ReadAt(objID, off, size)
+		ch <- res{d, err}
+	}()
+	timeout := 20*time.Second + time.Duration(size>>20)*2*time.Second
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			p.closePartsServerIf(srv) // process likely dead; reopen next call
+		}
+		return r.data, r.err
+	case <-ctx.Done():
+		p.closePartsServerIf(srv) // unblocks the reader goroutine
+		<-ch
+		return nil, ctx.Err()
+	case <-time.After(timeout):
+		p.closePartsServerIf(srv)
+		r := <-ch
+		if r.err == nil {
+			return r.data, nil // landed as the watchdog fired
+		}
+		return nil, fmt.Errorf("partial read timed out — camera wedged?")
+	}
+}
+
+func (p *Prefetcher) closePartsServerIf(srv *mtppart.Server) {
+	p.partsMu.Lock()
+	mine := p.partsSrv == srv
+	if mine {
+		p.partsSrv = nil
+	}
+	p.partsMu.Unlock()
+	if mine {
+		srv.Close()
+	}
+}
+
+// closePartsServer releases the shared partial-read session so one-shot
+// invocations (bulk image pulls, gphoto2, import, streaming) can claim the
+// device. Reopens lazily on the next partial read.
+func (p *Prefetcher) closePartsServer() {
+	p.partsMu.Lock()
+	srv := p.partsSrv
+	p.partsSrv = nil
+	p.partsMu.Unlock()
+	if srv != nil {
+		srv.Close()
+	}
 }
 
 // Nudge wakes the worker and makes tripped breakers and backoffs eligible
@@ -547,6 +630,7 @@ func (p *Prefetcher) Run() {
 			p.fetching = len(targets)
 			p.mu.Unlock()
 
+			p.closePartsServer() // one-shot pulls need the device claim
 			p.fetchBatch(targets)
 
 			p.mu.Lock()
@@ -568,6 +652,7 @@ func (p *Prefetcher) Run() {
 		case len(posterBatch) > 0:
 			p.fetchVideoPosterBatch(thumbCtx, posterBatch)
 		default:
+			p.closePartsServer() // gphoto2 needs the device claim
 			p.fetchThumbBatch(thumbCtx, thumbBatch)
 		}
 		p.mu.Lock()
@@ -895,8 +980,22 @@ func (p *Prefetcher) fetchVideoPosterBatch(ctx context.Context, batch []*photo.S
 			Dest:     filepath.Join(tmp, s.SafeID()+".mov"),
 		}
 	}
-	cctx, cancel := context.WithTimeout(ctx, 20*time.Second+time.Duration(len(batch))*2*time.Second) // ~4s at healthy rate
-	runErr := mtppart.GetParts(cctx, reqs)
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second+time.Duration(len(batch))*4*time.Second)
+	var runErr error
+	for _, r := range reqs {
+		if cctx.Err() != nil {
+			break
+		}
+		data, err := p.partsReadAt(cctx, r.ObjectID, r.Offset, r.Size)
+		if err != nil {
+			runErr = err
+			break
+		}
+		os.WriteFile(r.Dest, data, 0o644)
+		if len(data) >= 8 && string(data[4:8]) != "ftyp" {
+			break // stale-buffer garbage: stop pulling from a poisoned session
+		}
+	}
 	canceled := ctx.Err() != nil || cctx.Err() != nil
 	cancel()
 	if runErr != nil && !canceled {
@@ -957,6 +1056,7 @@ func (p *Prefetcher) fetchVideoPosterBatch(ctx context.Context, batch []*photo.S
 		p.mu.Lock()
 		p.markPartSickLocked()
 		p.mu.Unlock()
+		p.closePartsServer() // poisoned session; probes reopen fresh
 		log.Printf("video posters: %d/%d heads returned garbage — pausing partial reads (power-cycle the camera; probing every 20s)", garbage, len(batch))
 	}
 	if made > 0 || failed > 0 {
@@ -1017,20 +1117,14 @@ func (p *Prefetcher) probePartialReads() {
 	if target == nil {
 		return
 	}
-	tmp, err := os.MkdirTemp(p.cache, "probe-*")
-	if err != nil {
-		return
-	}
-	defer os.RemoveAll(tmp)
-	dest := filepath.Join(tmp, "head.bin")
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	err = mtppart.GetPart(ctx, target.ObjectIDs[target.DisplayExt()], 0, 64<<10, dest)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	head, err := p.partsReadAt(ctx, target.ObjectIDs[target.DisplayExt()], 0, 64<<10)
 	cancel()
 	if err != nil {
 		return // transport error (camera absent?) — next probe shortly
 	}
-	head, rerr := os.ReadFile(dest)
-	if rerr != nil || len(head) < 2 || head[0] != 0xFF || head[1] != 0xD8 {
+	if len(head) < 2 || head[0] != 0xFF || head[1] != 0xD8 {
+		p.closePartsServer() // still poisoned; next probe reopens fresh
 		log.Printf("prefetch: partial-read probe still garbage — next probe in 20s (power-cycle the camera)")
 		return
 	}

@@ -217,8 +217,22 @@ func (p *Prefetcher) fetchOrientBatch(ctx context.Context, batch []*photo.Shot) 
 			Dest:     filepath.Join(tmp, s.SafeID()+".bin"),
 		}
 	}
-	cctx, cancel := context.WithTimeout(ctx, 20*time.Second+time.Duration(len(batch))*100*time.Millisecond) // ~10s at healthy rate; a USB wedge costs <1 min, not 3
-	runErr := mtppart.GetParts(cctx, reqs)
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second+time.Duration(len(batch))*100*time.Millisecond)
+	var runErr error
+	for _, r := range reqs {
+		if cctx.Err() != nil {
+			break
+		}
+		data, err := p.partsReadAt(cctx, r.ObjectID, r.Offset, r.Size)
+		if err != nil {
+			runErr = err
+			break
+		}
+		os.WriteFile(r.Dest, data, 0o644)
+		if !mediaHead(data) {
+			break // stale-buffer garbage: the whole session is untrustworthy
+		}
+	}
 	canceled := ctx.Err() != nil || cctx.Err() != nil
 	cancel()
 
@@ -239,9 +253,12 @@ func (p *Prefetcher) fetchOrientBatch(ctx context.Context, batch []*photo.Shot) 
 	}
 	if garbage > 0 {
 		p.markPartSickLocked()
-		log.Printf("orientation: %d/%d partial reads returned non-JPEG data — camera partial reads are UNTRUSTWORTHY — pausing partial reads (power-cycle the camera; probing every 3m)", garbage, len(batch))
+		log.Printf("orientation: %d/%d partial reads returned non-JPEG data — camera partial reads are UNTRUSTWORTHY — pausing partial reads (power-cycle the camera; probing every 20s)", garbage, len(batch))
 	}
 	p.mu.Unlock()
+	if garbage > 0 {
+		p.closePartsServer() // poisoned session; probes reopen fresh
+	}
 
 	if runErr != nil && !canceled {
 		p.mu.Lock()
@@ -315,8 +332,22 @@ func (p *Prefetcher) fetchHealBatch(ctx context.Context, batch []*photo.Shot) {
 			Dest:     filepath.Join(tmp, s.SafeID()+".bin"),
 		}
 	}
-	cctx, cancel := context.WithTimeout(ctx, 20*time.Second+time.Duration(len(batch))*100*time.Millisecond) // ~10s at healthy rate; a USB wedge costs <1 min, not 3
-	runErr := mtppart.GetParts(cctx, reqs)
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second+time.Duration(len(batch))*100*time.Millisecond)
+	var runErr error
+	for _, r := range reqs {
+		if cctx.Err() != nil {
+			break
+		}
+		data, err := p.partsReadAt(cctx, r.ObjectID, r.Offset, r.Size)
+		if err != nil {
+			runErr = err
+			break
+		}
+		os.WriteFile(r.Dest, data, 0o644)
+		if !mediaHead(data) {
+			break // stale-buffer garbage: stop pulling from a poisoned session
+		}
+	}
 	canceled := ctx.Err() != nil || cctx.Err() != nil
 	cancel()
 
@@ -360,6 +391,9 @@ func (p *Prefetcher) fetchHealBatch(ctx context.Context, batch []*photo.Shot) {
 		log.Printf("thumbs: %d/%d head reads returned garbage — pausing partial reads (power-cycle the camera; probing every 20s)", garbage, len(batch))
 	}
 	p.mu.Unlock()
+	if garbage > 0 {
+		p.closePartsServer() // poisoned session; probes reopen fresh
+	}
 
 	if runErr != nil && !canceled {
 		p.mu.Lock()
