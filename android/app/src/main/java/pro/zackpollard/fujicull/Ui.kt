@@ -33,7 +33,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
@@ -48,11 +51,12 @@ private val Amber = Color(0xFFFFB42E)
 private val Panel = Color(0xFF121412)
 
 @Composable
-fun CullApp(service: EngineService?, importDest: String) {
+fun CullApp(service: EngineService?, usbDiag: String, importDest: String) {
     MaterialTheme(colorScheme = darkColorScheme(primary = Amber, surface = Panel)) {
         val engine = service?.engine
         var ready by remember { mutableStateOf(false) }
         var status by remember { mutableStateOf("starting engine…") }
+        var logTail by remember { mutableStateOf("") }
 
         LaunchedEffect(engine) {
             while (true) {
@@ -63,6 +67,7 @@ fun CullApp(service: EngineService?, importDest: String) {
                 } else if (e != null) {
                     ready = e.ready()
                     status = if (ready) "ready" else e.discoveryStatus()
+                    logTail = e.recentLog()
                 }
                 if (ready) break
                 delay(700)
@@ -70,7 +75,7 @@ fun CullApp(service: EngineService?, importDest: String) {
         }
 
         if (!ready || engine == null) {
-            ConnectScreen(status)
+            ConnectScreen(status, usbDiag, logTail)
         } else {
             CullScreen(Api(engine.port()), importDest)
         }
@@ -78,9 +83,9 @@ fun CullApp(service: EngineService?, importDest: String) {
 }
 
 @Composable
-private fun ConnectScreen(status: String) {
+private fun ConnectScreen(status: String, usbDiag: String = "", logTail: String = "") {
     Column(
-        Modifier.fillMaxSize().background(Color(0xFF0B0C0B)),
+        Modifier.fillMaxSize().background(Color(0xFF0B0C0B)).padding(16.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -90,12 +95,35 @@ private fun ConnectScreen(status: String) {
             color = Color(0xFF7D817B),
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(24.dp),
+            textAlign = TextAlign.Center,
         )
         Text(
-            "connect the camera with a USB cable\nand set it to USB card-reader mode",
+            "set the camera to USB card-reader mode and make sure\n" +
+                "the phone is the usb host (usb notification →\n" +
+                "“USB controlled by: this device”)",
             color = Color(0xFF7D817B),
             style = MaterialTheme.typography.bodySmall,
+            textAlign = TextAlign.Center,
         )
+        if (usbDiag.isNotEmpty()) {
+            Text(
+                usbDiag,
+                color = Amber,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 20.dp),
+                textAlign = TextAlign.Center,
+            )
+        }
+        if (logTail.isNotEmpty()) {
+            Text(
+                logTail,
+                color = Color(0xFF565A54),
+                fontFamily = FontFamily.Monospace,
+                fontSize = 9.sp,
+                lineHeight = 13.sp,
+                modifier = Modifier.padding(top = 20.dp).fillMaxWidth(),
+            )
+        }
     }
 }
 

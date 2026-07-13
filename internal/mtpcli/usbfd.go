@@ -25,7 +25,19 @@ func init() {
 // SetUSBFD routes all camera access through a pre-opened usbfs descriptor.
 func SetUSBFD(fd int) {
 	usbMu.Lock()
-	usbFile = os.NewFile(uintptr(fd), "usb-device")
+	if fd < 0 {
+		usbFile = nil
+	} else {
+		usbFile = os.NewFile(uintptr(fd), "usb-device")
+	}
+	usbMu.Unlock()
+}
+
+// ClearUSBFD drops the descriptor after the platform reports the device
+// gone; a replug must call SetUSBFD again.
+func ClearUSBFD() {
+	usbMu.Lock()
+	usbFile = nil
 	usbMu.Unlock()
 }
 

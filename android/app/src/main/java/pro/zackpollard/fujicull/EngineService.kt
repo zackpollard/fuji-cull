@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.os.Binder
 import android.os.IBinder
@@ -31,6 +32,9 @@ class EngineService : Service() {
     var startError: String? = null
         private set
     private var usb: UsbDeviceConnection? = null
+    val usbAttached: Boolean get() = usb != null
+    var claimDiag: String = ""
+        private set
 
     override fun onBind(intent: Intent?): IBinder = binder
 
@@ -59,11 +63,19 @@ class EngineService : Service() {
     }
 
     /** Hands a freshly-opened camera connection to the engine. */
-    fun attachUsb(connection: UsbDeviceConnection) {
+    fun attachUsb(device: UsbDevice, connection: UsbDeviceConnection) {
         usb?.close()
         usb = connection
+        // Android's built-in MTP host grabs PTP devices on attach; force-claim
+        // steals the interface back. aft rides the same fd, so this claim is
+        // its claim too.
+        claimDiag = (0 until device.interfaceCount).joinToString(" ") { i ->
+            val intf = device.getInterface(i)
+            val ok = connection.claimInterface(intf, true)
+            "intf$i(class ${intf.interfaceClass})=${if (ok) "claimed" else "BUSY"}"
+        }
+        Log.i(TAG, "usb fd ${connection.fileDescriptor} attached: $claimDiag")
         engine?.setUSBFD(connection.fileDescriptor.toLong())
-        Log.i(TAG, "usb fd ${connection.fileDescriptor} attached")
         // connectedDevice FGS is only permitted while we hold a USB device
         // grant, so promotion has to wait until a camera is attached
         try {
@@ -71,6 +83,16 @@ class EngineService : Service() {
         } catch (t: Throwable) {
             Log.w(TAG, "foreground promotion failed, staying background", t)
         }
+    }
+
+    /** Drops the connection once the platform reports the device gone. */
+    fun detachUsb() {
+        if (usb == null) return
+        engine?.clearUSBFD()
+        usb?.close()
+        usb = null
+        claimDiag = ""
+        Log.i(TAG, "usb detached")
     }
 
     override fun onDestroy() {
