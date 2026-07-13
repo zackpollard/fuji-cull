@@ -331,6 +331,18 @@ func (a *App) handler() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	// App-side events (poster jobs, UI-level failures) join the engine log
+	// so the diagnostics screen tells one coherent story.
+	mux.HandleFunc("POST /api/log", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Msg string `json:"msg"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) == nil && req.Msg != "" {
+			log.Printf("app: %.300s", req.Msg)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	mux.HandleFunc("POST /api/retry", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ID string `json:"id"`

@@ -80,6 +80,11 @@ class Api(private val port: Long) {
         runCatching { post("/api/releasestream", JSONObject()) }
     }
 
+    /** Adds an app-side event to the engine log (diagnostics screen). */
+    suspend fun logEvent(msg: String) = withContext(Dispatchers.IO) {
+        runCatching { post("/api/log", JSONObject().put("msg", msg)) }
+    }
+
     private fun get(path: String): String {
         val c = URL(base + path).openConnection() as HttpURLConnection
         c.connectTimeout = 5000
