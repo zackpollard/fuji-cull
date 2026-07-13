@@ -41,8 +41,8 @@ func (r *logRing) Write(p []byte) (int, error) {
 		}
 		r.lines = append(r.lines, ln)
 	}
-	if len(r.lines) > 60 {
-		r.lines = r.lines[len(r.lines)-60:]
+	if len(r.lines) > 800 {
+		r.lines = r.lines[len(r.lines)-800:]
 	}
 	return len(p), nil
 }
@@ -56,7 +56,31 @@ func (r *logRing) tail(n int) string {
 	return strings.Join(r.lines, "\n")
 }
 
-var engineLog = &logRing{}
+var (
+	engineLog   = &logRing{}
+	logFile     *os.File
+	logFileOnce sync.Mutex
+)
+
+// openLogFile persists the engine log across restarts and crashes; rotated
+// once it exceeds ~2 MB so it never eats phone storage.
+func openLogFile(dataDir string) *os.File {
+	logFileOnce.Lock()
+	defer logFileOnce.Unlock()
+	if logFile != nil {
+		return logFile
+	}
+	path := dataDir + "/engine.log"
+	if st, err := os.Stat(path); err == nil && st.Size() > 2<<20 {
+		os.Rename(path, path+".old")
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil
+	}
+	logFile = f
+	return f
+}
 
 // Engine is a running fuji-cull core serving HTTP on a loopback port.
 type Engine struct {
@@ -73,8 +97,12 @@ type Engine struct {
 func Start(dataDir, cacheDir, aftPath, immichURL, immichKey, session string, immichStack bool) (*Engine, error) {
 	// The engine resolves sessions/settings under HOME.
 	os.Setenv("HOME", dataDir)
-	// stderr still reaches logcat (GoLog); the ring feeds the connect screen
-	log.SetOutput(io.MultiWriter(os.Stderr, engineLog))
+	// stderr still reaches logcat (GoLog); the ring feeds the in-app log
+	sinks := []io.Writer{os.Stderr, engineLog}
+	if f := openLogFile(dataDir); f != nil {
+		sinks = append(sinks, f)
+	}
+	log.SetOutput(io.MultiWriter(sinks...))
 	if aftPath != "" {
 		os.Setenv("FUJI_AFT", aftPath)      // bulk transfers
 		os.Setenv("FUJI_AFT_PART", aftPath) // partial reads (same patched binary)
@@ -125,6 +153,14 @@ func (e *Engine) ClearUSBFD() { mtpcli.ClearUSBFD() }
 
 // RecentLog returns the last engine log lines for on-screen diagnostics.
 func (e *Engine) RecentLog() string { return engineLog.tail(10) }
+
+// FullLog returns the whole in-memory log for the diagnostics screen.
+func (e *Engine) FullLog() string { return engineLog.tail(800) }
+
+// LogEvent records an app-side event (USB attach, service lifecycle, poster
+// jobs) into the same stream as the engine log, so the diagnostics screen
+// tells one coherent story.
+func (e *Engine) LogEvent(msg string) { log.Printf("app: %s", msg) }
 
 // Nudge wakes the fetch pipeline after the app returns to the foreground —
 // breakers and backoffs probe immediately instead of waiting out their timers.

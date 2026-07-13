@@ -75,6 +75,7 @@ class EngineService : Service() {
         engine = null
         startError = null
         startEngine()
+        engine?.logEvent("engine restarted (settings applied)")
     }
 
     /**
@@ -111,13 +112,16 @@ class EngineService : Service() {
             "intf$i(class ${intf.interfaceClass})=${if (ok) "claimed" else "BUSY"}"
         }
         Log.i(TAG, "usb fd ${connection.fileDescriptor} attached: $claimDiag")
+        engine?.logEvent("usb attached fd=${connection.fileDescriptor} $claimDiag")
         engine?.setUSBFD(connection.fileDescriptor.toLong())
         // connectedDevice FGS is only permitted while we hold a USB device
         // grant, so promotion has to wait until a camera is attached
         try {
             startForeground(1, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            engine?.logEvent("foreground service promoted")
         } catch (t: Throwable) {
             Log.w(TAG, "foreground promotion failed, staying background", t)
+            engine?.logEvent("foreground promotion failed: ${t.message}")
         }
     }
 
@@ -129,6 +133,7 @@ class EngineService : Service() {
         usb = null
         claimDiag = ""
         Log.i(TAG, "usb detached")
+        engine?.logEvent("usb detached")
     }
 
     override fun onDestroy() {

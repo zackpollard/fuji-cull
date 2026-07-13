@@ -128,18 +128,29 @@ fun CullApp(
                 }
             }
 
+            var showLog by remember { mutableStateOf(false) }
             when {
+                showLog -> LogScreen(
+                    fullLog = { service?.engine?.fullLog() ?: "engine not running" },
+                    onClose = { showLog = false },
+                )
                 showSettings -> SettingsScreen(
                     settings,
                     onSave = { onSaveSettings(it); showSettings = false },
                     onClose = { showSettings = false },
+                    onLog = { showLog = true },
                 )
                 !ready || engine == null ->
-                    ConnectScreen(status, usbDiag, logTail, onSettings = { showSettings = true })
+                    ConnectScreen(
+                        status, usbDiag, logTail,
+                        onSettings = { showSettings = true },
+                        onLog = { showLog = true },
+                    )
                 else -> CullScreen(
                     Api(engine.port()), importDest, resumeTick, settings,
                     onSettings = { showSettings = true },
                     onAlbumUsed = onAlbumUsed,
+                    onLog = { showLog = true },
                 )
             }
         }
@@ -149,7 +160,7 @@ fun CullApp(
 @Composable
 private fun ConnectScreen(
     status: String, usbDiag: String = "", logTail: String = "",
-    onSettings: (() -> Unit)? = null,
+    onSettings: (() -> Unit)? = null, onLog: (() -> Unit)? = null,
 ) {
     Column(
         // background first so it fills behind the bars; content stays clear
@@ -183,13 +194,21 @@ private fun ConnectScreen(
                 textAlign = TextAlign.Center,
             )
         }
-        if (onSettings != null) {
-            Text(
-                "settings",
-                color = Dim,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = 20.dp).clickable(onClick = onSettings).padding(8.dp),
-            )
+        Row(Modifier.padding(top = 20.dp)) {
+            if (onSettings != null) {
+                Text(
+                    "settings", color = Dim,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.clickable(onClick = onSettings).padding(8.dp),
+                )
+            }
+            if (onLog != null) {
+                Text(
+                    "log", color = Dim,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.clickable(onClick = onLog).padding(8.dp),
+                )
+            }
         }
         if (logTail.isNotEmpty()) {
             Text(
@@ -198,14 +217,68 @@ private fun ConnectScreen(
                 fontFamily = FontFamily.Monospace,
                 fontSize = 9.sp,
                 lineHeight = 13.sp,
-                modifier = Modifier.padding(top = 12.dp).fillMaxWidth(),
+                modifier = Modifier.padding(top = 12.dp).fillMaxWidth()
+                    .then(if (onLog != null) Modifier.clickable(onClick = onLog) else Modifier),
             )
         }
     }
 }
 
 @Composable
-private fun SettingsScreen(initial: Settings, onSave: (Settings) -> Unit, onClose: () -> Unit) {
+private fun LogScreen(fullLog: () -> String, onClose: () -> Unit) {
+    BackHandler { onClose() }
+    var text by remember { mutableStateOf(fullLog()) }
+    val scroll = rememberScrollState()
+    val context = LocalContext.current
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            val atBottom = scroll.value >= scroll.maxValue - 40
+            text = fullLog()
+            if (atBottom) {
+                // follow the tail unless the user scrolled up to read
+                kotlinx.coroutines.yield()
+                scroll.scrollTo(scroll.maxValue)
+            }
+            delay(2000)
+        }
+    }
+
+    Column(Modifier.fillMaxSize().background(Color(0xFF0B0C0B)).safeDrawingPadding()) {
+        Row(
+            Modifier.fillMaxWidth().background(Panel).padding(8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("‹ back", color = Amber, modifier = Modifier.clickable(onClick = onClose).padding(8.dp))
+            Text("engine log", color = Color.White)
+            Text(
+                "share", color = Amber,
+                modifier = Modifier.clickable {
+                    val send = android.content.Intent(android.content.Intent.ACTION_SEND)
+                        .setType("text/plain")
+                        .putExtra(android.content.Intent.EXTRA_SUBJECT, "fuji-cull engine log")
+                        .putExtra(android.content.Intent.EXTRA_TEXT, fullLog())
+                    context.startActivity(android.content.Intent.createChooser(send, "share log"))
+                }.padding(8.dp),
+            )
+        }
+        Text(
+            text,
+            color = Color(0xFF9BA097),
+            fontFamily = FontFamily.Monospace,
+            fontSize = 10.sp,
+            lineHeight = 14.sp,
+            modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(10.dp),
+        )
+    }
+}
+
+@Composable
+private fun SettingsScreen(
+    initial: Settings, onSave: (Settings) -> Unit, onClose: () -> Unit,
+    onLog: (() -> Unit)? = null,
+) {
     BackHandler { onClose() }
     var url by remember { mutableStateOf(initial.url) }
     var apiKey by remember { mutableStateOf(initial.key) }
@@ -246,6 +319,9 @@ private fun SettingsScreen(initial: Settings, onSave: (Settings) -> Unit, onClos
             )
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            if (onLog != null) {
+                TextButton(onClick = onLog) { Text("VIEW LOG", color = Dim) }
+            }
             TextButton(onClick = onClose) { Text("CANCEL", color = Dim) }
             Button(onClick = {
                 onSave(initial.copy(url = url, key = apiKey, session = session, stack = stack))
@@ -257,7 +333,7 @@ private fun SettingsScreen(initial: Settings, onSave: (Settings) -> Unit, onClos
 @Composable
 private fun CullScreen(
     api: Api, importDest: String, resumeTick: Int, settings: Settings,
-    onSettings: () -> Unit, onAlbumUsed: (String) -> Unit,
+    onSettings: () -> Unit, onAlbumUsed: (String) -> Unit, onLog: () -> Unit,
 ) {
     var shots by remember { mutableStateOf(listOf<Shot>()) }
     val decisions = remember { mutableStateOf(mutableMapOf<String, String>()) }
@@ -331,7 +407,7 @@ private fun CullScreen(
         ) {
             val kept = decisions.value.count { it.value == "keep" }
             val rejected = decisions.value.count { it.value == "reject" }
-            Column {
+            Column(Modifier.clickable(onClick = onLog)) {
                 Text("K $kept  X $rejected  · ${shots.size - kept - rejected}", color = Color.White)
                 val have = thumbStates.count { it == '1' }
                 val exKnown = orient.count { it in '1'..'8' }
