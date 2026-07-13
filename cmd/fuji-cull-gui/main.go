@@ -276,10 +276,11 @@ type ui struct {
 	lastHint       int
 	lastGridCursor int
 
-	impDest  string
-	impAlbum string
-	impField int
-	impError string
+	impDest   string
+	impAlbum  string
+	impField  int
+	impError  string
+	impOpenTs uint32 // timestamp of the keypress that opened the panel
 
 	decodeAhead  int
 	decodeBehind int
@@ -998,7 +999,13 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 		return false
 	case *sdl.TextInputEvent:
 		if u.mode == modeImport {
-			u.importText(e.GetText())
+			// The I that opened the panel arrives again as a TEXTINPUT once
+			// StartTextInput is active; drop text from that same keypress or
+			// the dest field (persisted since import defaults) grows an "i"
+			// per session.
+			if e.Timestamp-u.impOpenTs > 20 {
+				u.importText(e.GetText())
+			}
 		}
 		return true
 	case *sdl.KeyboardEvent:
@@ -1079,6 +1086,7 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 			}
 		case sdl.K_i:
 			u.mode = modeImport
+			u.impOpenTs = e.Timestamp
 			sdl.StartTextInput()
 		case sdl.K_l:
 			s := u.shots[u.cursor]
