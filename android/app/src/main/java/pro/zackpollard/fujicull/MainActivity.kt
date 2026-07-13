@@ -18,9 +18,13 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.lifecycleScope
+import coil.Coil
+import coil.ImageLoader
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 class MainActivity : ComponentActivity() {
 
@@ -49,6 +53,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // /api/image blocks until the shot is pulled off the camera — far
+        // longer than Coil's default 10s read timeout on a busy link
+        Coil.setImageLoader(
+            ImageLoader.Builder(this)
+                .okHttpClient(
+                    OkHttpClient.Builder()
+                        .readTimeout(180, TimeUnit.SECONDS)
+                        .build(),
+                )
+                .build(),
+        )
         startService(Intent(this, EngineService::class.java))
         bindService(Intent(this, EngineService::class.java), connection, Context.BIND_AUTO_CREATE)
         val filter = IntentFilter().apply {

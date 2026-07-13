@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
@@ -50,6 +51,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -100,7 +102,9 @@ fun CullApp(service: EngineService?, usbDiag: String, resumeTick: Int, importDes
 @Composable
 private fun ConnectScreen(status: String, usbDiag: String = "", logTail: String = "") {
     Column(
-        Modifier.fillMaxSize().background(Color(0xFF0B0C0B)).padding(16.dp),
+        // background first so it fills behind the bars; content stays clear
+        // of the status bar, gesture areas and camera cutouts
+        Modifier.fillMaxSize().background(Color(0xFF0B0C0B)).safeDrawingPadding().padding(16.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -198,7 +202,7 @@ private fun CullScreen(api: Api, importDest: String, resumeTick: Int) {
         return
     }
 
-    Column(Modifier.fillMaxSize().background(Color(0xFF0B0C0B))) {
+    Column(Modifier.fillMaxSize().background(Color(0xFF0B0C0B)).safeDrawingPadding()) {
         Row(
             Modifier.fillMaxWidth().background(Panel).padding(10.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -298,7 +302,7 @@ private fun Viewer(
         film.animateScrollToItem((pager.currentPage - 2).coerceAtLeast(0))
     }
 
-    Column(Modifier.fillMaxSize().background(Color.Black)) {
+    Column(Modifier.fillMaxSize().background(Color.Black).safeDrawingPadding()) {
         Row(
             Modifier.fillMaxWidth().background(Panel).padding(8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -315,8 +319,24 @@ private fun Viewer(
             if (shot.kind == "video") {
                 VideoPlayer(api.videoUrl(shot.id), active = page == pager.currentPage)
             } else {
-                AsyncImage(
-                    model = api.imageUrl(shot.id),
+                // pulling off the camera can take a while when the link is
+                // busy sweeping thumbnails: show progress, allow retry
+                var retry by remember(shot.id) { mutableIntStateOf(0) }
+                SubcomposeAsyncImage(
+                    model = api.imageUrl(shot.id) + if (retry > 0) "&r=$retry" else "",
+                    loading = {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = Amber)
+                        }
+                    },
+                    error = {
+                        Box(
+                            Modifier.fillMaxSize().clickable { retry++ },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text("load failed — tap to retry", color = Reject)
+                        }
+                    },
                     contentDescription = shot.base,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Fit,
