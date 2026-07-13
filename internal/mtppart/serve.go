@@ -92,9 +92,13 @@ func (s *Server) ReadAt(objectID string, offset, size int64) ([]byte, error) {
 
 // Close ends the session politely (Q, then SIGINT) so the MTP claim is
 // released cleanly; a hard kill wedges the camera's session.
+//
+// Deliberately does NOT take s.mu: a ReadAt blocked on a wedged camera holds
+// the mutex indefinitely, and Close is precisely how the janitor unwedges it
+// — killing the process EOFs the blocked read, which then errors out and
+// releases everything. Line-sized pipe writes are atomic (< PIPE_BUF), so
+// the Q cannot interleave into a concurrent R request.
 func (s *Server) Close() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	fmt.Fprintln(s.in, "Q")
 	s.in.Close()
 	done := make(chan struct{})
