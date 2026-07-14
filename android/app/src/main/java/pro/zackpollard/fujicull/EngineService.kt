@@ -33,6 +33,7 @@ class EngineService : Service() {
         private set
     private var usb: UsbDeviceConnection? = null
     val usbAttached: Boolean get() = usb != null
+    private var fakeMode = false
     var claimDiag: String = ""
         private set
 
@@ -59,6 +60,12 @@ class EngineService : Service() {
             )
             startError = null
             usb?.let { engine?.setUSBFD(it.fileDescriptor.toLong()) }
+            if (fakeMode && usb == null) {
+                // dummy fd: aft-sim ignores it, but it routes the engine
+                // through the same fd code paths the phone uses (images via
+                // the persistent parts session, --device-fd plumbing)
+                engine?.setUSBFD(0)
+            }
             Log.i(TAG, "engine started on port ${engine?.port()}")
         } catch (t: Throwable) {
             startError = t.message ?: t.toString()
@@ -93,6 +100,7 @@ class EngineService : Service() {
             Mobile.setEnv("FUJI_FAKE_ROOT", fakeRoot.absolutePath)
             Mobile.setEnv("FUJI_FAKE_SETUP_MS", "400")
             Log.w(TAG, "FAKE CAMERA MODE: $fakeRoot")
+            fakeMode = true
             return sim.absolutePath
         }
         val aft = File(applicationInfo.nativeLibraryDir, "libaftcli.so")

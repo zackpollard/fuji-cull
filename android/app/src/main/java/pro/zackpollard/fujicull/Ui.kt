@@ -257,10 +257,27 @@ private fun LogScreen(fullLog: () -> String, onClose: () -> Unit) {
             Text(
                 "share", color = Amber,
                 modifier = Modifier.clickable {
-                    val send = android.content.Intent(android.content.Intent.ACTION_SEND)
-                        .setType("text/plain")
-                        .putExtra(android.content.Intent.EXTRA_SUBJECT, "fuji-cull engine log")
-                        .putExtra(android.content.Intent.EXTRA_TEXT, fullLog())
+                    // share the persisted file(s): complete history even when
+                    // a disconnect spams the in-memory ring past its capacity
+                    val dir = File(context.filesDir, "data")
+                    val logs = listOf(File(dir, "engine.log.old"), File(dir, "engine.log"))
+                        .filter { it.exists() && it.length() > 0 }
+                    val send = if (logs.isNotEmpty()) {
+                        val uris = ArrayList(logs.map {
+                            androidx.core.content.FileProvider.getUriForFile(
+                                context, "pro.zackpollard.fujicull.files", it,
+                            )
+                        })
+                        android.content.Intent(android.content.Intent.ACTION_SEND_MULTIPLE)
+                            .setType("text/plain")
+                            .putExtra(android.content.Intent.EXTRA_SUBJECT, "fuji-cull engine log")
+                            .putParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM, uris)
+                            .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    } else {
+                        android.content.Intent(android.content.Intent.ACTION_SEND)
+                            .setType("text/plain")
+                            .putExtra(android.content.Intent.EXTRA_TEXT, fullLog())
+                    }
                     context.startActivity(android.content.Intent.createChooser(send, "share log"))
                 }.padding(8.dp),
             )

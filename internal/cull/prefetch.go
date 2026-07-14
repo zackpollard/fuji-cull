@@ -17,6 +17,7 @@ import (
 
 	"github.com/zack/fuji-tools/internal/exif"
 	"github.com/zack/fuji-tools/internal/gphoto"
+	"github.com/zack/fuji-tools/internal/mtpcli"
 	"github.com/zack/fuji-tools/internal/mtppart"
 	"github.com/zack/fuji-tools/internal/photo"
 )
@@ -683,7 +684,9 @@ func (p *Prefetcher) Run() {
 			p.fetching = len(targets)
 			p.mu.Unlock()
 
-			p.closePartsServer() // one-shot pulls need the device claim
+			if p.partBin == "" || mtpcli.USBFile() == nil {
+				p.closePartsServer() // one-shot pulls need the device claim
+			}
 			p.fetchBatch(targets)
 
 			p.mu.Lock()
@@ -1402,12 +1405,64 @@ func (p *Prefetcher) evictLocked() {
 	}
 }
 
+// fetchItemsViaParts pulls full files through the persistent partial-read
+// session in 8 MB chunks, writing progressively so incremental promotion
+// still hands each file over the moment its bytes land. Cancellation stops
+// between chunks with the camera session intact.
+func (p *Prefetcher) fetchItemsViaParts(ctx context.Context, items []fetchItem, sizes []int64) error {
+	const chunk = 8 << 20
+	for n, it := range items {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if it.ObjectID == "" {
+			return fmt.Errorf("no MTP object ID for %s/%s", it.CameraDir, it.Name)
+		}
+		out, err := os.Create(it.Dest)
+		if err != nil {
+			return err
+		}
+		var off int64
+		for {
+			if ctx.Err() != nil {
+				out.Close()
+				return ctx.Err()
+			}
+			want := int64(chunk)
+			if sizes[n] > 0 && off+want > sizes[n] {
+				want = sizes[n] - off
+			}
+			if want <= 0 {
+				break
+			}
+			data, err := p.partsReadAt(ctx, it.ObjectID, off, want)
+			if err != nil {
+				out.Close()
+				return err
+			}
+			if len(data) > 0 {
+				if _, werr := out.Write(data); werr != nil {
+					out.Close()
+					return werr
+				}
+				off += int64(len(data))
+			}
+			if int64(len(data)) < want {
+				break // short read: end of object
+			}
+		}
+		out.Close()
+	}
+	return nil
+}
+
 // fetchBatch pulls a batch of shots in one backend call. Because file sizes
 // are known from discovery, each file is promoted to "ready" the moment its
 // bytes are all on disk — a Wait()er on the first file of a batch does not
 // sit out the rest of the batch.
 func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 	items := make([]fetchItem, 0, len(targets))
+	sizes := make([]int64, 0, len(targets))
 	tmps := make([]string, len(targets))
 	expect := make([]int64, len(targets))
 	kinds := make([]string, len(targets))
@@ -1444,6 +1499,7 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 			CameraDir: s.CameraDir, Name: s.Files[srcExt],
 			ObjectID: s.ObjectIDs[srcExt], Dest: tmps[i],
 		})
+		sizes = append(sizes, expect[i])
 	}
 
 	// Bound the transfer: a wedged USB op with no timeout once froze the
@@ -1462,8 +1518,19 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 		p.mu.Unlock()
 		fcancel()
 	}()
+	// On the phone's usbfs fd, full pulls ride the persistent partial-read
+	// session: demand preemption then stops cleanly BETWEEN chunks. One-shot
+	// aft processes get SIGKILLed mid-URB when preempted faster than they
+	// can exit — the kill that wedges the camera off the bus while swiping.
+	useParts := p.partBin != "" && mtpcli.USBFile() != nil
 	fetchDone := make(chan error, 1)
-	go func() { fetchDone <- p.backend.Fetch(fctx, items) }()
+	go func() {
+		if useParts {
+			fetchDone <- p.fetchItemsViaParts(fctx, items, sizes)
+		} else {
+			fetchDone <- p.backend.Fetch(fctx, items)
+		}
+	}()
 
 	promote := func(i int) {
 		if !mediaValid(tmps[i], kinds[i]) {
@@ -1513,6 +1580,10 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 		select {
 		case fetchErr := <-fetchDone:
 			canceled := fctx.Err() == context.Canceled
+			// identical failures collapse to one log line per batch — a
+			// disconnected camera otherwise floods the ring with the same
+			// error × batch size × retries, burying what came before
+			failLogged := 0
 			for i, s := range targets {
 				if finished[i] {
 					continue
@@ -1536,9 +1607,15 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 				if fetchErr != nil {
 					msg = fetchErr.Error()
 				}
-				log.Printf("prefetch: %s: %s", s.ID, msg)
+				if failLogged == 0 {
+					log.Printf("prefetch: %s: %s", s.ID, msg)
+				}
+				failLogged++
 				p.setState(s.ID, "failed", msg)
 				finished[i] = true
+			}
+			if failLogged > 1 {
+				log.Printf("prefetch: … and %d more shots in this batch failed the same way", failLogged-1)
 			}
 			return
 		case <-tick.C:

@@ -41,8 +41,8 @@ func (r *logRing) Write(p []byte) (int, error) {
 		}
 		r.lines = append(r.lines, ln)
 	}
-	if len(r.lines) > 800 {
-		r.lines = r.lines[len(r.lines)-800:]
+	if len(r.lines) > 3000 {
+		r.lines = r.lines[len(r.lines)-3000:]
 	}
 	return len(p), nil
 }
@@ -158,7 +158,7 @@ func (e *Engine) ClearUSBFD() { mtpcli.ClearUSBFD() }
 func (e *Engine) RecentLog() string { return engineLog.tail(10) }
 
 // FullLog returns the whole in-memory log for the diagnostics screen.
-func (e *Engine) FullLog() string { return engineLog.tail(800) }
+func (e *Engine) FullLog() string { return engineLog.tail(3000) }
 
 // LogEvent records an app-side event (USB attach, service lifecycle, poster
 // jobs) into the same stream as the engine log, so the diagnostics screen
