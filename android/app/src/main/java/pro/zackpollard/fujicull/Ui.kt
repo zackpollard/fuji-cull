@@ -95,6 +95,7 @@ fun CullApp(
     settings: Settings,
     onSaveSettings: (Settings) -> Unit,
     onAlbumUsed: (String) -> Unit,
+    onRescan: () -> Unit,
 ) {
     MaterialTheme(colorScheme = darkColorScheme(primary = Amber, surface = Panel)) {
         // epoch changes on engine restart (settings save): rebuild everything
@@ -136,6 +137,7 @@ fun CullApp(
                     onSave = { onSaveSettings(it); showSettings = false },
                     onClose = { showSettings = false },
                     onLog = { showLog = true },
+                    onRescan = { onRescan(); showSettings = false },
                 )
                 !ready || engine == null ->
                     ConnectScreen(
@@ -291,7 +293,7 @@ private fun LogScreen(fullLog: () -> String, onClose: () -> Unit) {
 @Composable
 private fun SettingsScreen(
     initial: Settings, onSave: (Settings) -> Unit, onClose: () -> Unit,
-    onLog: (() -> Unit)? = null,
+    onLog: (() -> Unit)? = null, onRescan: (() -> Unit)? = null,
 ) {
     BackHandler { onClose() }
     var url by remember { mutableStateOf(initial.url) }
@@ -340,6 +342,14 @@ private fun SettingsScreen(
             Button(onClick = {
                 onSave(initial.copy(url = url, key = apiKey, session = session, stack = stack))
             }) { Text("SAVE") }
+        }
+        if (onRescan != null) {
+            Text(
+                "full rescan — re-reads the whole camera index (use after " +
+                    "deleting in-camera or swapping cards)",
+                color = Dim, style = MaterialTheme.typography.bodySmall,
+            )
+            TextButton(onClick = onRescan) { Text("FULL RESCAN", color = Reject) }
         }
     }
 }

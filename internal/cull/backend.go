@@ -2,6 +2,7 @@ package cull
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -104,12 +105,86 @@ func buildCatalog(items []listing) *Catalog {
 /* ── aft-mtp-cli backend ─────────────────────────────────── */
 
 type cliBackend struct {
-	roots []string // camera-absolute DCIM paths, e.g. "/SLOT 1/DCIM"
+	roots    []string // camera-absolute DCIM paths, e.g. "/SLOT 1/DCIM"
+	cacheDir string   // catalog cache home; empty disables caching
+}
+
+// catalogCache persists folder listings between runs. Fuji folders below
+// the highest-numbered one never gain files, so startup only re-reads the
+// newest folder(s) — minutes down to seconds on a 19k-file card.
+// POST /api/rescan (or deleting the file) forces a full re-read.
+type catalogCache struct {
+	Folders map[string][]listing `json:"folders"` // key: root + "/" + folder
+}
+
+func (b *cliBackend) cachePath() string {
+	return filepath.Join(b.cacheDir, "catalog-cache.json")
+}
+
+func (b *cliBackend) loadCache() *catalogCache {
+	c := &catalogCache{Folders: map[string][]listing{}}
+	if b.cacheDir == "" {
+		return c
+	}
+	raw, err := os.ReadFile(b.cachePath())
+	if err != nil {
+		return c
+	}
+	if json.Unmarshal(raw, c) != nil || c.Folders == nil {
+		c.Folders = map[string][]listing{}
+	}
+	return c
+}
+
+func (b *cliBackend) saveCache(c *catalogCache) {
+	if b.cacheDir == "" {
+		return
+	}
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return
+	}
+	tmp := b.cachePath() + ".tmp"
+	if os.WriteFile(tmp, raw, 0o644) == nil {
+		_ = os.Rename(tmp, b.cachePath())
+	}
+}
+
+// folderNum extracts the NNN of "NNN_FUJI" (0 when malformed).
+func folderNum(name string) int {
+	n := 0
+	for _, r := range name {
+		if r < '0' || r > '9' {
+			break
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
+}
+
+// listFolder prefers the bulk lsprops path (2 MTP round-trips per folder);
+// an error disables it for the run (old binary / unsupported camera) and
+// an empty result falls back for just that folder.
+func (b *cliBackend) listFolder(ctx context.Context, dir string, bulkOK *bool) ([]mtpcli.Entry, error) {
+	if *bulkOK {
+		entries, err := mtpcli.LsProps(ctx, dir)
+		if err == nil && len(entries) > 0 {
+			return entries, nil
+		}
+		if err != nil {
+			log.Printf("bulk listing unavailable (falling back to per-file lsext): %.150v", err)
+			*bulkOK = false
+		}
+	}
+	return mtpcli.LsExt(ctx, dir)
 }
 
 func (b *cliBackend) Name() string { return "cli" }
 
 func (b *cliBackend) Discover(ctx context.Context, progress func(stage string, files int)) ([]listing, error) {
+	cache := b.loadCache()
+	usedCache, cacheDirty := 0, false
+	bulkOK := true
 	var out []listing
 	for _, root := range b.roots {
 		progress(root, len(out))
@@ -131,29 +206,52 @@ func (b *cliBackend) Discover(ctx context.Context, progress func(stage string, f
 			folders = append(folders, k)
 		}
 		sort.Strings(folders)
+		highest := 0
+		for _, f := range folders {
+			if n := folderNum(f); n > highest {
+				highest = n
+			}
+		}
 		for _, folder := range folders {
+			key := root + "/" + folder
+			// new shots only ever land in the highest-numbered folder:
+			// lower folders are immutable and safe to serve from cache
+			if cached, ok := cache.Folders[key]; ok && folderNum(folder) < highest {
+				out = append(out, cached...)
+				usedCache++
+				progress(filepath.Join(trimSlash(root), folder), len(out))
+				continue
+			}
 			progress(filepath.Join(trimSlash(root), folder), len(out))
-			entries, err := mtpcli.LsExt(ctx, root+"/"+folder)
+			entries, err := b.listFolder(ctx, root+"/"+folder, &bulkOK)
 			if err != nil {
 				return nil, fmt.Errorf("list %s/%s: %w", root, folder, err)
 			}
 			rel := filepath.Join(trimSlash(root), folder)
-			count := 0
+			fresh := []listing{}
 			for _, e := range entries {
 				if _, _, ok := photo.SplitMedia(e.Name); !ok {
 					continue
 				}
-				out = append(out, listing{
+				fresh = append(fresh, listing{
 					Dir: rel, Folder: folder, Name: e.Name,
 					Size: e.Size, ObjectID: e.ObjectID,
 				})
-				count++
 			}
-			log.Printf("  %s: %d files", rel, count)
+			log.Printf("  %s: %d files", rel, len(fresh))
+			out = append(out, fresh...)
+			cache.Folders[key] = fresh
+			cacheDirty = true
 		}
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("no Fuji media found under camera roots %v", b.roots)
+	}
+	if usedCache > 0 {
+		log.Printf("catalog: %d folders served from cache (settings → full rescan to re-read)", usedCache)
+	}
+	if cacheDirty {
+		b.saveCache(cache)
 	}
 	return out, nil
 }

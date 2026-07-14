@@ -358,6 +358,16 @@ func (a *App) handler() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	// Drops the catalog cache so the next engine start re-reads the whole
+	// card index (covers card swaps and in-camera deletions).
+	mux.HandleFunc("POST /api/rescan", func(w http.ResponseWriter, r *http.Request) {
+		if cb, ok := a.backend.(*cliBackend); ok && cb.cacheDir != "" {
+			os.Remove(cb.cachePath())
+			log.Printf("catalog cache dropped — full rescan on next engine start")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	// App-side events (poster jobs, UI-level failures) join the engine log
 	// so the diagnostics screen tells one coherent story.
 	mux.HandleFunc("POST /api/log", func(w http.ResponseWriter, r *http.Request) {

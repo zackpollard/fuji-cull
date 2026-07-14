@@ -88,6 +88,11 @@ class Api(private val port: Long) {
         runCatching { post("/api/log", JSONObject().put("msg", msg)) }
     }
 
+    /** Drops the catalog cache; takes effect on the next engine start. */
+    suspend fun rescan() = withContext(Dispatchers.IO) {
+        runCatching { post("/api/rescan", JSONObject()) }
+    }
+
     private fun get(path: String): String {
         val c = URL(base + path).openConnection() as HttpURLConnection
         c.connectTimeout = 5000

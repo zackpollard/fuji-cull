@@ -1,8 +1,18 @@
 diff --git a/cli/Session.cpp b/cli/Session.cpp
-index 76980c3..5021a53 100644
+index 76980c3..40e066b 100644
 --- a/cli/Session.cpp
 +++ b/cli/Session.cpp
-@@ -138,6 +138,12 @@ namespace cli
+@@ -119,6 +119,9 @@ namespace cli
+ 			make_function([this]() -> void { List(true, true); }));
+ 		AddCommand("lsext-r", "<path> lists objects in <path> [extended info, recursive]",
+ 			make_function([this](const Path &path) -> void { List(path, true, true); }));
++		AddCommand("lsprops", "<path> bulk list via GetObjectPropList: handle size name",
++			make_function([this](const Path &path) -> void { ListProps(path); }));
++
+ 		AddCommand("ls-objects", "<object-format-hex>",
+ 			make_function([this](const std::string &format) -> void { ListObjects(format); }));
+ 
+@@ -138,6 +141,12 @@ namespace cli
  		AddCommand("get-id", "<id> <dst> get object by id to <dst>",
                          make_function([this](mtp::u32 id, const LocalPath &dst) -> void { Get(dst, mtp::ObjectId(id)); }));
  
@@ -15,7 +25,38 @@ index 76980c3..5021a53 100644
  		AddCommand("get-thumb", "<file> downloads thumbnail for file",
  			make_function([this](const Path &path) -> void { GetThumb(path); }));
  		AddCommand("get-thumb", "<file> <dst> downloads thumbnail to <dst>",
-@@ -694,6 +700,53 @@ namespace cli
+@@ -535,6 +544,30 @@ namespace cli
+ 	}
+ 
+ 
++	// ListProps lists a folder with sizes using TWO bulk GetObjectPropList
++	// requests instead of one GetObjectInfo round-trip per file — the
++	// difference between ~90s and ~1s on a 19k-file card.
++	void Session::ListProps(mtp::ObjectId parent)
++	{
++		using namespace mtp;
++		if (!_session->GetObjectPropertyListSupported())
++			throw std::runtime_error("GetObjectPropList not supported by device");
++		std::map<mtp::ObjectId, u64> sizes;
++		{
++			ByteArray data = _session->GetObjectPropertyList(parent, ObjectFormat::Any, ObjectProperty::ObjectSize, 0, 1);
++			ObjectPropertyListParser<u64> parser;
++			parser.Parse(data, [&sizes](ObjectId objectId, ObjectProperty, u64 size)
++			{ sizes[objectId] = size; });
++		}
++		ByteArray data = _session->GetObjectPropertyList(parent, ObjectFormat::Any, ObjectProperty::ObjectFilename, 0, 1);
++		ObjectPropertyListParser<std::string> parser;
++		parser.Parse(data, [&sizes](ObjectId objectId, ObjectProperty, const std::string &name)
++		{
++			auto it = sizes.find(objectId);
++			print(std::left, width(objectId, 10), " ", it != sizes.end()? it->second: 0, " ", name);
++		});
++	}
++
+ 	void Session::List(mtp::ObjectId parent, bool extended, bool recursive, const std::string &prefix)
+ 	{
+ 		using namespace mtp;
+@@ -694,6 +727,53 @@ namespace cli
  		}
  	}
  
@@ -70,7 +111,7 @@ index 76980c3..5021a53 100644
  	{
  		mtp::ObjectFormat format = static_cast<mtp::ObjectFormat>(_session->GetObjectIntegerProperty(srcId, mtp::ObjectProperty::ObjectFormat));
 diff --git a/cli/Session.h b/cli/Session.h
-index a2df6b6..83049ce 100644
+index a2df6b6..7153736 100644
 --- a/cli/Session.h
 +++ b/cli/Session.h
 @@ -109,6 +109,8 @@ namespace cli
@@ -82,6 +123,18 @@ index a2df6b6..83049ce 100644
  		void GetThumb(const mtp::ObjectId srcId);
  		void GetThumb(const LocalPath &dst, mtp::ObjectId srcId)
  		{ Get(dst, srcId, true); }
+@@ -128,6 +130,11 @@ namespace cli
+ 		{ _cd = Resolve(path); }
+ 		void CurrentDirectory();
+ 
++		void ListProps(mtp::ObjectId parent);
++
++		void ListProps(const Path &path)
++		{ ListProps(Resolve(path)); }
++
+ 		void List(bool extended, bool recursive)
+ 		{ return List(_cd, extended, recursive); }
+ 
 diff --git a/cli/cli.cpp b/cli/cli.cpp
 index 8907ee9..1caee8a 100644
 --- a/cli/cli.cpp

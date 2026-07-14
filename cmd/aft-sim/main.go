@@ -214,6 +214,28 @@ func (s *sim) dispatch(line string, in *bufio.Scanner) bool {
 			fmt.Fprintf(s.out, "%s 268435457 File %d %s %s\n",
 				s.ids[full], info.Size(), info.ModTime().Format("2006-01-02 15:04:05"), e.Name())
 		}
+	case "lsprops":
+		if len(args) < 2 {
+			s.errf("lsprops: missing path")
+			return true
+		}
+		dir := s.resolve(args[1])
+		entries, err := os.ReadDir(s.fsPath(dir))
+		if err != nil {
+			s.errf("lsprops %s: %v", dir, err)
+			return true
+		}
+		for _, e := range entries {
+			if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			full := filepath.Join(s.fsPath(dir), e.Name())
+			info, err := os.Stat(full)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(s.out, "%s %d %s\n", s.ids[full], info.Size(), e.Name())
+		}
 	case "get":
 		if len(args) < 3 {
 			s.errf("get: usage: get NAME DEST")

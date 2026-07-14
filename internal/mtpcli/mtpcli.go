@@ -128,6 +128,30 @@ func LsExt(ctx context.Context, dir string) ([]Entry, error) {
 	return entries, nil
 }
 
+// LsProps lists a camera directory via bulk MTP GetObjectPropList (patched
+// aft "lsprops") — two round-trips per folder instead of one per FILE
+// (~90s → ~1s on a 19k-file card). Errors when the camera or binary lacks
+// support; callers fall back to LsExt.
+func LsProps(ctx context.Context, dir string) ([]Entry, error) {
+	out, err := RunBatch(ctx, fmt.Sprintf(`lsprops %q`, dir))
+	if err != nil {
+		return nil, err
+	}
+	var entries []Entry
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 {
+			continue
+		}
+		size, err := strconv.ParseInt(f[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		entries = append(entries, Entry{ObjectID: f[0], Size: size, Name: f[2]})
+	}
+	return entries, nil
+}
+
 // Get is one object to download to a local path.
 type Get struct {
 	ObjectID string

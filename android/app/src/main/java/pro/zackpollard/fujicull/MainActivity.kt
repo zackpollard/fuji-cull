@@ -116,6 +116,13 @@ class MainActivity : ComponentActivity() {
                     prefs().edit().putString("album", album).apply()
                     settings = settings.copy(album = album)
                 },
+                onRescan = {
+                    lifecycleScope.launch {
+                        service?.engine?.let { runCatching { Api(it.port()).rescan() } }
+                        service?.restartEngine()
+                        engineEpoch++
+                    }
+                },
             )
         }
     }
