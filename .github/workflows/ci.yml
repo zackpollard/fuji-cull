@@ -110,10 +110,14 @@ jobs:
           gradle-version: "8.9"
       - name: assemble apk
         run: gradle -p android :app:assembleDebug
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: fuji-cull-android
           path: android/app/build/outputs/apk/debug/*.apk
+          # non-zipped: the apk downloads as a raw file straight from the
+          # run page — the fallback delivery path for fork PRs, which can't
+          # update the rolling android-dev prerelease
+          archive: false
       - name: publish rolling dev apk
         # artifacts only download as zips; a rolling prerelease asset gives a
         # stable direct-apk link for on-phone installs. same-repo PRs only —
