@@ -360,6 +360,7 @@ private fun CullScreen(
     var orient by remember { mutableStateOf("") }
     var immich by remember { mutableStateOf("") }
     var sick by remember { mutableStateOf(false) }
+    var enginePosters by remember { mutableStateOf(true) } // assume until told otherwise
     var viewing by remember { mutableIntStateOf(-1) }
     var importing by remember { mutableStateOf("") }
     var showImport by remember { mutableStateOf(false) }
@@ -384,6 +385,7 @@ private fun CullScreen(
                 thumbStates = t; orient = o; immich = im
                 val st = api.status()
                 sick = st.optBoolean("bulkSick") || st.optBoolean("partSick")
+                enginePosters = st.optBoolean("posters")
                 val imp = st.getJSONObject("import")
                 if (imp.optBoolean("running")) {
                     importing = "importing ${imp.optInt("done")}/${imp.optInt("total")}"
@@ -401,11 +403,13 @@ private fun CullScreen(
         return
     }
 
-    // idle poster sweep: videos get posters without waiting to be scrolled
-    // into view — like the thumbnail sweep, but extraction runs here since
-    // Android has no ffmpeg. Deferred fetches (busy link) retry each pass.
+    // MMR fallback poster sweep — only when the engine can't make posters
+    // itself (bundled ffmpeg missing). With ffmpeg, the engine's own idle
+    // sweep produces video thumbnails exactly like desktop.
     val appCtx = LocalContext.current.applicationContext
     LaunchedEffect("posters") {
+        delay(10_000) // let the first /api/status set enginePosters
+        if (enginePosters) return@LaunchedEffect
         while (true) {
             var pending = 0
             for (shot in shots) {
@@ -558,21 +562,30 @@ private fun GridCell(
         Modifier.padding(1.dp).aspectRatio(1.48f).background(Color(0xFF1D201D)).clickable(onClick = onClick),
     ) {
         if (shot.kind == "video") {
-            val ctx = LocalContext.current
-            val poster by produceState(initialValue = Posters.cached(ctx, shot), shot.id) {
-                if (value == null) value = Posters.load(ctx, api, shot) // visible = priority
-                while (value == null && !Posters.failed(ctx, shot)) {
-                    delay(4000) // the idle sweeper may fill it in behind us
-                    value = Posters.cached(ctx, shot)
-                }
-            }
-            poster?.let {
+            if (hasThumb) {
+                // engine-made poster (bundled ffmpeg) served like any thumb
                 AsyncImage(
-                    model = it,
+                    model = api.thumbUrl(shot.id, orientC, tick),
                     contentDescription = shot.base,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
                 )
+            } else {
+                val ctx = LocalContext.current
+                val poster by produceState(initialValue = Posters.cached(ctx, shot), shot.id) {
+                    while (value == null && !Posters.failed(ctx, shot)) {
+                        delay(4000) // MMR fallback sweeper may fill it in
+                        value = Posters.cached(ctx, shot)
+                    }
+                }
+                poster?.let {
+                    AsyncImage(
+                        model = it,
+                        contentDescription = shot.base,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                    )
+                }
             }
             Box(Modifier.fillMaxWidth().height(3.dp).background(Amber).align(Alignment.TopStart))
         } else if (hasThumb) {
@@ -648,10 +661,10 @@ private fun Viewer(
                         .then(if (current) Modifier.border(2.dp, Amber) else Modifier)
                         .clickable { scope.launch { pager.scrollToPage(i) } },
                 ) {
-                    val model: Any? = if (shot.kind == "video") {
-                        Posters.cached(LocalContext.current, shot)
-                    } else if (thumbStates.getOrNull(i) == '1') {
+                    val model: Any? = if (thumbStates.getOrNull(i) == '1') {
                         api.thumbUrl(shot.id, orient.getOrNull(i) ?: '0', tick)
+                    } else if (shot.kind == "video") {
+                        Posters.cached(LocalContext.current, shot)
                     } else null
                     model?.let {
                         AsyncImage(

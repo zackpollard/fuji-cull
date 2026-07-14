@@ -165,7 +165,7 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 	}
 	if bin := mtppart.Bin(); bin != "" {
 		p.partBin = bin
-		if _, err := exec.LookPath("ffmpeg"); err != nil {
+		if _, err := exec.LookPath(ffmpegBin()); err != nil {
 			log.Printf("ffmpeg not found: video posters disabled (head sweep unaffected)")
 			p.noFfmpeg = true
 		}
@@ -1083,8 +1083,15 @@ func (p *Prefetcher) fetchVideoPosterBatch(ctx context.Context, batch []*photo.S
 			fctx, fcancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer fcancel()
 			poster := head + ".jpg"
-			out, err := exec.CommandContext(fctx, "ffmpeg", "-y", "-loglevel", "error",
-				"-i", head, "-frames:v", "1", "-vf", "scale=240:-2", "-q:v", "4", poster).CombinedOutput()
+			args := []string{"-y", "-loglevel", "error", "-i", head, "-frames:v", "1"}
+			// the bundled minimal ffmpeg's C-only swscale RESIZE path emits
+			// garbage (decode itself is clean — verified); extract full-res
+			// there and let the UI downsample. System ffmpeg scales fine.
+			if os.Getenv("FUJI_FFMPEG") == "" {
+				args = append(args, "-vf", "scale=240:-2")
+			}
+			args = append(args, "-q:v", "4", poster)
+			out, err := exec.CommandContext(fctx, ffmpegBin(), args...).CombinedOutput()
 			if err == nil && jpegComplete(poster) && os.Rename(poster, p.ThumbPath(s)) == nil {
 				p.mu.Lock()
 				p.thumbs[s.ID] = thumbHave
@@ -1118,6 +1125,22 @@ func (p *Prefetcher) fetchVideoPosterBatch(ctx context.Context, batch []*photo.S
 	if made > 0 || failed > 0 {
 		log.Printf("video posters: +%d from camera heads (%d failed)", made, failed)
 	}
+}
+
+// ffmpegBin resolves ffmpeg, honoring an env override for platforms without
+// a PATH-installed copy (Android bundles a minimal build as a jniLib —
+// crucially, ffmpeg's software HEVC decoder handles the 4:2:2 10-bit
+// footage that no Android system codec can touch).
+func ffmpegBin() string {
+	if p := os.Getenv("FUJI_FFMPEG"); p != "" {
+		return p
+	}
+	return "ffmpeg"
+}
+
+// PostersAvailable reports whether engine-side poster extraction runs here.
+func (p *Prefetcher) PostersAvailable() bool {
+	return p.partBin != "" && !p.noFfmpeg
 }
 
 // mediaValid reports whether a file starts like the media it claims to be

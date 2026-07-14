@@ -153,6 +153,7 @@ func (a *App) handler() http.Handler {
 			"bulkSick":  bulkSick,
 			"partSick":  partSick,
 			"streaming": a.prefetch.StreamingAvailable() && !a.importer.Status().Running,
+			"posters":   a.prefetch.PostersAvailable(),
 		})
 	})
 

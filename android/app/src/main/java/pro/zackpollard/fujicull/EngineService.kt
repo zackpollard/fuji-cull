@@ -48,6 +48,10 @@ class EngineService : Service() {
         try {
             val dataDir = File(filesDir, "data").apply { mkdirs() }
             val bufDir = File(cacheDir, "buffer").apply { mkdirs() }
+            // bundled minimal ffmpeg: engine-side posters, including the
+            // 4:2:2 10-bit HEVC no Android codec decodes
+            val ffmpeg = File(applicationInfo.nativeLibraryDir, "libffmpeg.so")
+            if (ffmpeg.exists()) Mobile.setEnv("FUJI_FFMPEG", ffmpeg.absolutePath)
             val prefs = getSharedPreferences("immich", MODE_PRIVATE)
             engine = Mobile.start(
                 dataDir.absolutePath,
