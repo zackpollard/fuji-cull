@@ -31,6 +31,14 @@ object Posters {
         return if (f.exists()) f else null
     }
 
+    /** Permanently undecodable (one attempt on good data already failed). */
+    fun failed(ctx: Context, shot: Shot): Boolean =
+        File(file(ctx, shot).path + ".fail2").exists()
+
+    /** Nothing left to do for this video (poster cached or marked failed). */
+    fun resolved(ctx: Context, shot: Shot): Boolean =
+        cached(ctx, shot) != null || failed(ctx, shot)
+
     suspend fun load(ctx: Context, api: Api, shot: Shot): File? {
         val f = file(ctx, shot)
         if (f.exists()) return f

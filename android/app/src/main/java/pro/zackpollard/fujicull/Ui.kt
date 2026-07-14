@@ -401,6 +401,24 @@ private fun CullScreen(
         return
     }
 
+    // idle poster sweep: videos get posters without waiting to be scrolled
+    // into view — like the thumbnail sweep, but extraction runs here since
+    // Android has no ffmpeg. Deferred fetches (busy link) retry each pass.
+    val appCtx = LocalContext.current.applicationContext
+    LaunchedEffect("posters") {
+        while (true) {
+            var pending = 0
+            for (shot in shots) {
+                if (shot.kind != "video" || Posters.resolved(appCtx, shot)) continue
+                pending++
+                Posters.load(appCtx, api, shot)
+                delay(400) // yield the link between videos
+            }
+            if (pending == 0) break
+            delay(30_000)
+        }
+    }
+
     // hoisted above the viewer branch so grid scroll position survives
     // opening and closing the viewer
     val gridState = rememberLazyGridState()
@@ -542,7 +560,11 @@ private fun GridCell(
         if (shot.kind == "video") {
             val ctx = LocalContext.current
             val poster by produceState(initialValue = Posters.cached(ctx, shot), shot.id) {
-                if (value == null) value = Posters.load(ctx, api, shot)
+                if (value == null) value = Posters.load(ctx, api, shot) // visible = priority
+                while (value == null && !Posters.failed(ctx, shot)) {
+                    delay(4000) // the idle sweeper may fill it in behind us
+                    value = Posters.cached(ctx, shot)
+                }
             }
             poster?.let {
                 AsyncImage(
