@@ -793,6 +793,14 @@ private fun ZoomableImage(api: Api, shot: Shot) {
     }
 }
 
+// hand the camera back NOW: the engine-side stream otherwise idles 20s
+// holding the claim, blocking sweeps and poster fetches after every video
+// peek. Fire-and-forget from a dispose callback, so no composable scope.
+@OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
+private fun releaseCameraStream(api: Api) {
+    kotlinx.coroutines.GlobalScope.launch { api.releaseStream() }
+}
+
 private suspend fun setDecision(
     api: Api,
     decisions: androidx.compose.runtime.MutableState<MutableMap<String, String>>,
@@ -854,7 +862,10 @@ private fun VideoPlayer(api: Api, shot: Shot, active: Boolean) {
         }
     }
     androidx.compose.runtime.DisposableEffect(Unit) {
-        onDispose { player.release() }
+        onDispose {
+            player.release()
+            releaseCameraStream(api)
+        }
     }
     AndroidView(
         factory = { PlayerView(it).apply { this.player = player } },

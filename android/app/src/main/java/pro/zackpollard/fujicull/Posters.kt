@@ -24,7 +24,7 @@ import java.net.URL
  */
 object Posters {
     private val lock = Mutex()
-    private const val HEAD_BYTES = 8L * 1024 * 1024
+    private val loggedDeferred = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     fun cached(ctx: Context, shot: Shot): File? {
         val f = file(ctx, shot)
@@ -47,18 +47,29 @@ object Posters {
                 // no streaming claim, no readahead, exactly 8 MB. A 503
                 // means the link is busy (streaming/import): transient,
                 // do NOT mark the video failed.
+                var why = ""
                 val fetched = runCatching {
                     val c = URL(api.videoHeadUrl(shot.id)).openConnection() as HttpURLConnection
                     c.connectTimeout = 5000
-                    c.readTimeout = 120000
-                    if (c.responseCode != 200) return@runCatching false
+                    c.readTimeout = 45000
+                    if (c.responseCode != 200) {
+                        why = "http ${c.responseCode}: " +
+                            (c.errorStream?.bufferedReader()?.readText()?.take(80) ?: "")
+                        return@runCatching false
+                    }
                     head.parentFile?.mkdirs()
                     c.inputStream.use { ins -> head.outputStream().use { ins.copyTo(it) } }
                     head.length() > 0
-                }.getOrDefault(false)
+                }.onFailure { why = it.message ?: it.toString() }.getOrDefault(false)
                 if (!fetched) {
                     head.delete()
-                    return@withContext null // transient: retried on a later recomposition
+                    // transient — retried on a later recomposition; log the
+                    // reason once per video so "posters never appear" is
+                    // diagnosable from the field
+                    if (loggedDeferred.add(shot.id)) {
+                        api.logEvent("poster: ${shot.base} deferred ($why)")
+                    }
+                    return@withContext null
                 }
 
                 var diag = ""
