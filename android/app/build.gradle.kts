@@ -61,5 +61,8 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
+    // libmpv: ffmpeg software decode for the 4:2:2 10-bit HEVC that no
+    // android codec touches (hwdec=mediacodec still covers normal clips)
+    implementation("dev.jdtech.mpv:libmpv:0.4.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 }

@@ -70,11 +70,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.activity.compose.BackHandler
 import androidx.compose.ui.window.Dialog
-import androidx.media3.common.MediaItem
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
@@ -84,11 +79,11 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
-private val Keep = Color(0xFF37D67A)
-private val Reject = Color(0xFFFF5A3C)
-private val Amber = Color(0xFFFFB42E)
-private val Panel = Color(0xFF121412)
-private val Dim = Color(0xFF7D817B)
+internal val Keep = Color(0xFF37D67A)
+internal val Reject = Color(0xFFFF5A3C)
+internal val Amber = Color(0xFFFFB42E)
+internal val Panel = Color(0xFF121412)
+internal val Dim = Color(0xFF7D817B)
 
 @Composable
 fun CullApp(
@@ -832,7 +827,7 @@ private fun ZoomableImage(api: Api, shot: Shot) {
 // holding the claim, blocking sweeps and poster fetches after every video
 // peek. Fire-and-forget from a dispose callback, so no composable scope.
 @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
-private fun releaseCameraStream(api: Api) {
+internal fun releaseCameraStream(api: Api) {
     kotlinx.coroutines.GlobalScope.launch { api.releaseStream() }
 }
 
@@ -881,29 +876,5 @@ private fun VideoPlayer(api: Api, shot: Shot, active: Boolean) {
         }
         return
     }
-    val scope = rememberCoroutineScope()
-    val player = remember {
-        ExoPlayer.Builder(context).build().apply {
-            addListener(object : Player.Listener {
-                override fun onPlayerError(error: PlaybackException) {
-                    scope.launch {
-                        api.logEvent("video ${shot.base}: ${error.errorCodeName} ${error.message}")
-                    }
-                }
-            })
-            setMediaItem(MediaItem.fromUri(api.videoUrl(shot.id)))
-            prepare()
-            playWhenReady = true
-        }
-    }
-    androidx.compose.runtime.DisposableEffect(Unit) {
-        onDispose {
-            player.release()
-            releaseCameraStream(api)
-        }
-    }
-    AndroidView(
-        factory = { PlayerView(it).apply { this.player = player } },
-        modifier = Modifier.fillMaxSize(),
-    )
+    MpvPlayer(api, shot, Modifier.fillMaxSize())
 }
