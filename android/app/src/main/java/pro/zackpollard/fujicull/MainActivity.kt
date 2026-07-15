@@ -92,7 +92,7 @@ class MainActivity : ComponentActivity() {
         }
         // role swaps and mode changes don't always broadcast; keep the
         // diagnostics honest with a slow poll
-        lifecycleScope.launch {
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.Default) {
             while (true) {
                 refreshUsb()
                 delay(2000)

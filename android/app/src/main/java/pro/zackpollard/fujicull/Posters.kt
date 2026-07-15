@@ -26,14 +26,43 @@ object Posters {
     private val lock = Mutex()
     private val loggedDeferred = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
+    // composition-safe memory of resolved posters: File = cached poster,
+    // FAILED sentinel = permanently undecodable, absent = unknown (needs a
+    // disk check — on Dispatchers.IO, never during composition)
+    private val FAILED = File("/failed")
+    private val memory = java.util.concurrent.ConcurrentHashMap<String, File>()
+
+    /** Composition-safe: memory only, no disk access. */
+    fun fromMemory(shot: Shot): File? {
+        val f = memory[shot.id] ?: return null
+        return if (f === FAILED) null else f
+    }
+
+    /** Memory says this video can never have a poster. */
+    fun failedInMemory(shot: Shot): Boolean = memory[shot.id] === FAILED
+
     fun cached(ctx: Context, shot: Shot): File? {
+        fromMemory(shot)?.let { return it }
+        if (failedInMemory(shot)) return null
         val f = file(ctx, shot)
-        return if (f.exists()) f else null
+        if (f.exists()) {
+            memory[shot.id] = f
+            return f
+        }
+        if (File(f.path + ".fail2").exists()) {
+            memory[shot.id] = FAILED
+        }
+        return null
     }
 
     /** Permanently undecodable (one attempt on good data already failed). */
-    fun failed(ctx: Context, shot: Shot): Boolean =
-        File(file(ctx, shot).path + ".fail2").exists()
+    fun failed(ctx: Context, shot: Shot): Boolean {
+        if (failedInMemory(shot)) return true
+        if (fromMemory(shot) != null) return false
+        val bad = File(file(ctx, shot).path + ".fail2").exists()
+        if (bad) memory[shot.id] = FAILED
+        return bad
+    }
 
     /** Nothing left to do for this video (poster cached or marked failed). */
     fun resolved(ctx: Context, shot: Shot): Boolean =
@@ -101,6 +130,7 @@ object Posters {
                     api.logEvent("poster: ${shot.base} undecodable ($diag; marked, no retry)")
                     fail.parentFile?.mkdirs()
                     fail.writeText("")
+                    memory[shot.id] = FAILED
                     null
                 } else {
                     val scaled = if (bmp.width > 480) {
@@ -110,6 +140,7 @@ object Posters {
                     tmp.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, 80, it) }
                     if (tmp.renameTo(f)) {
                         api.logEvent("poster: ${shot.base} ok")
+                        memory[shot.id] = f
                         f
                     } else null
                 }

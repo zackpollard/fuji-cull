@@ -74,10 +74,12 @@ import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
 import java.io.File
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 internal val Keep = Color(0xFF37D67A)
 internal val Reject = Color(0xFFFF5A3C)
@@ -114,9 +116,14 @@ fun CullApp(
                         if (err != null) {
                             status = "engine failed: " + err
                         } else if (e != null) {
-                            ready = e.ready()
-                            status = if (ready) "ready" else e.discoveryStatus()
-                            logTail = e.recentLog()
+                            // gomobile calls off the main thread
+                            val snap = withContext(Dispatchers.Default) {
+                                val r = e.ready()
+                                Triple(r, if (r) "ready" else e.discoveryStatus(), e.recentLog())
+                            }
+                            ready = snap.first
+                            status = snap.second
+                            logTail = snap.third
                         }
                     } catch (t: Throwable) {
                         status = "engine: ${t.message}"
@@ -145,12 +152,17 @@ fun CullApp(
                         onSettings = { showSettings = true },
                         onLog = { showLog = true },
                     )
-                else -> CullScreen(
-                    Api(engine.port()), importDest, resumeTick, settings,
-                    onSettings = { showSettings = true },
-                    onAlbumUsed = onAlbumUsed,
-                    onLog = { showLog = true },
-                )
+                else -> {
+                    // a fresh Api per recomposition would defeat Compose
+                    // skipping for every composable that receives it
+                    val api = remember(engine) { Api(engine.port()) }
+                    CullScreen(
+                        api, importDest, resumeTick, settings,
+                        onSettings = { showSettings = true },
+                        onAlbumUsed = onAlbumUsed,
+                        onLog = { showLog = true },
+                    )
+                }
             }
         }
     }
@@ -233,7 +245,7 @@ private fun LogScreen(fullLog: () -> String, onClose: () -> Unit) {
     LaunchedEffect(Unit) {
         while (true) {
             val atBottom = scroll.value >= scroll.maxValue - 40
-            text = fullLog()
+            text = withContext(Dispatchers.Default) { fullLog() }
             if (atBottom) {
                 // follow the tail unless the user scrolled up to read
                 kotlinx.coroutines.yield()
@@ -451,13 +463,14 @@ private fun CullScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            val kept = decisions.value.count { it.value == "keep" }
-            val rejected = decisions.value.count { it.value == "reject" }
+            val decMap = decisions.value
+            val kept = remember(decMap) { decMap.count { it.value == "keep" } }
+            val rejected = remember(decMap) { decMap.count { it.value == "reject" } }
             Column(Modifier.clickable(onClick = onLog)) {
                 Text("K $kept  X $rejected  · ${shots.size - kept - rejected}", color = Color.White)
-                val have = thumbStates.count { it == '1' }
-                val exKnown = orient.count { it in '1'..'8' }
-                val exTotal = orient.count { it != '-' }
+                val have = remember(thumbStates) { thumbStates.count { it == '1' } }
+                val exKnown = remember(orient) { orient.count { it in '1'..'8' } }
+                val exTotal = remember(orient) { orient.count { it != '-' } }
                 Text(
                     "th $have/${shots.size} · ex $exKnown/$exTotal" + if (sick) " · CAMERA SICK" else "",
                     color = if (sick) Reject else Dim,
@@ -494,7 +507,7 @@ private fun CullScreen(
                 }
         }
         LazyVerticalGrid(columns = GridCells.Adaptive(110.dp), Modifier.fillMaxSize(), state = gridState) {
-            itemsIndexed(shots, key = { _, s -> s.id }) { i, shot ->
+            itemsIndexed(shots, key = { _, s -> s.id }, contentType = { _, s -> s.kind }) { i, shot ->
                 GridCell(
                     api, shot,
                     hasThumb = thumbStates.getOrNull(i) == '1',
@@ -577,10 +590,15 @@ private fun GridCell(
                 )
             } else {
                 val ctx = LocalContext.current
-                val poster by produceState(initialValue = Posters.cached(ctx, shot), shot.id) {
-                    while (value == null && !Posters.failed(ctx, shot)) {
-                        delay(4000) // MMR fallback sweeper may fill it in
-                        value = Posters.cached(ctx, shot)
+                // memory first (composition-safe); disk stats on IO only
+                val poster by produceState(initialValue = Posters.fromMemory(shot), shot.id) {
+                    while (value == null) {
+                        val (p, dead) = withContext(Dispatchers.IO) {
+                            Posters.cached(ctx, shot) to Posters.failed(ctx, shot)
+                        }
+                        value = p
+                        if (p != null || dead) break
+                        delay(4000) // the poster sweep may fill it in
                     }
                 }
                 poster?.let {
@@ -647,7 +665,7 @@ private fun Viewer(
             Text("${pager.currentPage + 1}/${shots.size}", color = Dim)
         }
 
-        HorizontalPager(state = pager, modifier = Modifier.weight(1f), beyondViewportPageCount = 2) { page ->
+        HorizontalPager(state = pager, modifier = Modifier.weight(1f), beyondViewportPageCount = 1) { page ->
             val shot = shots[page]
             if (shot.kind == "video") {
                 VideoPlayer(api, shot, active = page == pager.currentPage)
@@ -658,7 +676,7 @@ private fun Viewer(
 
         // timeline: tap to jump, amber outline marks the current shot
         LazyRow(state = film, modifier = Modifier.fillMaxWidth().background(Panel)) {
-            listItemsIndexed(shots, key = { _, s -> s.id }) { i, shot ->
+            listItemsIndexed(shots, key = { _, s -> s.id }, contentType = { _, s -> s.kind }) { i, shot ->
                 val current = i == pager.currentPage
                 Box(
                     Modifier.padding(2.dp).width(64.dp).height(44.dp)
@@ -666,10 +684,16 @@ private fun Viewer(
                         .then(if (current) Modifier.border(2.dp, Amber) else Modifier)
                         .clickable { scope.launch { pager.scrollToPage(i) } },
                 ) {
+                    val ctx = LocalContext.current
+                    val posterFile by produceState(initialValue = Posters.fromMemory(shot), shot.id) {
+                        if (value == null) {
+                            value = withContext(Dispatchers.IO) { Posters.cached(ctx, shot) }
+                        }
+                    }
                     val model: Any? = if (thumbStates.getOrNull(i) == '1') {
                         api.thumbUrl(shot.id, orient.getOrNull(i) ?: '0', tick)
                     } else if (shot.kind == "video") {
-                        Posters.cached(LocalContext.current, shot)
+                        posterFile
                     } else null
                     model?.let {
                         AsyncImage(
@@ -872,7 +896,11 @@ private fun VideoPlayer(api: Api, shot: Shot, active: Boolean) {
         // stream and steal the session from the video actually playing —
         // show the cached poster instead until this page is current
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            val poster = Posters.cached(context, shot)
+            val poster by produceState(initialValue = Posters.fromMemory(shot), shot.id) {
+                if (value == null) {
+                    value = withContext(Dispatchers.IO) { Posters.cached(context, shot) }
+                }
+            }
             if (poster != null) {
                 AsyncImage(
                     model = poster,

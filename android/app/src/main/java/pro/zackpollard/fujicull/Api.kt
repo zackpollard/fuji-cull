@@ -11,6 +11,7 @@ import java.net.URLEncoder
 data class Shot(val id: String, val folder: String, val base: String, val kind: String)
 
 /** Thin client for the engine's loopback HTTP API. */
+@androidx.compose.runtime.Stable
 class Api(private val port: Long) {
     val base get() = "http://127.0.0.1:$port"
 

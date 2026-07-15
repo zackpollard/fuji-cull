@@ -107,16 +107,25 @@ fun MpvPlayer(api: Api, shot: Shot, modifier: Modifier = Modifier) {
 
     LaunchedEffect(shot.id) {
         while (true) {
-            runCatching {
-                duration = MPVLib.getPropertyDouble("duration").toFloat()
-                if (!scrubbing) position = MPVLib.getPropertyDouble("time-pos").toFloat()
-                paused = MPVLib.getPropertyBoolean("pause")
-                bufferedAhead = runCatching {
-                    MPVLib.getPropertyDouble("demuxer-cache-time").toFloat()
-                }.getOrDefault(0f)
-                buffering = runCatching {
-                    MPVLib.getPropertyBoolean("paused-for-cache")
-                }.getOrDefault(false)
+            // JNI property reads off the main thread
+            data class Snap(val d: Float, val t: Float, val p: Boolean, val b: Float, val c: Boolean)
+            val snap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    Snap(
+                        MPVLib.getPropertyDouble("duration").toFloat(),
+                        MPVLib.getPropertyDouble("time-pos").toFloat(),
+                        MPVLib.getPropertyBoolean("pause"),
+                        runCatching { MPVLib.getPropertyDouble("demuxer-cache-time").toFloat() }.getOrDefault(0f),
+                        runCatching { MPVLib.getPropertyBoolean("paused-for-cache") }.getOrDefault(false),
+                    )
+                }.getOrNull()
+            }
+            if (snap != null) {
+                duration = snap.d
+                if (!scrubbing) position = snap.t
+                paused = snap.p
+                bufferedAhead = snap.b
+                buffering = snap.c
                 if (duration > 0f) ready = true
             }
             delay(400)
