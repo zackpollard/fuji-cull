@@ -506,6 +506,33 @@ private fun CullScreen(
                     api.thumbHint(it.coerceIn(0, shots.size - 1))
                 }
         }
+        // scroll-ahead preloading: warm Coil with the tiles about to enter
+        // the viewport (byte-identical requests share cache keys with the
+        // cells), so flings land on ready bitmaps instead of blanks
+        val preloadCtx = LocalContext.current
+        LaunchedEffect(shots.isEmpty()) {
+            if (shots.isEmpty()) return@LaunchedEffect
+            val loader = coil.Coil.imageLoader(preloadCtx)
+            val warmed = HashSet<Int>()
+            snapshotFlow {
+                val first = gridState.firstVisibleItemIndex
+                val last = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: first
+                first to last
+            }
+                .distinctUntilChanged()
+                .collect { (first, last) ->
+                    if (warmed.size > 4000) warmed.clear()
+                    val ahead = (last + 1)..minOf(last + 90, shots.lastIndex)
+                    val behind = maxOf(first - 45, 0) until first
+                    for (i in behind + ahead) {
+                        if (thumbStates.getOrNull(i) != '1' || !warmed.add(i)) continue
+                        val shot = shots[i]
+                        loader.enqueue(
+                            thumbRequest(preloadCtx, api, shot.id, orient.getOrNull(i) ?: '0', resumeTick),
+                        )
+                    }
+                }
+        }
         LazyVerticalGrid(columns = GridCells.Adaptive(110.dp), Modifier.fillMaxSize(), state = gridState) {
             itemsIndexed(shots, key = { _, s -> s.id }, contentType = { _, s -> s.kind }) { i, shot ->
                 GridCell(
@@ -583,7 +610,7 @@ private fun GridCell(
             if (hasThumb) {
                 // engine-made poster (bundled ffmpeg) served like any thumb
                 AsyncImage(
-                    model = api.thumbUrl(shot.id, orientC, tick),
+                    model = thumbRequest(LocalContext.current, api, shot.id, orientC, tick),
                     contentDescription = shot.base,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
@@ -613,7 +640,7 @@ private fun GridCell(
             Box(Modifier.fillMaxWidth().height(3.dp).background(Amber).align(Alignment.TopStart))
         } else if (hasThumb) {
             AsyncImage(
-                model = api.thumbUrl(shot.id, orientC, tick),
+                model = thumbRequest(LocalContext.current, api, shot.id, orientC, tick),
                 contentDescription = shot.base,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
@@ -648,6 +675,18 @@ private fun Viewer(
         // the buffer window and the timeline both follow the swipe
         api.cursor(pager.currentPage)
         film.animateScrollToItem((pager.currentPage - 2).coerceAtLeast(0))
+    }
+    val filmCtx = LocalContext.current
+    LaunchedEffect(pager.currentPage) {
+        // warm the filmstrip around the current page
+        val loader = coil.Coil.imageLoader(filmCtx)
+        val page = pager.currentPage
+        for (i in maxOf(0, page - 30)..minOf(shots.lastIndex, page + 30)) {
+            if (thumbStates.getOrNull(i) != '1') continue
+            loader.enqueue(
+                thumbRequest(filmCtx, api, shots[i].id, orient.getOrNull(i) ?: '0', tick),
+            )
+        }
     }
 
     Column(Modifier.fillMaxSize().background(Color.Black).safeDrawingPadding()) {
@@ -691,7 +730,7 @@ private fun Viewer(
                         }
                     }
                     val model: Any? = if (thumbStates.getOrNull(i) == '1') {
-                        api.thumbUrl(shot.id, orient.getOrNull(i) ?: '0', tick)
+                        thumbRequest(ctx, api, shot.id, orient.getOrNull(i) ?: '0', tick)
                     } else if (shot.kind == "video") {
                         posterFile
                     } else null
@@ -864,6 +903,17 @@ private fun ZoomableImage(api: Api, shot: Shot) {
 internal fun releaseCameraStream(api: Api) {
     kotlinx.coroutines.GlobalScope.launch { api.releaseStream() }
 }
+
+// thumbRequest builds the ONE canonical request shape for a shot's
+// thumbnail — cells, filmstrip and preloaders must all use it so Coil's
+// cache keys line up and a preloaded tile composes with zero work
+private fun thumbRequest(
+    ctx: android.content.Context, api: Api, id: String, orientC: Char, tick: Int,
+): ImageRequest =
+    ImageRequest.Builder(ctx)
+        .data(api.thumbUrl(id, orientC, tick))
+        .size(256)
+        .build()
 
 private suspend fun setDecision(
     api: Api,

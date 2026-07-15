@@ -74,6 +74,8 @@ class MainActivity : ComponentActivity() {
                         .readTimeout(180, TimeUnit.SECONDS)
                         .build(),
                 )
+                // scroll-ahead preloading keeps a few hundred thumbs warm
+                .memoryCache { coil.memory.MemoryCache.Builder(this).maxSizePercent(0.30).build() }
                 .build(),
         )
         settings = loadSettings()
