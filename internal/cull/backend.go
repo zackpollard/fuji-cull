@@ -239,25 +239,30 @@ func (b *cliBackend) Discover(ctx context.Context, progress func(stage string, f
 	cache := b.loadCache()
 	usedCache, cacheDirty := 0, false
 	bulkOK := true
+	// Card-wide bulk listing (3 MTP requests for EVERYTHING — the only
+	// GetObjectPropList shape the X-H2S honors) fetched lazily on the
+	// first uncached folder; entries grouped by parent handle.
+	var byParent map[string][]mtpcli.AllEntry
+	allTried := false
 	var out []listing
 	for _, root := range b.roots {
 		progress(root, len(out))
-		lsOut, err := mtpcli.Ls(ctx, root)
+		dirEntries, err := mtpcli.LsIDs(ctx, root)
 		if err != nil {
 			log.Printf("camera root %s: %v (skipping)", root, err)
 			continue
 		}
-		folderSet := map[string]struct{}{}
-		for _, m := range photo.FolderRe.FindAllString(lsOut, -1) {
-			folderSet[m] = struct{}{}
+		folderIDs := map[string]string{}
+		var folders []string
+		for _, d := range dirEntries {
+			if photo.FolderRe.MatchString(d.Name) {
+				folders = append(folders, d.Name)
+				folderIDs[d.Name] = d.ObjectID
+			}
 		}
-		if len(folderSet) == 0 {
+		if len(folders) == 0 {
 			log.Printf("camera root %s: no NNN_FUJI folders (skipping)", root)
 			continue
-		}
-		folders := make([]string, 0, len(folderSet))
-		for k := range folderSet {
-			folders = append(folders, k)
 		}
 		sort.Strings(folders)
 		for _, folder := range folders {
@@ -265,7 +270,7 @@ func (b *cliBackend) Discover(ctx context.Context, progress func(stage string, f
 			rel := filepath.Join(trimSlash(root), folder)
 			progress(rel, len(out))
 			// cached folders refresh via a one-request handle diff; only
-			// never-seen folders pay for a full listing
+			// never-seen folders pay for a listing
 			if cached, ok := cache.Folders[key]; ok {
 				fresh, changed, err := b.deltaFolder(ctx, root+"/"+folder, rel, folder, cached)
 				if err == nil {
@@ -279,19 +284,43 @@ func (b *cliBackend) Discover(ctx context.Context, progress func(stage string, f
 				}
 				log.Printf("  %s: handle diff failed (%v) — full re-list", rel, err)
 			}
-			entries, err := b.listFolder(ctx, root+"/"+folder, &bulkOK)
-			if err != nil {
-				return nil, fmt.Errorf("list %s/%s: %w", root, folder, err)
+			if byParent == nil && !allTried {
+				allTried = true
+				if all, err := mtpcli.LsPropsAll(ctx); err == nil && len(all) > 0 {
+					byParent = make(map[string][]mtpcli.AllEntry, 64)
+					for _, e := range all {
+						byParent[e.ParentID] = append(byParent[e.ParentID], e)
+					}
+					log.Printf("catalog: card-wide bulk listing — %d objects in 3 requests", len(all))
+				} else if err != nil {
+					log.Printf("card-wide bulk listing unavailable (%.120v) — per-folder listing", err)
+				}
 			}
 			fresh := []listing{}
-			for _, e := range entries {
-				if _, _, ok := photo.SplitMedia(e.Name); !ok {
-					continue
+			if group, ok := byParent[folderIDs[folder]]; byParent != nil && ok {
+				for _, e := range group {
+					if _, _, ok := photo.SplitMedia(e.Name); !ok {
+						continue
+					}
+					fresh = append(fresh, listing{
+						Dir: rel, Folder: folder, Name: e.Name,
+						Size: e.Size, ObjectID: e.ObjectID,
+					})
 				}
-				fresh = append(fresh, listing{
-					Dir: rel, Folder: folder, Name: e.Name,
-					Size: e.Size, ObjectID: e.ObjectID,
-				})
+			} else {
+				entries, err := b.listFolder(ctx, root+"/"+folder, &bulkOK)
+				if err != nil {
+					return nil, fmt.Errorf("list %s/%s: %w", root, folder, err)
+				}
+				for _, e := range entries {
+					if _, _, ok := photo.SplitMedia(e.Name); !ok {
+						continue
+					}
+					fresh = append(fresh, listing{
+						Dir: rel, Folder: folder, Name: e.Name,
+						Size: e.Size, ObjectID: e.ObjectID,
+					})
+				}
 			}
 			log.Printf("  %s: %d files", rel, len(fresh))
 			out = append(out, fresh...)

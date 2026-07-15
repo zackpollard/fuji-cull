@@ -105,10 +105,10 @@ func main() {
 func (s *sim) index() {
 	var files []string
 	filepath.WalkDir(s.root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || strings.HasPrefix(d.Name(), ".") {
+		if err != nil || p == s.root || strings.HasPrefix(d.Name(), ".") {
 			return nil
 		}
-		files = append(files, p)
+		files = append(files, p) // dirs too: files reference parent handles
 		return nil
 	})
 	sort.Strings(files)
@@ -246,6 +246,22 @@ func (s *sim) dispatch(line string, in *bufio.Scanner) bool {
 			return true
 		}
 		fmt.Fprintf(s.out, "%s %d %s\n", args[1], info.Size(), filepath.Base(p))
+	case "lsprops-all":
+		filepath.WalkDir(s.root, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || strings.HasPrefix(d.Name(), ".") {
+				return nil
+			}
+			info, err := os.Stat(p)
+			if err != nil {
+				return nil
+			}
+			parent := s.ids[filepath.Dir(p)]
+			if parent == "" {
+				parent = "0"
+			}
+			fmt.Fprintf(s.out, "%s %d %s %s\n", s.ids[p], info.Size(), parent, filepath.Base(p))
+			return nil
+		})
 	case "lsprops":
 		if len(args) < 2 {
 			s.errf("lsprops: missing path")

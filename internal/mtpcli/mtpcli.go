@@ -152,6 +152,66 @@ func LsProps(ctx context.Context, dir string) ([]Entry, error) {
 	return entries, nil
 }
 
+// DirEntryID is a directory child with its object handle.
+type DirEntryID struct {
+	ObjectID string
+	Name     string
+}
+
+// LsIDs lists a directory's children with handles (parses ls "id\tname").
+func LsIDs(ctx context.Context, dir string) ([]DirEntryID, error) {
+	out, err := RunBatch(ctx, fmt.Sprintf(`cd %q`, dir), "ls")
+	if err != nil {
+		return nil, err
+	}
+	var entries []DirEntryID
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		if _, err := strconv.ParseUint(f[0], 10, 64); err != nil {
+			continue
+		}
+		entries = append(entries, DirEntryID{ObjectID: f[0], Name: f[1]})
+	}
+	return entries, nil
+}
+
+// AllEntry is one object from a card-wide bulk listing.
+type AllEntry struct {
+	ObjectID string
+	Size     int64
+	ParentID string
+	Name     string
+}
+
+// LsPropsAll lists EVERY object on the device in three bulk requests — the
+// only GetObjectPropList shape the X-H2S honors (handle 0xFFFFFFFF, depth
+// 0). 19,702 objects arrived in one 689 KB response in field testing.
+func LsPropsAll(ctx context.Context) ([]AllEntry, error) {
+	out, err := RunBatch(ctx, "lsprops-all")
+	if err != nil {
+		return nil, err
+	}
+	var entries []AllEntry
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 {
+			continue
+		}
+		size, err := strconv.ParseInt(f[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		if _, err := strconv.ParseUint(f[0], 10, 64); err != nil {
+			continue
+		}
+		entries = append(entries, AllEntry{ObjectID: f[0], Size: size, ParentID: f[2], Name: f[3]})
+	}
+	return entries, nil
+}
+
 // LsHandles returns a folder's object handles — one always-supported MTP
 // request, for diffing against a cached catalog.
 func LsHandles(ctx context.Context, dir string) ([]string, error) {

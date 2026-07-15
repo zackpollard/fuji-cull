@@ -1,13 +1,16 @@
 diff --git a/cli/Session.cpp b/cli/Session.cpp
-index 76980c3..9ddfce0 100644
+index 76980c3..f250ae7 100644
 --- a/cli/Session.cpp
 +++ b/cli/Session.cpp
-@@ -119,6 +119,18 @@ namespace cli
+@@ -119,6 +119,21 @@ namespace cli
  			make_function([this]() -> void { List(true, true); }));
  		AddCommand("lsext-r", "<path> lists objects in <path> [extended info, recursive]",
  			make_function([this](const Path &path) -> void { List(path, true, true); }));
 +		AddCommand("lsprops", "<path> bulk list via GetObjectPropList: handle size name",
 +			make_function([this](const Path &path) -> void { ListProps(path); }));
++
++		AddCommand("lsprops-all", "bulk list EVERY object on the device: handle size parent name (3 requests total)",
++			make_function([this]() -> void { ListPropsAll(); }));
 +
 +		AddCommand("lsprops-probe", "<path> tries several GetObjectPropList request shapes and reports what the device returns",
 +			make_function([this](const Path &path) -> void { ListPropsProbe(path); }));
@@ -21,7 +24,7 @@ index 76980c3..9ddfce0 100644
  		AddCommand("ls-objects", "<object-format-hex>",
  			make_function([this](const std::string &format) -> void { ListObjects(format); }));
  
-@@ -138,6 +150,12 @@ namespace cli
+@@ -138,6 +153,12 @@ namespace cli
  		AddCommand("get-id", "<id> <dst> get object by id to <dst>",
                          make_function([this](mtp::u32 id, const LocalPath &dst) -> void { Get(dst, mtp::ObjectId(id)); }));
  
@@ -34,7 +37,7 @@ index 76980c3..9ddfce0 100644
  		AddCommand("get-thumb", "<file> downloads thumbnail for file",
  			make_function([this](const Path &path) -> void { GetThumb(path); }));
  		AddCommand("get-thumb", "<file> <dst> downloads thumbnail to <dst>",
-@@ -535,6 +553,93 @@ namespace cli
+@@ -535,6 +556,136 @@ namespace cli
  	}
  
  
@@ -67,6 +70,49 @@ index 76980c3..9ddfce0 100644
 +		// instead of listing folders as silently empty
 +		if (parsed == 0 && data.size() > 12)
 +			throw std::runtime_error("GetObjectPropList: " + std::to_string(data.size()) + " bytes but no parseable entries");
++	}
++
++	// ListPropsAll dumps every object on the device in three card-wide
++	// GetObjectPropList requests (handle=0xFFFFFFFF "all objects", depth 0 —
++	// the only shape the X-H2S honors: depth queries return
++	// UnsupportedSpecByDepth, format filters SpecificationByFormatUnsupported).
++	// 19,702 objects arrived in a single 689 KB response in field testing.
++	void Session::ListPropsAll()
++	{
++		using namespace mtp;
++		if (!_session->GetObjectPropertyListSupported())
++			throw std::runtime_error("GetObjectPropList not supported by device");
++		const ObjectId all(0xffffffffu);
++		std::map<mtp::ObjectId, u64> sizes;
++		{
++			ByteArray data = _session->GetObjectPropertyList(all, ObjectFormat::Any, ObjectProperty::ObjectSize, 0, 0);
++			ObjectPropertyListParser<u64> parser;
++			parser.Parse(data, [&sizes](ObjectId objectId, ObjectProperty, u64 size)
++			{ sizes[objectId] = size; });
++		}
++		std::map<mtp::ObjectId, u64> parents;
++		{
++			ByteArray data = _session->GetObjectPropertyList(all, ObjectFormat::Any, ObjectProperty::ParentObject, 0, 0);
++			ObjectPropertyListParser<u64> parser;
++			parser.Parse(data, [&parents](ObjectId objectId, ObjectProperty, u64 parent)
++			{ parents[objectId] = parent; });
++		}
++		ByteArray data = _session->GetObjectPropertyList(all, ObjectFormat::Any, ObjectProperty::ObjectFilename, 0, 0);
++		ObjectPropertyListParser<std::string> parser;
++		size_t parsed = 0;
++		parser.Parse(data, [&sizes, &parents, &parsed](ObjectId objectId, ObjectProperty, const std::string &name)
++		{
++			++parsed;
++			auto sz = sizes.find(objectId);
++			auto pr = parents.find(objectId);
++			print(std::left,
++				width(objectId, 10), " ",
++				sz != sizes.end()? sz->second: 0, " ",
++				pr != parents.end()? pr->second: 0, " ",
++				name);
++		});
++		if (parsed == 0 && data.size() > 12)
++			throw std::runtime_error("GetObjectPropList(all): " + std::to_string(data.size()) + " bytes but no parseable entries");
 +	}
 +
 +	// ListPropsProbe tries several GetObjectPropList parameter shapes —
@@ -128,7 +174,7 @@ index 76980c3..9ddfce0 100644
  	void Session::List(mtp::ObjectId parent, bool extended, bool recursive, const std::string &prefix)
  	{
  		using namespace mtp;
-@@ -694,6 +799,53 @@ namespace cli
+@@ -694,6 +845,53 @@ namespace cli
  		}
  	}
  
@@ -183,7 +229,7 @@ index 76980c3..9ddfce0 100644
  	{
  		mtp::ObjectFormat format = static_cast<mtp::ObjectFormat>(_session->GetObjectIntegerProperty(srcId, mtp::ObjectProperty::ObjectFormat));
 diff --git a/cli/Session.h b/cli/Session.h
-index a2df6b6..2ab18e5 100644
+index a2df6b6..7d48032 100644
 --- a/cli/Session.h
 +++ b/cli/Session.h
 @@ -109,6 +109,8 @@ namespace cli
@@ -195,7 +241,7 @@ index a2df6b6..2ab18e5 100644
  		void GetThumb(const mtp::ObjectId srcId);
  		void GetThumb(const LocalPath &dst, mtp::ObjectId srcId)
  		{ Get(dst, srcId, true); }
-@@ -128,6 +130,23 @@ namespace cli
+@@ -128,6 +130,25 @@ namespace cli
  		{ _cd = Resolve(path); }
  		void CurrentDirectory();
  
@@ -210,6 +256,8 @@ index a2df6b6..2ab18e5 100644
 +		{ ListHandles(Resolve(path)); }
 +
 +		void InfoId(mtp::ObjectId id);
++
++		void ListPropsAll();
 +
 +		void ListPropsProbe(mtp::ObjectId parent);
 +
