@@ -197,9 +197,8 @@ private fun ConnectScreen(
             textAlign = TextAlign.Center,
         )
         Text(
-            "set the camera to USB card-reader mode and make sure\n" +
-                "the phone is the usb host (usb notification →\n" +
-                "“USB controlled by: this device”)",
+            "set the camera to USB card-reader mode, plug it in, then in the\n" +
+                "USB notification set “USB controlled by: connected device”",
             color = Dim,
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,

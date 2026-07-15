@@ -188,8 +188,8 @@ class MainActivity : ComponentActivity() {
         val camera = devices.firstOrNull { it.vendorId == FUJI_VENDOR }
         usbDiag = when {
             devices.isEmpty() ->
-                "usb: no devices visible — phone must be the usb host\n" +
-                    "(usb notification → “controlled by: this device”)"
+                "usb: no devices visible — in the USB notification set\n" +
+                    "“controlled by: connected device”"
             camera == null ->
                 "usb: " + devices.joinToString {
                     "%04x:%04x %s".format(it.vendorId, it.productId, it.productName ?: "?")
