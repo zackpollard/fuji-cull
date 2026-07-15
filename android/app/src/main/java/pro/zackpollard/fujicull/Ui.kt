@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed as listItemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.offset
@@ -456,12 +457,20 @@ private fun CullScreen(
     // keep their original indices (thumbStates/orient/immich index by shot).
     val rows = remember(shots) {
         buildList {
-            var cur = "\u0000"
+            var curMonth = "\u0000"
+            var curDay = "\u0000"
             shots.forEachIndexed { i, s ->
-                val day = s.date.ifEmpty { s.folder }
-                if (day != cur) {
-                    cur = day
-                    add(TimelineRow.Header(day))
+                val date = s.date
+                val day = date.ifEmpty { s.folder }
+                val month = if (date.length >= 7) date.substring(0, 7) else day
+                if (month != curMonth) {
+                    curMonth = month
+                    curDay = "\u0000"
+                    add(TimelineRow.MonthHeader(month))
+                }
+                if (day != curDay) {
+                    curDay = day
+                    add(TimelineRow.DayHeader(day))
                 }
                 add(TimelineRow.Cell(s, i))
             }
@@ -572,32 +581,56 @@ private fun CullScreen(
                     }
                 }
         }
-        Box(Modifier.fillMaxSize()) {
-            LazyVerticalGrid(columns = GridCells.Adaptive(110.dp), Modifier.fillMaxSize(), state = gridState) {
+        // pinch to change images-per-row (persisted); Immich-style
+        val ctxCols = LocalContext.current
+        var cols by remember {
+            mutableIntStateOf(
+                ctxCols.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE)
+                    .getInt("gridCols", 3).coerceIn(2, 7),
+            )
+        }
+        var pinchAccum by remember { mutableFloatStateOf(1f) }
+        Box(
+            Modifier.fillMaxSize().pointerInput(Unit) {
+                detectTransformGestures { _, _, zoom, _ ->
+                    pinchAccum *= zoom
+                    // hysteresis so a single pinch steps one column at a time
+                    if (pinchAccum > 1.25f && cols > 2) {
+                        cols--; pinchAccum = 1f
+                        ctxCols.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE)
+                            .edit().putInt("gridCols", cols).apply()
+                    } else if (pinchAccum < 0.8f && cols < 7) {
+                        cols++; pinchAccum = 1f
+                        ctxCols.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE)
+                            .edit().putInt("gridCols", cols).apply()
+                    }
+                }
+            },
+        ) {
+            LazyVerticalGrid(columns = GridCells.Fixed(cols), Modifier.fillMaxSize(), state = gridState) {
                 items(
                     count = rows.size,
                     key = { r ->
                         when (val row = rows[r]) {
-                            is TimelineRow.Header -> "h:" + row.day
+                            is TimelineRow.MonthHeader -> "m:" + row.month
+                            is TimelineRow.DayHeader -> "d:" + row.day
                             is TimelineRow.Cell -> row.shot.id
                         }
                     },
                     contentType = { r ->
-                        when (val row = rows[r]) {
-                            is TimelineRow.Header -> "header"
-                            is TimelineRow.Cell -> row.shot.kind
+                        when (rows[r]) {
+                            is TimelineRow.MonthHeader -> "month"
+                            is TimelineRow.DayHeader -> "day"
+                            is TimelineRow.Cell -> (rows[r] as TimelineRow.Cell).shot.kind
                         }
                     },
                     span = { r ->
-                        if (rows[r] is TimelineRow.Header) {
-                            GridItemSpan(maxLineSpan)
-                        } else {
-                            GridItemSpan(1)
-                        }
+                        if (rows[r] is TimelineRow.Cell) GridItemSpan(1) else GridItemSpan(maxLineSpan)
                     },
                 ) { r ->
                     when (val row = rows[r]) {
-                        is TimelineRow.Header -> DateHeader(row.day)
+                        is TimelineRow.MonthHeader -> MonthHeaderView(row.month)
+                        is TimelineRow.DayHeader -> DayHeaderView(row.day)
                         is TimelineRow.Cell -> {
                             val i = row.index
                             val shot = row.shot
@@ -978,30 +1011,57 @@ internal fun releaseCameraStream(api: Api) {
     kotlinx.coroutines.GlobalScope.launch { api.releaseStream() }
 }
 
-/** Timeline rows: a full-width date header or a shot cell. */
+/** Timeline rows: a month band, a day header, or a shot cell. */
 internal sealed class TimelineRow {
-    data class Header(val day: String) : TimelineRow()
+    data class MonthHeader(val month: String) : TimelineRow() // "2026-07" or folder
+    data class DayHeader(val day: String) : TimelineRow()     // "2026-07-15" or folder
     data class Cell(val shot: Shot, val index: Int) : TimelineRow()
 }
 
+private val monthFmt = java.time.format.DateTimeFormatter.ofPattern("MMMM yyyy")
+private val monthShortFmt = java.time.format.DateTimeFormatter.ofPattern("MMM yyyy")
+private val dayFmt = java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d, yyyy")
+
+private fun monthDate(key: String) = runCatching {
+    java.time.YearMonth.parse(key).atDay(1)
+}.getOrNull()
+
+private fun prettyMonth(key: String): String =
+    monthDate(key)?.format(monthFmt) ?: key
+
+private fun prettyMonthShort(key: String): String =
+    monthDate(key)?.format(monthShortFmt) ?: key
+
 private fun prettyDay(day: String): String = runCatching {
-    java.time.LocalDate.parse(day)
-        .format(java.time.format.DateTimeFormatter.ofPattern("EEE d MMM yyyy"))
+    java.time.LocalDate.parse(day).format(dayFmt)
 }.getOrDefault(day)
 
 @Composable
-private fun DateHeader(day: String) {
+private fun MonthHeaderView(month: String) {
     Text(
-        prettyDay(day),
+        prettyMonth(month),
         color = Color.White,
-        style = MaterialTheme.typography.titleSmall,
-        modifier = Modifier.fillMaxWidth().padding(start = 10.dp, top = 14.dp, bottom = 6.dp),
+        style = MaterialTheme.typography.headlineSmall,
+        modifier = Modifier.fillMaxWidth().padding(start = 12.dp, top = 20.dp, bottom = 4.dp),
     )
 }
 
+@Composable
+private fun DayHeaderView(day: String) {
+    Text(
+        prettyDay(day),
+        color = Color(0xFFCED2C9),
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier.fillMaxWidth().padding(start = 12.dp, top = 10.dp, bottom = 6.dp),
+    )
+}
+
+private data class ScrubMark(val row: Int, val frac: Float, val short: String)
+
 /**
- * Immich-style fast scrubber: appears while scrolling, drag to jump through
- * the timeline with a date bubble.
+ * Immich-style scrubber: a right-edge rail of month labels positioned by
+ * their place in the timeline, with a draggable handle that shows a month
+ * bubble and jumps the grid. Fades in while scrolling or dragging.
  */
 @Composable
 private fun TimelineScrubber(
@@ -1009,43 +1069,38 @@ private fun TimelineScrubber(
     rows: List<TimelineRow>,
     modifier: Modifier = Modifier,
 ) {
-    if (rows.isEmpty()) return
+    if (rows.size < 2) return
     val scope = rememberCoroutineScope()
     var dragging by remember { mutableStateOf(false) }
     var frac by remember { mutableFloatStateOf(0f) }
     var trackH by remember { mutableIntStateOf(0) }
 
-    val visible = dragging || gridState.isScrollInProgress
-    val alpha by animateFloatAsState(if (visible) 1f else 0f, label = "scrubAlpha")
-    val posFrac = if (dragging) {
-        frac
-    } else {
-        gridState.firstVisibleItemIndex.toFloat() / rows.size.toFloat()
-    }
-    val label = remember(dragging, posFrac, rows) {
-        if (!dragging) "" else {
-            var idx = (posFrac * rows.lastIndex).toInt().coerceIn(0, rows.lastIndex)
-            var day = ""
-            while (idx >= 0) {
-                when (val row = rows[idx]) {
-                    is TimelineRow.Header -> {
-                        day = row.day
-                        idx = -1
-                    }
-                    is TimelineRow.Cell -> {
-                        day = row.shot.date.ifEmpty { row.shot.folder }
-                        idx = -1
-                    }
-                }
+    // one mark per month band, positioned at its fraction down the list
+    val marks = remember(rows) {
+        rows.mapIndexedNotNull { r, row ->
+            (row as? TimelineRow.MonthHeader)?.let {
+                ScrubMark(r, r.toFloat() / rows.lastIndex, prettyMonthShort(it.month))
             }
-            prettyDay(day)
         }
     }
+    fun monthAtFrac(f: Float): String {
+        val target = (f * rows.lastIndex).toInt()
+        return marks.lastOrNull { it.row <= target }?.short ?: marks.firstOrNull()?.short ?: ""
+    }
+
+    val visible = dragging || gridState.isScrollInProgress
+    val alpha by animateFloatAsState(if (visible) 1f else 0f, label = "scrubAlpha")
+    val posFrac = if (dragging) frac
+    else gridState.firstVisibleItemIndex.toFloat() / rows.lastIndex.toFloat()
+
+    val density = LocalDensity.current
+    val handlePx = with(density) { 44.dp.toPx() }
+    val labelStepPx = with(density) { 22.dp.toPx() }
 
     Box(
         modifier
             .fillMaxHeight()
-            .width(28.dp)
+            .width(72.dp)
             .onSizeChanged { trackH = it.height }
             .graphicsLayer { this.alpha = alpha }
             .pointerInput(rows.size) {
@@ -1053,39 +1108,63 @@ private fun TimelineScrubber(
                     onDragStart = { off ->
                         dragging = true
                         frac = (off.y / size.height).coerceIn(0f, 1f)
+                        val t = (frac * rows.lastIndex).toInt().coerceIn(0, rows.lastIndex)
+                        scope.launch { gridState.scrollToItem(t) }
                     },
                     onDragEnd = { dragging = false },
                     onDragCancel = { dragging = false },
                 ) { change, _ ->
                     frac = (change.position.y / size.height).coerceIn(0f, 1f)
-                    val target = (frac * rows.lastIndex).toInt().coerceIn(0, rows.lastIndex)
-                    scope.launch { gridState.scrollToItem(target) }
+                    val t = (frac * rows.lastIndex).toInt().coerceIn(0, rows.lastIndex)
+                    scope.launch { gridState.scrollToItem(t) }
                     change.consume()
                 }
             },
     ) {
-        val thumbPx = with(LocalDensity.current) { 48.dp.toPx() }
-        val yOff = (posFrac * (trackH - thumbPx)).toInt().coerceAtLeast(0)
+        // month labels down the rail, thinned so they never overlap
+        var lastY = -1e9f
+        for (m in marks) {
+            val y = m.frac * (trackH - handlePx)
+            if (y - lastY < labelStepPx) continue
+            lastY = y
+            Text(
+                m.short,
+                color = Color(0xFFB7BBB2),
+                fontSize = 11.sp,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset { IntOffset(0, y.toInt()) }
+                    .padding(end = 10.dp),
+            )
+        }
+        // handle
+        val yOff = (posFrac * (trackH - handlePx)).toInt().coerceAtLeast(0)
         Box(
             Modifier
                 .align(Alignment.TopEnd)
-                .padding(end = 4.dp)
                 .offset { IntOffset(0, yOff) }
-                .width(6.dp)
-                .height(48.dp)
-                .background(Amber, RoundedCornerShape(3.dp)),
-        )
-        if (dragging && label.isNotEmpty()) {
-            Text(
-                label,
-                color = Color.White,
-                fontSize = 12.sp,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .offset { IntOffset(-16.dp.roundToPx(), (yOff + 12).coerceAtLeast(0)) }
-                    .background(Color(0xE6222522), RoundedCornerShape(6.dp))
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-            )
+                .padding(end = 4.dp)
+                .size(44.dp)
+                .background(Color(0xFF3A3D39), androidx.compose.foundation.shape.CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("⇅", color = Color.White, fontSize = 18.sp)
+        }
+        // month bubble while dragging
+        if (dragging) {
+            val label = monthAtFrac(frac)
+            if (label.isNotEmpty()) {
+                Text(
+                    label,
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset { IntOffset(-52.dp.roundToPx(), (yOff + 4).coerceAtLeast(0)) }
+                        .background(Color(0xF2222522), RoundedCornerShape(14.dp))
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                )
+            }
         }
     }
 }
