@@ -35,8 +35,8 @@ Immich. No SD-card removal (that is "Path A", explicitly out of scope here).
 
 ```
 ┌────────────────────────── iPad app ──────────────────────────┐
-│ SwiftUI shell (connect screen, settings, log)                │
-│   └─ WKWebView → http://127.0.0.1:<port>  (existing web UI)  │
+│ Native SwiftUI UI (grid, viewer, settings, log, import)      │
+│   └─ data plane: loopback HTTP API http://127.0.0.1:<port>   │
 │ Swift ICCTransport (ImageCaptureCore)                        │
 │   ▲ implements Go interface via gomobile reverse binding     │
 │ Go engine (gomobile xcframework)                             │
@@ -101,19 +101,32 @@ boundary — hence JSON blobs for listings.)
 - Surface attach/detach + errors into the engine log (same
   `app:`-prefixed events as Android).
 
-### 3. App shell (phase 1 = thin)
+### 3. App shell — native SwiftUI from the first pass (Zack's call)
 
-- SwiftUI: connect screen (status + usb diag + log tail), settings screen
-  (Immich URL/key, session, stack, full-rescan), log screen with share
-  sheet — direct ports of the Android screens.
-- Main UI: **WKWebView at the loopback port** — the existing web UI is
-  feature-complete (grid, viewer, zoom, decisions, import, badges) and was
-  the iPad-over-Tailscale interface already. Native SwiftUI grid/viewer is
-  an optional phase 3, decided after field use.
-- Keep-alive: background execution on iOS is restrictive; while the app is
-  foreground this is a non-issue. Import continuation in background =
-  `beginBackgroundTask` (~30 s) + user guidance to keep the app open, or
-  `BGProcessingTask` later. Phase 1: imports run foreground-only.
+The Android app is the template: a fully native client of the engine's
+loopback HTTP API. The SwiftUI app ports its structure screen-for-screen —
+every endpoint, polling loop and state string is already proven by Ui.kt:
+
+- **Connect screen**: engine status + camera diag + log tail (gomobile
+  getters, same as Android).
+- **Grid**: `LazyVGrid` of thumbs from `/api/thumb` (Nuke for image
+  loading/caching — the Coil equivalent), decision bars, Immich badges,
+  video posters, viewport → `/api/thumbhint`, counters + CAMERA SICK in
+  the header. iPad bonus: pointer/keyboard support (arrow keys + K/X via
+  `.onKeyPress`) for Magic-Keyboard culling.
+- **Viewer**: paged `TabView`/`ScrollView` with pinch-zoom
+  (`MagnificationGesture`, full-res overlay past ~1.3x like Android),
+  filmstrip (`ScrollViewReader` + `LazyHStack`), KEEP/REJECT with
+  auto-advance, cursor posts to `/api/cursor`.
+- **Video screen**: AVPlayer first; MPVKit drop-in where hardware refuses
+  4:2:2 (see section 4).
+- **Settings / log / import dialog**: direct ports (share sheet for the
+  log files).
+- Keep-alive: while foreground this is a non-issue; imports run
+  foreground-only in the first pass (`beginBackgroundTask` grace covers
+  brief app switches; `BGProcessingTask` later if needed).
+- The web UI remains available at the loopback port as a debug surface but
+  is not part of the product UI.
 
 ### 4. Video
 
@@ -168,11 +181,11 @@ boundary — hence JSON blobs for listings.)
 
 | Phase | Scope | Size |
 |---|---|---|
-| 0 | Xcode/gomobile skeleton: engine boots in simulator, WKWebView shows web UI against fake Transport | 1–2 days |
-| 1 | Swift ICCTransport (enumeration, ReadAt, Download) + iccBackend + connect/settings/log screens | 3–5 days |
-| 2 | Real-camera validation + perf tuning (raw PTP fallbacks where ICC is slow), posters via cgo shim | 2–4 days + camera access |
-| 3 (opt) | MPVKit video screen if AVFoundation rejects 4:2:2 | 1–2 days |
-| 4 (opt) | Native SwiftUI grid/viewer replacing WKWebView | 1–2 weeks, only if the web UI feels wrong on-device |
+| 0 | Xcode/gomobile skeleton: engine boots in simulator against fake Transport; connect screen | 1–2 days |
+| 1 | Swift ICCTransport (enumeration, ReadAt, Download) + iccBackend | 3–5 days |
+| 2 | Native SwiftUI UI: grid, viewer (zoom + filmstrip), settings, log, import — port of the Android screens against the same API | 1–1.5 weeks (fake Transport keeps this fully testable camera-free in the simulator) |
+| 3 | Real-camera validation + perf tuning (raw PTP fallbacks where ICC is slow), posters via cgo shim | 2–4 days + camera access |
+| 4 | MPVKit video screen if AVFoundation rejects 4:2:2 | 1–2 days |
 
 ## Key risks
 
@@ -190,5 +203,5 @@ boundary — hence JSON blobs for listings.)
    hardware-decode test and the deployment floor.
 2. Apple Developer account: existing/paid? (Gates TestFlight-style
    iteration.)
-3. Web-UI-in-WKWebView acceptable as the phase-1/2 UI, with native SwiftUI
-   as a later call?
+3. ~~Web-UI-in-WKWebView for the first pass?~~ Resolved 2026-07-15: native
+   SwiftUI from the initial pass.
