@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/zack/fuji-tools/internal/gphoto"
 	"github.com/zack/fuji-tools/internal/mtpcli"
@@ -107,6 +108,7 @@ func buildCatalog(items []listing) *Catalog {
 type cliBackend struct {
 	roots    []string // camera-absolute DCIM paths, e.g. "/SLOT 1/DCIM"
 	cacheDir string   // catalog cache home; empty disables caching
+	probed   bool     // lsprops-probe fired once this run
 }
 
 // catalogCache persists folder listings between runs; cached folders
@@ -165,6 +167,14 @@ func (b *cliBackend) listFolder(ctx context.Context, dir string, bulkOK *bool) (
 			*bulkOK = false
 		} else {
 			log.Printf("bulk listing returned no entries for %s — using lsext for it", dir)
+			if !b.probed {
+				// one-shot diagnostic: which GetObjectPropList shapes does
+				// this camera actually honor? (the field log answers it)
+				b.probed = true
+				if out, perr := mtpcli.RunBatch(ctx, fmt.Sprintf("lsprops-probe %q", dir)); perr == nil {
+					log.Printf("lsprops probe results:\n%s", strings.TrimSpace(out))
+				}
+			}
 		}
 	}
 	return mtpcli.LsExt(ctx, dir)
