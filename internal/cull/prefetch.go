@@ -327,13 +327,43 @@ func (p *Prefetcher) Resume() {
 }
 
 func (p *Prefetcher) Close() {
+	// Interrupt in-flight work (parts-based pulls stop cleanly BETWEEN
+	// chunks) and drain the worker before touching the sessions — closing
+	// the serve-parts process under an active transfer escalates to a hard
+	// kill, and a hard-killed MTP session wedges the camera (URB timeouts
+	// on the next connect). Seen in the field via settings/rescan restarts.
 	p.mu.Lock()
 	p.closed = true
+	p.interruptThumbsLocked()
+	if p.imgCancel != nil {
+		p.imgCancel()
+	}
 	p.mu.Unlock()
 	p.cond.Broadcast()
-	// close BOTH persistent sessions gracefully NOW — waiting for the
-	// stream janitor risks the process dying first, and a hard-killed MTP
-	// session wedges the camera (URB timeouts on the next connect)
+
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(500 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				p.cond.Broadcast() // keep the drain loop re-checking its deadline
+			}
+		}
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	p.mu.Lock()
+	for (p.fetching > 0 || p.thumbCancel != nil) && time.Now().Before(deadline) {
+		p.cond.Wait()
+	}
+	p.mu.Unlock()
+	close(done)
+
+	// both persistent sessions close gracefully NOW — waiting for the
+	// stream janitor risks the process dying first
 	p.CloseStream()
 	p.closePartsServer()
 }
@@ -598,10 +628,12 @@ func (p *Prefetcher) Run() {
 			p.mu.Lock()
 			closed := p.closed
 			p.mu.Unlock()
+			// broadcast BEFORE exiting on close: Close()'s drain loop
+			// relies on these ticks to re-check its deadline
+			p.cond.Broadcast()
 			if closed {
 				return
 			}
-			p.cond.Broadcast()
 		}
 	}()
 	for {
