@@ -11,11 +11,12 @@ import (
 // API — see mtpcli.SetUSBFD).
 func usbArgs() []string {
 	if mtpcli.USBFile() != nil {
-		args := []string{"-b", "--device-fd", "3"}
-		if mtpcli.ConsumeReset() {
-			args = append(args, "-R")
-		}
-		return args
+		// NO -R here, ever: a USB reset invalidates the very fd the
+		// persistent session runs on — a queued reset consumed by
+		// serve-parts killed every subsequent invocation in the field.
+		// Resets belong to mtpcli's one-shot path, where they are logged
+		// and the retry machinery owns the aftermath.
+		return []string{"-b", "--device-fd", "3"}
 	}
 	return []string{"-b"}
 }

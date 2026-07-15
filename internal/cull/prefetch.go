@@ -428,6 +428,14 @@ func (p *Prefetcher) partsReadAt(ctx context.Context, objID string, off, size in
 	case r := <-ch:
 		if r.err != nil {
 			p.closePartsServerIf(srv) // process likely dead; reopen next call
+			// feed the link-dead detector: a stale fd (post-reset, wedged
+			// camera) fails HERE on Android, not in one-shot invocations —
+			// without this the Kotlin connection rebuild never triggers
+			if ctx.Err() == nil {
+				mtpcli.NoteTransportResult(true)
+			}
+		} else {
+			mtpcli.NoteTransportResult(false)
 		}
 		return r.data, r.err
 	case <-ctx.Done():
