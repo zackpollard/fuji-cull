@@ -109,10 +109,11 @@ type cliBackend struct {
 	cacheDir string   // catalog cache home; empty disables caching
 }
 
-// catalogCache persists folder listings between runs. Fuji folders below
-// the highest-numbered one never gain files, so startup only re-reads the
-// newest folder(s) — minutes down to seconds on a 19k-file card.
-// POST /api/rescan (or deleting the file) forces a full re-read.
+// catalogCache persists folder listings between runs; cached folders
+// refresh via a one-request handle diff on attach (new files fetched
+// individually, in-camera deletions dropped) — minutes down to seconds on
+// a 19k-file card. POST /api/rescan (or deleting the file) forces a full
+// re-read.
 type catalogCache struct {
 	Folders map[string][]listing `json:"folders"` // key: root + "/" + folder
 }
@@ -150,18 +151,6 @@ func (b *cliBackend) saveCache(c *catalogCache) {
 	}
 }
 
-// folderNum extracts the NNN of "NNN_FUJI" (0 when malformed).
-func folderNum(name string) int {
-	n := 0
-	for _, r := range name {
-		if r < '0' || r > '9' {
-			break
-		}
-		n = n*10 + int(r-'0')
-	}
-	return n
-}
-
 // listFolder prefers the bulk lsprops path (2 MTP round-trips per folder);
 // an error disables it for the run (old binary / unsupported camera) and
 // an empty result falls back for just that folder.
@@ -174,9 +163,64 @@ func (b *cliBackend) listFolder(ctx context.Context, dir string, bulkOK *bool) (
 		if err != nil {
 			log.Printf("bulk listing unavailable (falling back to per-file lsext): %.150v", err)
 			*bulkOK = false
+		} else {
+			log.Printf("bulk listing returned no entries for %s — using lsext for it", dir)
 		}
 	}
 	return mtpcli.LsExt(ctx, dir)
+}
+
+// deltaFolder refreshes a cached folder listing with a handle diff: one
+// GetObjectHandles request (always supported) plus per-file info for NEW
+// handles only. Re-listing the highest folder in full cost ~40s per attach
+// on a 7,983-file folder; a no-change diff costs one round-trip. Deletions
+// in camera drop out of the catalog automatically.
+func (b *cliBackend) deltaFolder(ctx context.Context, dir, rel, folder string, cached []listing) ([]listing, bool, error) {
+	ids, err := mtpcli.LsHandles(ctx, dir)
+	if err != nil {
+		return nil, false, err
+	}
+	live := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		live[id] = true
+	}
+	known := make(map[string]bool, len(cached))
+	keep := make([]listing, 0, len(cached))
+	removed := 0
+	for _, l := range cached {
+		known[l.ObjectID] = true
+		if live[l.ObjectID] {
+			keep = append(keep, l)
+		} else {
+			removed++
+		}
+	}
+	var newIDs []string
+	for _, id := range ids {
+		if !known[id] {
+			newIDs = append(newIDs, id)
+		}
+	}
+	if len(newIDs) > 0 {
+		entries, err := mtpcli.InfoByIDs(ctx, newIDs)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, e := range entries {
+			if _, _, ok := photo.SplitMedia(e.Name); !ok {
+				continue
+			}
+			keep = append(keep, listing{
+				Dir: rel, Folder: folder, Name: e.Name,
+				Size: e.Size, ObjectID: e.ObjectID,
+			})
+		}
+	}
+	changed := removed > 0 || len(newIDs) > 0
+	if changed {
+		log.Printf("  %s: +%d new, -%d removed (handle diff)", rel, len(newIDs), removed)
+	}
+	return keep, changed, nil
 }
 
 func (b *cliBackend) Name() string { return "cli" }
@@ -206,28 +250,29 @@ func (b *cliBackend) Discover(ctx context.Context, progress func(stage string, f
 			folders = append(folders, k)
 		}
 		sort.Strings(folders)
-		highest := 0
-		for _, f := range folders {
-			if n := folderNum(f); n > highest {
-				highest = n
-			}
-		}
 		for _, folder := range folders {
 			key := root + "/" + folder
-			// new shots only ever land in the highest-numbered folder:
-			// lower folders are immutable and safe to serve from cache
-			if cached, ok := cache.Folders[key]; ok && folderNum(folder) < highest {
-				out = append(out, cached...)
-				usedCache++
-				progress(filepath.Join(trimSlash(root), folder), len(out))
-				continue
+			rel := filepath.Join(trimSlash(root), folder)
+			progress(rel, len(out))
+			// cached folders refresh via a one-request handle diff; only
+			// never-seen folders pay for a full listing
+			if cached, ok := cache.Folders[key]; ok {
+				fresh, changed, err := b.deltaFolder(ctx, root+"/"+folder, rel, folder, cached)
+				if err == nil {
+					out = append(out, fresh...)
+					usedCache++
+					if changed {
+						cache.Folders[key] = fresh
+						cacheDirty = true
+					}
+					continue
+				}
+				log.Printf("  %s: handle diff failed (%v) — full re-list", rel, err)
 			}
-			progress(filepath.Join(trimSlash(root), folder), len(out))
 			entries, err := b.listFolder(ctx, root+"/"+folder, &bulkOK)
 			if err != nil {
 				return nil, fmt.Errorf("list %s/%s: %w", root, folder, err)
 			}
-			rel := filepath.Join(trimSlash(root), folder)
 			fresh := []listing{}
 			for _, e := range entries {
 				if _, _, ok := photo.SplitMedia(e.Name); !ok {

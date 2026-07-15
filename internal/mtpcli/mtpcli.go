@@ -152,6 +152,56 @@ func LsProps(ctx context.Context, dir string) ([]Entry, error) {
 	return entries, nil
 }
 
+// LsHandles returns a folder's object handles — one always-supported MTP
+// request, for diffing against a cached catalog.
+func LsHandles(ctx context.Context, dir string) ([]string, error) {
+	out, err := RunBatch(ctx, fmt.Sprintf(`ls-handles %q`, dir))
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) != 1 {
+			continue
+		}
+		if _, err := strconv.ParseUint(f[0], 10, 64); err != nil {
+			continue
+		}
+		ids = append(ids, f[0])
+	}
+	return ids, nil
+}
+
+// InfoByIDs fetches name+size for specific handles (new files found by a
+// handle diff) in one invocation.
+func InfoByIDs(ctx context.Context, ids []string) ([]Entry, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	cmds := make([]string, 0, len(ids))
+	for _, id := range ids {
+		cmds = append(cmds, "info-id "+id)
+	}
+	out, err := RunBatch(ctx, cmds...)
+	if err != nil {
+		return nil, err
+	}
+	var entries []Entry
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 {
+			continue
+		}
+		size, err := strconv.ParseInt(f[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		entries = append(entries, Entry{ObjectID: f[0], Size: size, Name: f[2]})
+	}
+	return entries, nil
+}
+
 // Get is one object to download to a local path.
 type Get struct {
 	ObjectID string

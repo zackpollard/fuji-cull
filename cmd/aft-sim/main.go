@@ -214,6 +214,38 @@ func (s *sim) dispatch(line string, in *bufio.Scanner) bool {
 			fmt.Fprintf(s.out, "%s 268435457 File %d %s %s\n",
 				s.ids[full], info.Size(), info.ModTime().Format("2006-01-02 15:04:05"), e.Name())
 		}
+	case "ls-handles":
+		if len(args) < 2 {
+			s.errf("ls-handles: missing path")
+			return true
+		}
+		entries, err := os.ReadDir(s.fsPath(s.resolve(args[1])))
+		if err != nil {
+			s.errf("ls-handles: %v", err)
+			return true
+		}
+		for _, e := range entries {
+			if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			fmt.Fprintln(s.out, s.ids[filepath.Join(s.fsPath(s.resolve(args[1])), e.Name())])
+		}
+	case "info-id":
+		if len(args) < 2 {
+			s.errf("info-id: missing id")
+			return true
+		}
+		p, ok := s.paths[args[1]]
+		if !ok {
+			s.errf("info-id %s: no such object", args[1])
+			return true
+		}
+		info, err := os.Stat(p)
+		if err != nil {
+			s.errf("info-id %s: %v", args[1], err)
+			return true
+		}
+		fmt.Fprintf(s.out, "%s %d %s\n", args[1], info.Size(), filepath.Base(p))
 	case "lsprops":
 		if len(args) < 2 {
 			s.errf("lsprops: missing path")
