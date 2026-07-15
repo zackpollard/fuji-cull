@@ -148,6 +148,30 @@ class EngineService : Service() {
         engine?.logEvent("usb detached")
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // swiping the app away kills the process WITHOUT onDestroy — stop
+        // the engine now so its camera sessions close gracefully (a hard-
+        // killed MTP session wedges the X-H2S: URB timeouts on reconnect)
+        Log.i(TAG, "task removed — stopping engine gracefully")
+        runCatching { engine?.stop() }
+        engine = null
+        usb?.close()
+        usb = null
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
+
+    /**
+     * Rebuilds the USB connection in place: the Android-level equivalent of
+     * a replug, for links that stay dead after a device reset.
+     */
+    fun rebuildUsb(device: android.hardware.usb.UsbDevice, connection: UsbDeviceConnection) {
+        engine?.logEvent("usb: rebuilding connection (link unresponsive)")
+        usb?.close()
+        usb = null
+        attachUsb(device, connection)
+    }
+
     override fun onDestroy() {
         engine?.stop()
         engine = null

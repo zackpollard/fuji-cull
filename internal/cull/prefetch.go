@@ -331,6 +331,10 @@ func (p *Prefetcher) Close() {
 	p.closed = true
 	p.mu.Unlock()
 	p.cond.Broadcast()
+	// close BOTH persistent sessions gracefully NOW — waiting for the
+	// stream janitor risks the process dying first, and a hard-killed MTP
+	// session wedges the camera (URB timeouts on the next connect)
+	p.CloseStream()
 	p.closePartsServer()
 }
 

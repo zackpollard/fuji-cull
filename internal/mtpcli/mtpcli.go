@@ -56,6 +56,9 @@ func RunBatch(ctx context.Context, cmds ...string) (string, error) {
 		if err == nil || !strings.Contains(out, "already used") {
 			if err != nil && TransportBroken(out) {
 				RequestReset()
+				NoteTransportResult(true)
+			} else if err == nil {
+				NoteTransportResult(false)
 			}
 			return out, err
 		}

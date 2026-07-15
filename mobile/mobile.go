@@ -182,6 +182,9 @@ func (e *Engine) Ready() bool { return e.app.Ready() }
 
 // DiscoveryStatus is a human-readable one-liner for the connect screen.
 func (e *Engine) DiscoveryStatus() string {
+	if mtpcli.LinkDead() {
+		return "camera link unresponsive — replug the USB cable or power-cycle the camera"
+	}
 	stage, files, errMsg := e.app.Discovery()
 	if errMsg != "" {
 		return "waiting for camera: " + errMsg
@@ -191,6 +194,11 @@ func (e *Engine) DiscoveryStatus() string {
 	}
 	return "reading camera index"
 }
+
+// LinkDead reports a persistently unresponsive USB link (a wedged camera
+// that survives a device reset — rebuild the connection or ask the user to
+// replug/power-cycle).
+func (e *Engine) LinkDead() bool { return mtpcli.LinkDead() }
 
 // ShotCount returns the catalog size once ready (0 before).
 func (e *Engine) ShotCount() int {

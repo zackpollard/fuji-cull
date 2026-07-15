@@ -31,6 +31,7 @@ func SetUSBFD(fd int) {
 	} else {
 		usbFile = os.NewFile(uintptr(fd), "usb-device")
 	}
+	brokenStreak = 0 // fresh connection gets the benefit of the doubt
 	usbMu.Unlock()
 }
 
@@ -69,7 +70,31 @@ func ConsumeReset() bool {
 // TransportBroken recognizes stderr from a degraded USB link that a device
 // reset may cure (seen after the camera drops off the bus and reconnects).
 func TransportBroken(out string) bool {
-	return strings.Contains(out, "submitting urb") || strings.Contains(out, "REAPURB")
+	return strings.Contains(out, "submitting urb") || strings.Contains(out, "REAPURB") ||
+		strings.Contains(out, "timeout reaping") || strings.Contains(out, "DISCARDURB")
+}
+
+var brokenStreak int
+
+// NoteTransportResult tracks consecutive broken-transport failures so the
+// app can tell "camera momentarily busy" from "link is dead" (a wedged
+// camera after an unclean shutdown survives even USBDEVFS_RESET and needs
+// a cable replug or power cycle).
+func NoteTransportResult(broken bool) {
+	usbMu.Lock()
+	if broken {
+		brokenStreak++
+	} else {
+		brokenStreak = 0
+	}
+	usbMu.Unlock()
+}
+
+// LinkDead reports a persistently unresponsive USB link.
+func LinkDead() bool {
+	usbMu.Lock()
+	defer usbMu.Unlock()
+	return brokenStreak >= 3
 }
 
 // USBFile returns the shared descriptor wrapper, or nil in normal

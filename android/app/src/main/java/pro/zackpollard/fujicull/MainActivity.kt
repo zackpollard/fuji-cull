@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity() {
     private var resumeTick by mutableIntStateOf(0)
     private var engineEpoch by mutableIntStateOf(0)
     private var settings by mutableStateOf(Settings())
+    private var lastRebuild = 0L
     private val requested = mutableSetOf<String>()
 
     private val connection = object : ServiceConnection {
@@ -209,6 +210,15 @@ class MainActivity : ComponentActivity() {
         }
         if (!svc.usbAttached) {
             usb.openDevice(camera)?.let { svc.attachUsb(camera, it) }
+            return
+        }
+        // link wedged despite a device reset: rebuild the connection from
+        // this side (Android-level replug), at most once per half minute
+        if (svc.engine?.linkDead() == true &&
+            System.currentTimeMillis() - lastRebuild > 30_000
+        ) {
+            lastRebuild = System.currentTimeMillis()
+            usb.openDevice(camera)?.let { svc.rebuildUsb(camera, it) }
         }
     }
 
