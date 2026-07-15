@@ -10,7 +10,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Slider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -42,6 +44,7 @@ import kotlinx.coroutines.launch
  * MPVLib is process-global — only ever compose ONE of these at a time
  * (the viewer's active page enforces that).
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MpvPlayer(api: Api, shot: Shot, modifier: Modifier = Modifier) {
     val context = LocalContext.current.applicationContext
@@ -81,7 +84,16 @@ fun MpvPlayer(api: Api, shot: Shot, modifier: Modifier = Modifier) {
         MPVLib.setOptionString("vd-lavc-framedrop", "nonref")
         MPVLib.setOptionString("framedrop", "vo")
         MPVLib.setOptionString("cache", "yes")
-        MPVLib.setOptionString("demuxer-max-bytes", "64MiB")
+        // disk-backed demuxer cache: everything streamed this session stays
+        // seekable (backward too) without re-pulling from the camera; the
+        // temp file dies with the player
+        MPVLib.setOptionString("cache-on-disk", "yes")
+        MPVLib.setOptionString(
+            "cache-dir",
+            java.io.File(context.cacheDir, "mpvcache").apply { mkdirs() }.absolutePath,
+        )
+        MPVLib.setOptionString("demuxer-max-bytes", "256MiB")
+        MPVLib.setOptionString("demuxer-max-back-bytes", "256MiB")
         MPVLib.setOptionString("demuxer-readahead-secs", "10")
         MPVLib.setOptionString("keep-open", "yes")
         MPVLib.init()
@@ -149,35 +161,43 @@ fun MpvPlayer(api: Api, shot: Shot, modifier: Modifier = Modifier) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(fmtTime(position), color = Color.White, fontSize = 11.sp)
-            Box(Modifier.weight(1f).padding(horizontal = 8.dp), contentAlignment = Alignment.Center) {
-                // buffered-so-far bar behind the seek slider
-                Box(
-                    Modifier.fillMaxWidth().height(3.dp)
-                        .background(Color(0xFF3A3D39)),
-                )
-                if (duration > 0f) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth(fraction = (bufferedAhead / duration).coerceIn(0f, 1f))
-                            .height(3.dp)
-                            .background(Color(0xFF8A6A2C))
-                            .align(Alignment.CenterStart),
-                    )
-                }
-                Slider(
-                    value = position.coerceIn(0f, maxOf(duration, 0.1f)),
-                    onValueChange = {
-                        scrubbing = true
-                        position = it
-                    },
-                    onValueChangeFinished = {
-                        runCatching { MPVLib.command(arrayOf("seek", position.toString(), "absolute")) }
-                        scrubbing = false
-                    },
-                    valueRange = 0f..maxOf(duration, 0.1f),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
+            Slider(
+                value = position.coerceIn(0f, maxOf(duration, 0.1f)),
+                onValueChange = {
+                    scrubbing = true
+                    position = it
+                },
+                onValueChangeFinished = {
+                    runCatching { MPVLib.command(arrayOf("seek", position.toString(), "absolute")) }
+                    scrubbing = false
+                },
+                valueRange = 0f..maxOf(duration, 0.1f),
+                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                track = {
+                    // three segments: played (amber), buffered (dim gold),
+                    // rest (dark) — the buffered edge is the visible signal
+                    Box(Modifier.fillMaxWidth().height(5.dp)) {
+                        Box(
+                            Modifier.fillMaxSize()
+                                .background(Color(0xFF33362F), RoundedCornerShape(3.dp)),
+                        )
+                        if (duration > 0f) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth((bufferedAhead / duration).coerceIn(0f, 1f))
+                                    .height(5.dp)
+                                    .background(Color(0xFF9A7A35), RoundedCornerShape(3.dp)),
+                            )
+                            Box(
+                                Modifier
+                                    .fillMaxWidth((position / duration).coerceIn(0f, 1f))
+                                    .height(5.dp)
+                                    .background(Amber, RoundedCornerShape(3.dp)),
+                            )
+                        }
+                    }
+                },
+            )
             Text(fmtTime(duration), color = Color.White, fontSize = 11.sp)
         }
         if (!ready || buffering) {
