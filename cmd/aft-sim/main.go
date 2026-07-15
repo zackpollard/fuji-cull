@@ -245,7 +245,8 @@ func (s *sim) dispatch(line string, in *bufio.Scanner) bool {
 			s.errf("info-id %s: %v", args[1], err)
 			return true
 		}
-		fmt.Fprintf(s.out, "%s %d %s\n", args[1], info.Size(), filepath.Base(p))
+		fmt.Fprintf(s.out, "%s %d %s %s\n", args[1], info.Size(),
+			info.ModTime().Format("20060102T150405"), filepath.Base(p))
 	case "lsprops-all":
 		filepath.WalkDir(s.root, func(p string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() || strings.HasPrefix(d.Name(), ".") {
@@ -259,7 +260,8 @@ func (s *sim) dispatch(line string, in *bufio.Scanner) bool {
 			if parent == "" {
 				parent = "0"
 			}
-			fmt.Fprintf(s.out, "%s %d %s %s\n", s.ids[p], info.Size(), parent, filepath.Base(p))
+			fmt.Fprintf(s.out, "%s %d %s %s %s\n", s.ids[p], info.Size(), parent,
+				info.ModTime().Format("20060102T150405"), filepath.Base(p))
 			return nil
 		})
 	case "lsprops":

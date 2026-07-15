@@ -81,6 +81,7 @@ type shotDTO struct {
 	Kind   string            `json:"kind"`
 	Files  map[string]string `json:"files"`
 	Size   int64             `json:"size"`
+	Date   string            `json:"date"`
 }
 
 func (a *App) counts() map[string]int {
@@ -125,7 +126,7 @@ func (a *App) handler() http.Handler {
 		for i, s := range a.catalog.Shots {
 			shots[i] = shotDTO{
 				ID: s.ID, Folder: s.Folder, Base: s.Base, Kind: s.Kind,
-				Files: s.Files, Size: s.TotalSize(),
+				Files: s.Files, Size: s.TotalSize(), Date: s.Date,
 			}
 		}
 		writeJSON(w, map[string]any{

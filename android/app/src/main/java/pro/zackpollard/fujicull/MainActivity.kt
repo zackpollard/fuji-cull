@@ -72,6 +72,14 @@ class MainActivity : ComponentActivity() {
                 .okHttpClient(
                     OkHttpClient.Builder()
                         .readTimeout(180, TimeUnit.SECONDS)
+                        // all images come from ONE loopback host; the default
+                        // 5-requests-per-host cap made preloading crawl
+                        .dispatcher(
+                            okhttp3.Dispatcher().apply {
+                                maxRequests = 64
+                                maxRequestsPerHost = 32
+                            },
+                        )
                         .build(),
                 )
                 // scroll-ahead preloading keeps a few hundred thumbs warm

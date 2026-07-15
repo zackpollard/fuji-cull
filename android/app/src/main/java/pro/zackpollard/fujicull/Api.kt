@@ -8,7 +8,7 @@ import java.net.URL
 import java.net.URLEncoder
 
 /** One catalog entry, as served by /api/state. */
-data class Shot(val id: String, val folder: String, val base: String, val kind: String)
+data class Shot(val id: String, val folder: String, val base: String, val kind: String, val date: String = "")
 
 /** Thin client for the engine's loopback HTTP API. */
 @androidx.compose.runtime.Stable
@@ -39,7 +39,12 @@ class Api(private val port: Long) {
         val arr = o.getJSONArray("shots")
         for (i in 0 until arr.length()) {
             val s = arr.getJSONObject(i)
-            shots.add(Shot(s.getString("id"), s.getString("folder"), s.getString("base"), s.getString("kind")))
+            shots.add(
+                Shot(
+                    s.getString("id"), s.getString("folder"), s.getString("base"),
+                    s.getString("kind"), s.optString("date"),
+                ),
+            )
         }
         val decisions = mutableMapOf<String, String>()
         val d = o.getJSONObject("decisions")

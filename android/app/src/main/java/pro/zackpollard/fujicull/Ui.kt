@@ -24,10 +24,18 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed as listItemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -445,6 +453,36 @@ private fun CullScreen(
     val gridState = rememberLazyGridState()
     var returnTo by remember { mutableIntStateOf(-1) }
 
+    // immich-style timeline rows: date headers between day groups. Shots
+    // keep their original indices (thumbStates/orient/immich index by shot).
+    val rows = remember(shots) {
+        buildList {
+            var cur = "\u0000"
+            shots.forEachIndexed { i, s ->
+                val day = s.date.ifEmpty { s.folder }
+                if (day != cur) {
+                    cur = day
+                    add(TimelineRow.Header(day))
+                }
+                add(TimelineRow.Cell(s, i))
+            }
+        }
+    }
+    val rowOfShot = remember(rows) {
+        IntArray(shots.size).also { arr ->
+            rows.forEachIndexed { r, row -> if (row is TimelineRow.Cell) arr[row.index] = r }
+        }
+    }
+    val shotAtRow = remember(rows) {
+        IntArray(rows.size).also { arr ->
+            var last = 0
+            rows.forEachIndexed { r, row ->
+                if (row is TimelineRow.Cell) last = row.index
+                arr[r] = last
+            }
+        }
+    }
+
     if (viewing >= 0) {
         Viewer(
             api, shots, thumbStates, orient, resumeTick, decisions,
@@ -491,7 +529,7 @@ private fun CullScreen(
         LaunchedEffect(returnTo) {
             // land the grid where the viewer left off
             if (returnTo >= 0) {
-                gridState.scrollToItem((returnTo - 4).coerceAtLeast(0))
+                gridState.scrollToItem((rowOfShot.getOrElse(returnTo) { 0 } - 4).coerceAtLeast(0))
                 returnTo = -1
             }
         }
@@ -501,9 +539,9 @@ private fun CullScreen(
                 gridState.firstVisibleItemIndex + gridState.layoutInfo.visibleItemsInfo.size / 2
             }
                 .distinctUntilChanged()
-                .collectLatest {
+                .collectLatest { row ->
                     delay(400) // settle after flings
-                    api.thumbHint(it.coerceIn(0, shots.size - 1))
+                    api.thumbHint(shotAtRow.getOrElse(row.coerceIn(0, rows.lastIndex)) { 0 })
                 }
         }
         // scroll-ahead preloading: warm Coil with the tiles about to enter
@@ -520,31 +558,68 @@ private fun CullScreen(
                 first to last
             }
                 .distinctUntilChanged()
-                .collect { (first, last) ->
+                .collect { (firstRow, lastRow) ->
                     if (warmed.size > 4000) warmed.clear()
+                    val first = shotAtRow.getOrElse(firstRow.coerceIn(0, rows.lastIndex)) { 0 }
+                    val last = shotAtRow.getOrElse(lastRow.coerceIn(0, rows.lastIndex)) { 0 }
                     val ahead = (last + 1)..minOf(last + 90, shots.lastIndex)
                     val behind = maxOf(first - 45, 0) until first
                     for (i in behind + ahead) {
                         if (thumbStates.getOrNull(i) != '1' || !warmed.add(i)) continue
                         val shot = shots[i]
                         loader.enqueue(
-                            thumbRequest(preloadCtx, api, shot.id, orient.getOrNull(i) ?: '0', resumeTick),
+                            thumbRequest(preloadCtx, api, shot.id, orient.getOrNull(i) ?: '0'),
                         )
                     }
                 }
         }
-        LazyVerticalGrid(columns = GridCells.Adaptive(110.dp), Modifier.fillMaxSize(), state = gridState) {
-            itemsIndexed(shots, key = { _, s -> s.id }, contentType = { _, s -> s.kind }) { i, shot ->
-                GridCell(
-                    api, shot,
-                    hasThumb = thumbStates.getOrNull(i) == '1',
-                    orientC = orient.getOrNull(i) ?: '0',
-                    uploaded = immich.getOrNull(i) == '1',
-                    decision = decisions.value[shot.id] ?: "",
-                    tick = resumeTick,
-                    onClick = { viewing = i },
-                )
+        Box(Modifier.fillMaxSize()) {
+            LazyVerticalGrid(columns = GridCells.Adaptive(110.dp), Modifier.fillMaxSize(), state = gridState) {
+                items(
+                    count = rows.size,
+                    key = { r ->
+                        when (val row = rows[r]) {
+                            is TimelineRow.Header -> "h:" + row.day
+                            is TimelineRow.Cell -> row.shot.id
+                        }
+                    },
+                    contentType = { r ->
+                        when (val row = rows[r]) {
+                            is TimelineRow.Header -> "header"
+                            is TimelineRow.Cell -> row.shot.kind
+                        }
+                    },
+                    span = { r ->
+                        if (rows[r] is TimelineRow.Header) {
+                            GridItemSpan(maxLineSpan)
+                        } else {
+                            GridItemSpan(1)
+                        }
+                    },
+                ) { r ->
+                    when (val row = rows[r]) {
+                        is TimelineRow.Header -> DateHeader(row.day)
+                        is TimelineRow.Cell -> {
+                            val i = row.index
+                            val shot = row.shot
+                            GridCell(
+                                api, shot,
+                                hasThumb = thumbStates.getOrNull(i) == '1',
+                                orientC = orient.getOrNull(i) ?: '0',
+                                uploaded = immich.getOrNull(i) == '1',
+                                decision = decisions.value[shot.id] ?: "",
+                                tick = resumeTick,
+                                onClick = { viewing = i },
+                            )
+                        }
+                    }
+                }
             }
+            TimelineScrubber(
+                gridState = gridState,
+                rows = rows,
+                modifier = Modifier.align(Alignment.CenterEnd),
+            )
         }
     }
 
@@ -610,7 +685,7 @@ private fun GridCell(
             if (hasThumb) {
                 // engine-made poster (bundled ffmpeg) served like any thumb
                 AsyncImage(
-                    model = thumbRequest(LocalContext.current, api, shot.id, orientC, tick),
+                    model = thumbRequest(LocalContext.current, api, shot.id, orientC),
                     contentDescription = shot.base,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
@@ -640,7 +715,7 @@ private fun GridCell(
             Box(Modifier.fillMaxWidth().height(3.dp).background(Amber).align(Alignment.TopStart))
         } else if (hasThumb) {
             AsyncImage(
-                model = thumbRequest(LocalContext.current, api, shot.id, orientC, tick),
+                model = thumbRequest(LocalContext.current, api, shot.id, orientC),
                 contentDescription = shot.base,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
@@ -684,7 +759,7 @@ private fun Viewer(
         for (i in maxOf(0, page - 30)..minOf(shots.lastIndex, page + 30)) {
             if (thumbStates.getOrNull(i) != '1') continue
             loader.enqueue(
-                thumbRequest(filmCtx, api, shots[i].id, orient.getOrNull(i) ?: '0', tick),
+                thumbRequest(filmCtx, api, shots[i].id, orient.getOrNull(i) ?: '0'),
             )
         }
     }
@@ -730,7 +805,7 @@ private fun Viewer(
                         }
                     }
                     val model: Any? = if (thumbStates.getOrNull(i) == '1') {
-                        thumbRequest(ctx, api, shot.id, orient.getOrNull(i) ?: '0', tick)
+                        thumbRequest(ctx, api, shot.id, orient.getOrNull(i) ?: '0')
                     } else if (shot.kind == "video") {
                         posterFile
                     } else null
@@ -904,14 +979,128 @@ internal fun releaseCameraStream(api: Api) {
     kotlinx.coroutines.GlobalScope.launch { api.releaseStream() }
 }
 
+/** Timeline rows: a full-width date header or a shot cell. */
+internal sealed class TimelineRow {
+    data class Header(val day: String) : TimelineRow()
+    data class Cell(val shot: Shot, val index: Int) : TimelineRow()
+}
+
+private fun prettyDay(day: String): String = runCatching {
+    java.time.LocalDate.parse(day)
+        .format(java.time.format.DateTimeFormatter.ofPattern("EEE d MMM yyyy"))
+}.getOrDefault(day)
+
+@Composable
+private fun DateHeader(day: String) {
+    Text(
+        prettyDay(day),
+        color = Color.White,
+        style = MaterialTheme.typography.titleSmall,
+        modifier = Modifier.fillMaxWidth().padding(start = 10.dp, top = 14.dp, bottom = 6.dp),
+    )
+}
+
+/**
+ * Immich-style fast scrubber: appears while scrolling, drag to jump through
+ * the timeline with a date bubble.
+ */
+@Composable
+private fun TimelineScrubber(
+    gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
+    rows: List<TimelineRow>,
+    modifier: Modifier = Modifier,
+) {
+    if (rows.isEmpty()) return
+    val scope = rememberCoroutineScope()
+    var dragging by remember { mutableStateOf(false) }
+    var frac by remember { mutableFloatStateOf(0f) }
+    var trackH by remember { mutableIntStateOf(0) }
+
+    val visible = dragging || gridState.isScrollInProgress
+    val alpha by animateFloatAsState(if (visible) 1f else 0f, label = "scrubAlpha")
+    val posFrac = if (dragging) {
+        frac
+    } else {
+        gridState.firstVisibleItemIndex.toFloat() / rows.size.toFloat()
+    }
+    val label = remember(dragging, posFrac, rows) {
+        if (!dragging) "" else {
+            var idx = (posFrac * rows.lastIndex).toInt().coerceIn(0, rows.lastIndex)
+            var day = ""
+            while (idx >= 0) {
+                when (val row = rows[idx]) {
+                    is TimelineRow.Header -> {
+                        day = row.day
+                        idx = -1
+                    }
+                    is TimelineRow.Cell -> {
+                        day = row.shot.date.ifEmpty { row.shot.folder }
+                        idx = -1
+                    }
+                }
+            }
+            prettyDay(day)
+        }
+    }
+
+    Box(
+        modifier
+            .fillMaxHeight()
+            .width(28.dp)
+            .onSizeChanged { trackH = it.height }
+            .graphicsLayer { this.alpha = alpha }
+            .pointerInput(rows.size) {
+                detectVerticalDragGestures(
+                    onDragStart = { off ->
+                        dragging = true
+                        frac = (off.y / size.height).coerceIn(0f, 1f)
+                    },
+                    onDragEnd = { dragging = false },
+                    onDragCancel = { dragging = false },
+                ) { change, _ ->
+                    frac = (change.position.y / size.height).coerceIn(0f, 1f)
+                    val target = (frac * rows.lastIndex).toInt().coerceIn(0, rows.lastIndex)
+                    scope.launch { gridState.scrollToItem(target) }
+                    change.consume()
+                }
+            },
+    ) {
+        val thumbPx = with(LocalDensity.current) { 48.dp.toPx() }
+        val yOff = (posFrac * (trackH - thumbPx)).toInt().coerceAtLeast(0)
+        Box(
+            Modifier
+                .align(Alignment.TopEnd)
+                .padding(end = 4.dp)
+                .offset { IntOffset(0, yOff) }
+                .width(6.dp)
+                .height(48.dp)
+                .background(Amber, RoundedCornerShape(3.dp)),
+        )
+        if (dragging && label.isNotEmpty()) {
+            Text(
+                label,
+                color = Color.White,
+                fontSize = 12.sp,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset { IntOffset(-16.dp.roundToPx(), (yOff + 12).coerceAtLeast(0)) }
+                    .background(Color(0xE6222522), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+        }
+    }
+}
+
 // thumbRequest builds the ONE canonical request shape for a shot's
 // thumbnail — cells, filmstrip and preloaders must all use it so Coil's
 // cache keys line up and a preloaded tile composes with zero work
 private fun thumbRequest(
-    ctx: android.content.Context, api: Api, id: String, orientC: Char, tick: Int,
+    ctx: android.content.Context, api: Api, id: String, orientC: Char,
 ): ImageRequest =
     ImageRequest.Builder(ctx)
-        .data(api.thumbUrl(id, orientC, tick))
+        // stable URL: Coil's disk cache then persists thumbs across app
+        // launches (the old &rt= buster forced cold reloads every open)
+        .data(api.thumbUrl(id, orientC))
         .size(256)
         .build()
 

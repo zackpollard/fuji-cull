@@ -106,6 +106,7 @@ func Ls(ctx context.Context, dir string) (string, error) {
 type Entry struct {
 	ObjectID string
 	Size     int64
+	Date     string // raw PTP or "YYYY-MM-DD ..." depending on source; "" unknown
 	Name     string
 }
 
@@ -126,7 +127,7 @@ func LsExt(ctx context.Context, dir string) ([]Entry, error) {
 		if err != nil {
 			continue
 		}
-		entries = append(entries, Entry{ObjectID: f[0], Size: size, Name: f[6]})
+		entries = append(entries, Entry{ObjectID: f[0], Size: size, Date: f[4], Name: f[6]})
 	}
 	return entries, nil
 }
@@ -186,6 +187,7 @@ type AllEntry struct {
 	ObjectID string
 	Size     int64
 	ParentID string
+	Date     string // raw PTP datetime ("20260714T101530"), "" if unknown
 	Name     string
 }
 
@@ -200,7 +202,7 @@ func LsPropsAll(ctx context.Context) ([]AllEntry, error) {
 	var entries []AllEntry
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
-		if len(f) < 4 {
+		if len(f) < 5 {
 			continue
 		}
 		size, err := strconv.ParseInt(f[1], 10, 64)
@@ -210,7 +212,11 @@ func LsPropsAll(ctx context.Context) ([]AllEntry, error) {
 		if _, err := strconv.ParseUint(f[0], 10, 64); err != nil {
 			continue
 		}
-		entries = append(entries, AllEntry{ObjectID: f[0], Size: size, ParentID: f[2], Name: f[3]})
+		date := f[3]
+		if date == "-" {
+			date = ""
+		}
+		entries = append(entries, AllEntry{ObjectID: f[0], Size: size, ParentID: f[2], Date: date, Name: f[4]})
 	}
 	return entries, nil
 }
@@ -253,14 +259,18 @@ func InfoByIDs(ctx context.Context, ids []string) ([]Entry, error) {
 	var entries []Entry
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
-		if len(f) < 3 {
+		if len(f) < 4 {
 			continue
 		}
 		size, err := strconv.ParseInt(f[1], 10, 64)
 		if err != nil {
 			continue
 		}
-		entries = append(entries, Entry{ObjectID: f[0], Size: size, Name: f[2]})
+		date := f[2]
+		if date == "-" {
+			date = ""
+		}
+		entries = append(entries, Entry{ObjectID: f[0], Size: size, Date: date, Name: f[3]})
 	}
 	return entries, nil
 }

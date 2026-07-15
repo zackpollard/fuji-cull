@@ -36,7 +36,29 @@ type listing struct {
 	Folder   string // base folder name, e.g. "151_FUJI"
 	Name     string // e.g. "DSCF0001.JPG"
 	Size     int64
+	Date     string // capture day "2006-01-02"; "" unknown
 	ObjectID string // MTP object ID (cli backend)
+}
+
+// captureDay normalizes PTP datetimes ("20260714T101530") and lsext-style
+// dates ("2026-07-14 ...") to a grouping day, or "".
+func captureDay(raw string) string {
+	if len(raw) >= 10 && raw[4] == '-' && raw[7] == '-' {
+		return raw[:10]
+	}
+	if len(raw) >= 8 {
+		allDigits := true
+		for _, r := range raw[:8] {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return raw[:4] + "-" + raw[4:6] + "-" + raw[6:8]
+		}
+	}
+	return ""
 }
 
 type fetchItem struct {
@@ -75,6 +97,9 @@ func buildCatalog(items []listing) *Catalog {
 		}
 		if it.ObjectID != "" {
 			s.ObjectIDs[ext] = it.ObjectID
+		}
+		if s.Date == "" && it.Date != "" {
+			s.Date = it.Date
 		}
 	}
 
@@ -117,8 +142,13 @@ type cliBackend struct {
 // a 19k-file card. POST /api/rescan (or deleting the file) forces a full
 // re-read.
 type catalogCache struct {
+	Version int                  `json:"version"`
 	Folders map[string][]listing `json:"folders"` // key: root + "/" + folder
 }
+
+// cacheVersion bumps when listing gains fields (v2: capture dates) so old
+// caches take one fast re-list instead of serving incomplete data.
+const cacheVersion = 2
 
 func (b *cliBackend) cachePath() string {
 	return filepath.Join(b.cacheDir, "catalog-cache.json")
@@ -133,8 +163,9 @@ func (b *cliBackend) loadCache() *catalogCache {
 	if err != nil {
 		return c
 	}
-	if json.Unmarshal(raw, c) != nil || c.Folders == nil {
+	if json.Unmarshal(raw, c) != nil || c.Folders == nil || c.Version != cacheVersion {
 		c.Folders = map[string][]listing{}
+		c.Version = cacheVersion
 	}
 	return c
 }
@@ -143,6 +174,7 @@ func (b *cliBackend) saveCache(c *catalogCache) {
 	if b.cacheDir == "" {
 		return
 	}
+	c.Version = cacheVersion
 	raw, err := json.Marshal(c)
 	if err != nil {
 		return
@@ -222,7 +254,7 @@ func (b *cliBackend) deltaFolder(ctx context.Context, dir, rel, folder string, c
 			}
 			keep = append(keep, listing{
 				Dir: rel, Folder: folder, Name: e.Name,
-				Size: e.Size, ObjectID: e.ObjectID,
+				Size: e.Size, Date: captureDay(e.Date), ObjectID: e.ObjectID,
 			})
 		}
 	}
@@ -304,7 +336,7 @@ func (b *cliBackend) Discover(ctx context.Context, progress func(stage string, f
 					}
 					fresh = append(fresh, listing{
 						Dir: rel, Folder: folder, Name: e.Name,
-						Size: e.Size, ObjectID: e.ObjectID,
+						Size: e.Size, Date: captureDay(e.Date), ObjectID: e.ObjectID,
 					})
 				}
 			} else {
@@ -318,7 +350,7 @@ func (b *cliBackend) Discover(ctx context.Context, progress func(stage string, f
 					}
 					fresh = append(fresh, listing{
 						Dir: rel, Folder: folder, Name: e.Name,
-						Size: e.Size, ObjectID: e.ObjectID,
+						Size: e.Size, Date: captureDay(e.Date), ObjectID: e.ObjectID,
 					})
 				}
 			}

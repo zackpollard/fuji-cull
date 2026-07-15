@@ -1,5 +1,5 @@
 diff --git a/cli/Session.cpp b/cli/Session.cpp
-index 76980c3..f250ae7 100644
+index 76980c3..57ba254 100644
 --- a/cli/Session.cpp
 +++ b/cli/Session.cpp
 @@ -119,6 +119,21 @@ namespace cli
@@ -37,7 +37,7 @@ index 76980c3..f250ae7 100644
  		AddCommand("get-thumb", "<file> downloads thumbnail for file",
  			make_function([this](const Path &path) -> void { GetThumb(path); }));
  		AddCommand("get-thumb", "<file> <dst> downloads thumbnail to <dst>",
-@@ -535,6 +556,136 @@ namespace cli
+@@ -535,6 +556,152 @@ namespace cli
  	}
  
  
@@ -97,18 +97,32 @@ index 76980c3..f250ae7 100644
 +			parser.Parse(data, [&parents](ObjectId objectId, ObjectProperty, u64 parent)
 +			{ parents[objectId] = parent; });
 +		}
++		std::map<mtp::ObjectId, std::string> dates;
++		try
++		{
++			// capture dates for timeline grouping; best-effort (some
++			// devices refuse the property card-wide)
++			ByteArray data = _session->GetObjectPropertyList(all, ObjectFormat::Any, ObjectProperty::DateCreated, 0, 0);
++			ObjectPropertyListParser<std::string> parser;
++			parser.Parse(data, [&dates](ObjectId objectId, ObjectProperty, const std::string &date)
++			{ dates[objectId] = date; });
++		}
++		catch (const std::exception &)
++		{ }
 +		ByteArray data = _session->GetObjectPropertyList(all, ObjectFormat::Any, ObjectProperty::ObjectFilename, 0, 0);
 +		ObjectPropertyListParser<std::string> parser;
 +		size_t parsed = 0;
-+		parser.Parse(data, [&sizes, &parents, &parsed](ObjectId objectId, ObjectProperty, const std::string &name)
++		parser.Parse(data, [&sizes, &parents, &dates, &parsed](ObjectId objectId, ObjectProperty, const std::string &name)
 +		{
 +			++parsed;
 +			auto sz = sizes.find(objectId);
 +			auto pr = parents.find(objectId);
++			auto dt = dates.find(objectId);
 +			print(std::left,
 +				width(objectId, 10), " ",
 +				sz != sizes.end()? sz->second: 0, " ",
 +				pr != parents.end()? pr->second: 0, " ",
++				(dt != dates.end() && !dt->second.empty())? dt->second: std::string("-"), " ",
 +				name);
 +		});
 +		if (parsed == 0 && data.size() > 12)
@@ -168,13 +182,15 @@ index 76980c3..f250ae7 100644
 +		{ size = _session->GetObjectIntegerProperty(id, ObjectProperty::ObjectSize); }
 +		catch (const std::exception &)
 +		{ }
-+		print(std::left, width(id.Id, 10), " ", size, " ", info.Filename);
++		std::string date = !info.CaptureDate.empty()? info.CaptureDate: info.ModificationDate;
++		print(std::left, width(id.Id, 10), " ", size, " ",
++			date.empty()? std::string("-"): date, " ", info.Filename);
 +	}
 +
  	void Session::List(mtp::ObjectId parent, bool extended, bool recursive, const std::string &prefix)
  	{
  		using namespace mtp;
-@@ -694,6 +845,53 @@ namespace cli
+@@ -694,6 +861,53 @@ namespace cli
  		}
  	}
  
