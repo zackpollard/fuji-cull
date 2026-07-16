@@ -566,13 +566,22 @@ private fun CullScreen(
                 first to last
             }
                 .distinctUntilChanged()
-                .collect { (firstRow, lastRow) ->
+                // collectLatest + a settle delay: during a fast scrub the
+                // position changes faster than the delay, so every
+                // intermediate window is CANCELLED before it enqueues —
+                // Coil never floods with thousands of stale requests that
+                // would starve the tiles you actually land on
+                .collectLatest { (firstRow, lastRow) ->
+                    if (gridState.isScrollInProgress) delay(180) // let a fling/scrub settle
                     if (warmed.size > 4000) warmed.clear()
                     val first = shotAtRow.getOrElse(firstRow.coerceIn(0, rows.lastIndex)) { 0 }
                     val last = shotAtRow.getOrElse(lastRow.coerceIn(0, rows.lastIndex)) { 0 }
-                    val ahead = (last + 1)..minOf(last + 90, shots.lastIndex)
-                    val behind = maxOf(first - 45, 0) until first
-                    for (i in behind + ahead) {
+                    // visible span first (they are on screen NOW), then ahead,
+                    // then behind — Coil serves them roughly in enqueue order
+                    val visible = first..last
+                    val ahead = (last + 1)..minOf(last + 60, shots.lastIndex)
+                    val behind = maxOf(first - 30, 0) until first
+                    for (i in visible + ahead + behind) {
                         if (thumbStates.getOrNull(i) != '1' || !warmed.add(i)) continue
                         val shot = shots[i]
                         loader.enqueue(
