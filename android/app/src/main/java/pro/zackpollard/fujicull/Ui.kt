@@ -67,6 +67,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -466,11 +467,11 @@ private fun CullScreen(
                 if (month != curMonth) {
                     curMonth = month
                     curDay = "\u0000"
-                    add(TimelineRow.MonthHeader(month))
+                    add(TimelineRow.MonthHeader(month, prettyMonth(month)))
                 }
                 if (day != curDay) {
                     curDay = day
-                    add(TimelineRow.DayHeader(day))
+                    add(TimelineRow.DayHeader(prettyDay(day)))
                 }
                 add(TimelineRow.Cell(s, i))
             }
@@ -601,18 +602,33 @@ private fun CullScreen(
         var pinchAccum by remember { mutableFloatStateOf(1f) }
         Box(
             Modifier.fillMaxSize().pointerInput(Unit) {
-                detectTransformGestures { _, _, zoom, _ ->
-                    pinchAccum *= zoom
-                    // hysteresis so a single pinch steps one column at a time
-                    if (pinchAccum > 1.25f && cols > 2) {
-                        cols--; pinchAccum = 1f
-                        ctxCols.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE)
-                            .edit().putInt("gridCols", cols).apply()
-                    } else if (pinchAccum < 0.8f && cols < 7) {
-                        cols++; pinchAccum = 1f
-                        ctxCols.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE)
-                            .edit().putInt("gridCols", cols).apply()
-                    }
+                // Initial pass: the parent sees pointer events BEFORE the
+                // LazyGrid's scroll consumes them. We only consume (and act)
+                // on 2+ finger pinches; single-finger drags pass through so
+                // scrolling still works.
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    do {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        if (event.changes.count { it.pressed } >= 2) {
+                            val zoom = event.calculateZoom()
+                            if (zoom != 1f) {
+                                pinchAccum *= zoom
+                                val next = when {
+                                    pinchAccum > 1.18f && cols > 2 -> cols - 1
+                                    pinchAccum < 0.85f && cols < 7 -> cols + 1
+                                    else -> cols
+                                }
+                                if (next != cols) {
+                                    cols = next
+                                    pinchAccum = 1f
+                                    ctxCols.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE)
+                                        .edit().putInt("gridCols", next).apply()
+                                }
+                                event.changes.forEach { it.consume() }
+                            }
+                        }
+                    } while (event.changes.any { it.pressed })
                 }
             },
         ) {
@@ -622,7 +638,7 @@ private fun CullScreen(
                     key = { r ->
                         when (val row = rows[r]) {
                             is TimelineRow.MonthHeader -> "m:" + row.month
-                            is TimelineRow.DayHeader -> "d:" + row.day
+                            is TimelineRow.DayHeader -> "d:" + row.label
                             is TimelineRow.Cell -> row.shot.id
                         }
                     },
@@ -638,8 +654,8 @@ private fun CullScreen(
                     },
                 ) { r ->
                     when (val row = rows[r]) {
-                        is TimelineRow.MonthHeader -> MonthHeaderView(row.month)
-                        is TimelineRow.DayHeader -> DayHeaderView(row.day)
+                        is TimelineRow.MonthHeader -> MonthHeaderView(row.label)
+                        is TimelineRow.DayHeader -> DayHeaderView(row.label)
                         is TimelineRow.Cell -> {
                             val i = row.index
                             val shot = row.shot
@@ -1022,8 +1038,8 @@ internal fun releaseCameraStream(api: Api) {
 
 /** Timeline rows: a month band, a day header, or a shot cell. */
 internal sealed class TimelineRow {
-    data class MonthHeader(val month: String) : TimelineRow() // "2026-07" or folder
-    data class DayHeader(val day: String) : TimelineRow()     // "2026-07-15" or folder
+    data class MonthHeader(val month: String, val label: String) : TimelineRow()
+    data class DayHeader(val label: String) : TimelineRow()
     data class Cell(val shot: Shot, val index: Int) : TimelineRow()
 }
 
@@ -1046,9 +1062,9 @@ private fun prettyDay(day: String): String = runCatching {
 }.getOrDefault(day)
 
 @Composable
-private fun MonthHeaderView(month: String) {
+private fun MonthHeaderView(label: String) {
     Text(
-        prettyMonth(month),
+        label,
         color = Color.White,
         style = MaterialTheme.typography.headlineSmall,
         modifier = Modifier.fillMaxWidth().padding(start = 12.dp, top = 20.dp, bottom = 4.dp),
@@ -1056,9 +1072,9 @@ private fun MonthHeaderView(month: String) {
 }
 
 @Composable
-private fun DayHeaderView(day: String) {
+private fun DayHeaderView(label: String) {
     Text(
-        prettyDay(day),
+        label,
         color = Color(0xFFCED2C9),
         style = MaterialTheme.typography.bodyMedium,
         modifier = Modifier.fillMaxWidth().padding(start = 12.dp, top = 10.dp, bottom = 6.dp),
@@ -1097,10 +1113,13 @@ private fun TimelineScrubber(
         return marks.lastOrNull { it.row <= target }?.short ?: marks.firstOrNull()?.short ?: ""
     }
 
-    val visible = dragging || gridState.isScrollInProgress
-    val alpha by animateFloatAsState(if (visible) 1f else 0f, label = "scrubAlpha")
-    val posFrac = if (dragging) frac
-    else gridState.firstVisibleItemIndex.toFloat() / rows.lastIndex.toFloat()
+    // isScrollInProgress flips only at scroll START/STOP, so this
+    // recomposes rarely; the handle POSITION is read in a layout lambda
+    // below, so scrolling never recomposes this whole subtree (that
+    // per-frame recomposition was the timeline lag)
+    val alpha by animateFloatAsState(
+        if (dragging || gridState.isScrollInProgress) 1f else 0f, label = "scrubAlpha",
+    )
 
     val density = LocalDensity.current
     val handlePx = with(density) { 44.dp.toPx() }
@@ -1146,12 +1165,18 @@ private fun TimelineScrubber(
                     .padding(end = 10.dp),
             )
         }
-        // handle
-        val yOff = (posFrac * (trackH - handlePx)).toInt().coerceAtLeast(0)
+        // handle — position read in the LAYOUT phase so grid scrolling
+        // moves it without recomposing the scrubber
+        fun handleY(): Int {
+            val pf = if (dragging) frac
+            else if (rows.lastIndex > 0) gridState.firstVisibleItemIndex.toFloat() / rows.lastIndex
+            else 0f
+            return (pf * (trackH - handlePx)).toInt().coerceAtLeast(0)
+        }
         Box(
             Modifier
                 .align(Alignment.TopEnd)
-                .offset { IntOffset(0, yOff) }
+                .offset { IntOffset(0, handleY()) }
                 .padding(end = 4.dp)
                 .size(44.dp)
                 .background(Color(0xFF3A3D39), androidx.compose.foundation.shape.CircleShape),
@@ -1169,7 +1194,10 @@ private fun TimelineScrubber(
                     fontSize = 14.sp,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .offset { IntOffset(-52.dp.roundToPx(), (yOff + 4).coerceAtLeast(0)) }
+                        .offset {
+                            val y = (frac * (trackH - handlePx)).toInt().coerceAtLeast(0)
+                            IntOffset(-52.dp.roundToPx(), (y + 4).coerceAtLeast(0))
+                        }
                         .background(Color(0xF2222522), RoundedCornerShape(14.dp))
                         .padding(horizontal = 14.dp, vertical = 8.dp),
                 )

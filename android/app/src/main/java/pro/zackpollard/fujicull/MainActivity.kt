@@ -84,6 +84,14 @@ class MainActivity : ComponentActivity() {
                 )
                 // scroll-ahead preloading keeps a few hundred thumbs warm
                 .memoryCache { coil.memory.MemoryCache.Builder(this).maxSizePercent(0.30).build() }
+                // hold the whole card's thumbs on disk so re-scrubbing an
+                // area is instant (the default ~250MB cap thrashed on 19k)
+                .diskCache {
+                    coil.disk.DiskCache.Builder()
+                        .directory(cacheDir.resolve("coil"))
+                        .maxSizeBytes(512L * 1024 * 1024)
+                        .build()
+                }
                 .build(),
         )
         settings = loadSettings()
