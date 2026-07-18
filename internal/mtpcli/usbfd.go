@@ -2,6 +2,8 @@ package mtpcli
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -105,10 +107,33 @@ func USBFile() *os.File {
 	return usbFile
 }
 
-// AftBin resolves the stock aft-mtp-cli binary (env override for platforms
-// without a PATH-installed copy, e.g. Android's nativeLibraryDir).
+// AftBin resolves the aft binary for BULK batch commands. It prefers the
+// locally-patched aft (the same binary mtppart uses for partial reads):
+// that build is a superset of stock aft-mtp-cli — it serves every batch
+// command AND the bulk index commands (lsprops-all, ls-handles, info-id)
+// that stock aft-mtp-cli lacks. Falling back to a stock PATH copy means the
+// index quietly degrades to the slow per-folder path, so on the desktop
+// (AppImage exe-dir, macOS bundle, dev tree) we point at the patched binary
+// automatically — no FUJI_AFT needed. FUJI_AFT still overrides (Android).
 func AftBin() string {
 	if p := os.Getenv("FUJI_AFT"); p != "" {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		home + "/.local/bin/aft-mtp-cli-part",
+		home + "/Source/aft-partial/build/cli/aft-mtp-cli",
+	}
+	// release bundles ship the patched binary next to the app binary
+	if exe, err := os.Executable(); err == nil {
+		candidates = append([]string{filepath.Join(filepath.Dir(exe), "aft-mtp-cli-part")}, candidates...)
+	}
+	for _, c := range candidates {
+		if st, err := os.Stat(c); err == nil && st.Mode()&0o111 != 0 {
+			return c
+		}
+	}
+	if p, err := exec.LookPath("aft-mtp-cli-part"); err == nil {
 		return p
 	}
 	return "aft-mtp-cli"
