@@ -272,9 +272,13 @@ type ui struct {
 	videoTexH  int32
 	videoBar   sdl.Rect
 
-	gridTop        int
+	gridScrollY    int32
 	lastHint       int
 	lastGridCursor int
+	userCols       int  // grid columns; 0 = auto (width-derived)
+	scrubDrag      bool // dragging the timeline scrubber
+	tl             timeline
+	rescanMsgUntil int // frameN until which the rescan note shows
 
 	impDest   string
 	impAlbum  string
@@ -321,6 +325,32 @@ func loadUserScale() {
 func saveUserScale() {
 	_ = os.MkdirAll(filepath.Dir(uiScalePath()), 0o755)
 	_ = os.WriteFile(uiScalePath(), []byte(fmt.Sprintf("%.2f", userScale)), 0o644)
+}
+
+func gridColsPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "fuji-cull", "grid-cols")
+}
+
+func (u *ui) loadUserCols() {
+	if raw, err := os.ReadFile(gridColsPath()); err == nil {
+		if v, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && v >= 1 && v <= 12 {
+			u.userCols = v
+		}
+	}
+}
+
+func (u *ui) setUserCols(n int) {
+	if n < 1 {
+		n = 1
+	}
+	if n > 12 {
+		n = 12
+	}
+	u.userCols = n
+	u.tl.rows = nil // force relayout
+	_ = os.MkdirAll(filepath.Dir(gridColsPath()), 0o755)
+	_ = os.WriteFile(gridColsPath(), []byte(strconv.Itoa(n)), 0o644)
 }
 
 // videoPlayer is what the UI needs from an embedded player; satisfied by
@@ -468,6 +498,7 @@ func run(app *cull.App, apiBase string, decodeAhead, decodeBehind int) error {
 	if err := u.reloadFonts(); err != nil {
 		return fmt.Errorf("font %s: %w", fontPath, err)
 	}
+	u.loadUserCols()
 	log.Printf("gui: %d turbo decode workers", workers)
 
 	// Second GL context, shared with the renderer's, for mpv's zero-copy
@@ -579,6 +610,10 @@ func (u *ui) frame() bool {
 			u.drawViewer()
 			u.drawHeader()
 			u.drawStrip()
+		}
+		if u.frameN < u.rescanMsgUntil {
+			w, h := u.outSize()
+			u.text(u.font, "catalog cache dropped — restart to re-index the card", colAmber, w/2, h/2, true)
 		}
 	}
 
@@ -1022,10 +1057,22 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 				u.mode = modeViewer
 				return true
 			case sdl.K_UP:
-				u.nav(u.cursor - u.gridCols())
+				u.gridRowStep(-1)
 				return true
 			case sdl.K_DOWN:
-				u.nav(u.cursor + u.gridCols())
+				u.gridRowStep(1)
+				return true
+			case sdl.K_PAGEUP:
+				u.gridDayJump(-1)
+				return true
+			case sdl.K_PAGEDOWN:
+				u.gridDayJump(1)
+				return true
+			case sdl.K_LEFTBRACKET:
+				u.setUserCols(u.gridColCount() - 1) // fewer cols = bigger thumbs
+				return true
+			case sdl.K_RIGHTBRACKET:
+				u.setUserCols(u.gridColCount() + 1)
 				return true
 			}
 		}
@@ -1096,6 +1143,13 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 				u.nav(u.cursor + 1)
 			}
 		case sdl.K_r:
+			if e.Keysym.Mod&sdl.KMOD_CTRL != 0 {
+				// Ctrl+R: drop the catalog cache; re-index on next launch.
+				if u.app.Rescan() {
+					u.rescanMsgUntil = u.frameN + 240
+				}
+				break
+			}
 			s := u.shots[u.cursor]
 			u.pool.mu.Lock()
 			delete(u.pool.done, s.ID)
@@ -1134,9 +1188,9 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 			return true
 		}
 		if u.mode == modeGrid {
-			u.gridTop -= int(e.Y) * 2
-			if u.gridTop < 0 {
-				u.gridTop = 0
+			u.gridScrollY -= int32(e.Y) * sc(90)
+			if u.gridScrollY < 0 {
+				u.gridScrollY = 0
 			}
 			return true
 		}
@@ -1152,6 +1206,11 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 			if e.Type == sdl.MOUSEBUTTONDOWN {
 				mx, my := int32(float64(e.X)*dpr+0.5), int32(float64(e.Y)*dpr+0.5)
 				if u.mode == modeGrid {
+					if u.scrubHit(mx) {
+						u.scrubDrag = true
+						u.scrubTo(my)
+						return true
+					}
 					if idx := u.gridClick(mx, my); idx >= 0 {
 						if idx == u.cursor {
 							u.mode = modeViewer // second click on selected opens it
@@ -1185,9 +1244,14 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 				}
 			} else {
 				u.panning = false
+				u.scrubDrag = false
 			}
 		}
 	case *sdl.MouseMotionEvent:
+		if u.scrubDrag {
+			u.scrubTo(int32(float64(e.Y)*dpr + 0.5))
+			return true
+		}
 		if u.panning {
 			u.tx = u.panStartTx[0] + float64(e.X)*dpr - float64(u.panStart[0])
 			u.ty = u.panStartTx[1] + float64(e.Y)*dpr - float64(u.panStart[1])

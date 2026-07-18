@@ -250,6 +250,54 @@
     background: var(--amber); z-index: 2;
   }
   .cell.current { outline: 2px solid var(--fg); outline-offset: -2px; }
+  /* date group headers span the whole row */
+  .mhdr, .dhdr { grid-column: 1 / -1; }
+  .mhdr {
+    color: var(--fg); font-size: 22px; letter-spacing: .01em;
+    padding: 20px 4px 2px; content-visibility: visible;
+  }
+  .dhdr {
+    color: var(--dim); font-size: 13px;
+    padding: 10px 4px 4px; content-visibility: visible;
+  }
+  /* grid toolbar (columns + rescan), floats top-right over the grid */
+  #gridBar {
+    position: fixed; top: 44px; right: 14px; z-index: 6;
+    display: none; gap: 8px; align-items: center;
+    background: rgba(12,13,11,.82); padding: 5px 8px; border: 1px solid var(--line);
+  }
+  #grid.show ~ #gridBar, #gridBar.show { display: flex; }
+  #gridBar button {
+    font: inherit; background: none; color: var(--dim);
+    border: 1px solid var(--line); padding: 2px 9px; cursor: pointer; min-width: 26px;
+  }
+  #gridBar button:hover { color: var(--fg); border-color: var(--dim); }
+  #gridBar #colVal { color: var(--fg); min-width: 14px; text-align: center; }
+  /* immich-style date scrubber on the right edge */
+  #scrub {
+    position: fixed; top: 44px; bottom: 0; right: 0; width: 62px; z-index: 6;
+    display: none; opacity: 0; transition: opacity .18s;
+    touch-action: none; user-select: none;
+  }
+  #scrub.show { display: block; }
+  #scrub.active { opacity: 1; }
+  .scrubLabel {
+    position: absolute; right: 8px; color: var(--dim); font-size: 11px;
+    transform: translateY(-50%); pointer-events: none; white-space: nowrap;
+  }
+  #scrubHandle {
+    position: absolute; right: 3px; width: 40px; height: 40px;
+    border-radius: 50%; background: #3a3d39; color: var(--fg);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; cursor: grab; transform: translateY(0);
+  }
+  #scrubHandle:active { cursor: grabbing; }
+  #scrubBubble {
+    position: absolute; right: 50px; padding: 6px 12px;
+    background: rgba(20,22,20,.95); color: var(--fg); font-size: 13px;
+    border-radius: 13px; white-space: nowrap; display: none; transform: translateY(-50%);
+  }
+  #scrubBubble.show { display: block; }
   button.grid-toggle {
     font: inherit; letter-spacing: .12em;
     background: none; color: var(--dim);
@@ -314,6 +362,16 @@
     </div>
 
     <div id="grid"><div class="cells" id="gridCells"></div></div>
+    <div id="gridBar">
+      <button id="colMinus" title="fewer columns">−</button>
+      <span id="colVal">5</span>
+      <button id="colPlus" title="more columns">+</button>
+      <button id="rescanBtn" title="re-read the whole card index — takes effect on the next connect">RESCAN</button>
+    </div>
+    <div id="scrub">
+      <div id="scrubBubble"></div>
+      <div id="scrubHandle">⇕</div>
+    </div>
 
     <div id="perfHud"></div>
     <div id="toast"></div>
@@ -883,65 +941,205 @@ async function syncThumbs() {
     setTimeout(syncThumbs, gridOpen ? 2000 : 4000);
 }
 
-/* ── full-screen grid timeline ────────────────────────────── */
-let gridOpen = false, cells = [], gridColsCache = 0;
+/* ── full-screen grid timeline (Immich-style: date groups + scrubber) ─── */
+let gridOpen = false, cells = [];
+let gridColsN = Math.min(8, Math.max(2, +localStorage.getItem("gridCols") || 5));
+let monthMarks = [];   // [{el, key, short}] one per month band, for the scrubber
+
+// en-US so day headers read "Wed, Jul 15, 2026" — matches the Android app
+// and the Immich reference (month before day) across clients
+const DAYFMT = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+const MONFMT = new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric" });
+const MONSHORT = new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric" });
+
+function dayKey(s) { return s.date || s.folder; }         // grouping key
+function monthKey(s) { return s.date ? s.date.slice(0, 7) : s.folder; }
+function fmtDay(key) { const d = new Date(key + "T00:00:00"); return isNaN(d) ? key : DAYFMT.format(d); }
+function fmtMonth(key) { const d = new Date(key + "-01T00:00:00"); return isNaN(d) ? key : MONFMT.format(d); }
+function fmtMonthShort(key) { const d = new Date(key + "-01T00:00:00"); return isNaN(d) ? key : MONSHORT.format(d); }
+
+function applyCols() {
+  $("gridCells").style.gridTemplateColumns = "repeat(" + gridColsN + ", 1fr)";
+  $("colVal").textContent = gridColsN;
+}
 
 function buildGrid() {
   if (cells.length) return;
+  applyCols();
   const frag = document.createDocumentFragment();
-  cells = shots.map((s, i) => {
+  monthMarks = [];
+  let curMonth = " ", curDay = " ";
+  cells = new Array(shots.length);
+  shots.forEach((s, i) => {
+    const mk = monthKey(s), dk = dayKey(s);
+    if (mk !== curMonth) {
+      curMonth = mk; curDay = " ";
+      const mh = document.createElement("div");
+      mh.className = "mhdr"; mh.textContent = fmtMonth(mk);
+      frag.appendChild(mh);
+      monthMarks.push({ el: mh, key: mk, short: fmtMonthShort(mk) });
+    }
+    if (dk !== curDay) {
+      curDay = dk;
+      const dh = document.createElement("div");
+      dh.className = "dhdr"; dh.textContent = fmtDay(dk);
+      frag.appendChild(dh);
+    }
     const c = document.createElement("div");
     c.className = "cell" + (s.kind === "video" ? " video" : "");
     c.title = s.folder + "/" + s.base;
+    c.dataset.i = i;                       // shot index for hit-testing
     c.onclick = () => nav(i);
     c.ondblclick = () => { nav(i); toggleGrid(false); };
     if (thumbStates[i] === "1") c.appendChild(thumbImg(i));
     if (immichStates[i] === "1") c.appendChild(upBadge());
     frag.appendChild(c);
-    return c;
+    cells[i] = c;
   });
   $("gridCells").appendChild(frag);
-  window.addEventListener("resize", () => { gridColsCache = 0; });
 
-  // Tell the sweep which region the viewport is showing so blank areas the
-  // user scrolls to fill first.
+  // steer the sweep at the visible region; headers break the old row math,
+  // so hit-test the viewport centre for the .cell under it instead
   let hintTimer = null;
   $("grid").addEventListener("scroll", () => {
+    positionScrub();
     clearTimeout(hintTimer);
     hintTimer = setTimeout(() => {
-      const g = $("grid");
-      const rowH = cells[0].offsetHeight + 4;
-      const idx = Math.min(shots.length - 1,
-        Math.max(0, Math.round((g.scrollTop + g.clientHeight / 2) / rowH) * gridCols()));
-      api("/api/thumbhint", { index: idx }).catch(() => {});
+      const idx = visibleCenterShot();
+      if (idx >= 0) api("/api/thumbhint", { index: idx }).catch(() => {});
     }, 250);
   }, { passive: true });
+
+  buildScrub();
+  window.addEventListener("resize", () => { if (gridOpen) layoutScrub(); });
 }
 
-function gridCols() {
-  if (gridColsCache) return gridColsCache;
-  if (!cells.length) return 1;
-  const top = cells[0].offsetTop;
-  let n = 0;
-  while (n < cells.length && cells[n].offsetTop === top) n++;
-  return (gridColsCache = Math.max(1, n));
+// shot index nearest the viewport centre (walks a few px if a header is dead-centre)
+function visibleCenterShot() {
+  const r = $("grid").getBoundingClientRect();
+  const x = r.left + r.width / 2;
+  for (let dy = 0; dy < r.height / 2; dy += 24) {
+    for (const y of (dy ? [r.top + r.height / 2 - dy, r.top + r.height / 2 + dy] : [r.top + r.height / 2])) {
+      const el = document.elementFromPoint(x, y);
+      const cell = el && el.closest && el.closest(".cell");
+      if (cell && cell.dataset.i !== undefined) return +cell.dataset.i;
+    }
+  }
+  return -1;
+}
+
+function gridCols() { return gridColsN; }
+
+function setCols(n) {
+  gridColsN = Math.min(8, Math.max(2, n));
+  localStorage.setItem("gridCols", gridColsN);
+  applyCols();
+  if (gridOpen) { layoutScrub(); if (cells[cursor]) cells[cursor].scrollIntoView({ block: "center" }); }
+}
+
+/* ── date scrubber ─────────────────────────────────────────── */
+let scrubDragging = false, scrubHideTimer = null;
+
+function buildScrub() {
+  const rail = $("scrub");
+  // month labels (rebuilt on layout); handle drag
+  const handle = $("scrubHandle");
+  const onMove = clientY => {
+    const r = rail.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (clientY - r.top) / r.height));
+    const g = $("grid");
+    g.scrollTop = frac * (g.scrollHeight - g.clientHeight);
+    showScrub(true);
+    updateBubble(frac);
+  };
+  const down = e => {
+    scrubDragging = true; e.preventDefault();
+    $("scrubBubble").classList.add("show");
+    onMove(e.touches ? e.touches[0].clientY : e.clientY);
+  };
+  const move = e => { if (scrubDragging) onMove(e.touches ? e.touches[0].clientY : e.clientY); };
+  const up = () => { if (!scrubDragging) return; scrubDragging = false; $("scrubBubble").classList.remove("show"); scheduleScrubHide(); };
+  handle.addEventListener("mousedown", down);
+  handle.addEventListener("touchstart", down, { passive: false });
+  // dragging on the rail body jumps too
+  rail.addEventListener("mousedown", e => { if (e.target === handle) return; down(e); });
+  window.addEventListener("mousemove", move);
+  window.addEventListener("touchmove", move, { passive: false });
+  window.addEventListener("mouseup", up);
+  window.addEventListener("touchend", up);
+}
+
+function layoutScrub() {
+  const rail = $("scrub");
+  // wipe old labels
+  rail.querySelectorAll(".scrubLabel").forEach(n => n.remove());
+  const g = $("grid");
+  const span = Math.max(1, g.scrollHeight - g.clientHeight);
+  const railH = rail.clientHeight, minGap = 20;
+  let lastY = -1e9;
+  for (const m of monthMarks) {
+    const frac = Math.min(1, m.el.offsetTop / span);
+    const y = frac * (railH - 40) + 20;
+    if (y - lastY < minGap) continue;
+    lastY = y;
+    const lbl = document.createElement("div");
+    lbl.className = "scrubLabel"; lbl.textContent = m.short;
+    lbl.style.top = y + "px";
+    rail.appendChild(lbl);
+  }
+  positionScrub();
+}
+
+function positionScrub() {
+  const g = $("grid"), rail = $("scrub");
+  const span = Math.max(1, g.scrollHeight - g.clientHeight);
+  const frac = Math.min(1, g.scrollTop / span);
+  $("scrubHandle").style.transform = "translateY(" + (frac * (rail.clientHeight - 40)) + "px)";
+  if (!scrubDragging) { showScrub(true); scheduleScrubHide(); }
+}
+
+function updateBubble(frac) {
+  const g = $("grid");
+  const target = frac * (g.scrollHeight - g.clientHeight);
+  // nearest month band at/above the target scroll position
+  let label = monthMarks.length ? monthMarks[0].short : "";
+  for (const m of monthMarks) { if (m.el.offsetTop <= target + 2) label = m.short; else break; }
+  const b = $("scrubBubble");
+  b.textContent = label;
+  b.style.top = (frac * ($("scrub").clientHeight - 40) + 20) + "px";
+}
+
+function showScrub(on) {
+  $("scrub").classList.toggle("active", on);
+}
+function scheduleScrubHide() {
+  clearTimeout(scrubHideTimer);
+  scrubHideTimer = setTimeout(() => { if (!scrubDragging) showScrub(false); }, 1200);
 }
 
 function toggleGrid(open = !gridOpen) {
   if (open) buildGrid();
   gridOpen = open;
   $("grid").classList.toggle("show", open);
+  $("gridBar").classList.toggle("show", open);
+  $("scrub").classList.toggle("show", open);
   $("gridBtn").classList.toggle("active", open);
-  gridColsCache = 0;
   if (open) {
     lastScrolledCursor = -1; // force one scroll-to-cursor on open
     decorate();
     if (cells[cursor]) cells[cursor].scrollIntoView({ block: "center" });
+    requestAnimationFrame(layoutScrub);
   } else {
     show(cursor, false); // mount the shot the grid landed on
   }
 }
 $("gridBtn").onclick = () => toggleGrid();
+$("colMinus").onclick = () => setCols(gridColsN - 1);
+$("colPlus").onclick = () => setCols(gridColsN + 1);
+$("rescanBtn").onclick = () => {
+  api("/api/rescan").then(() => toast("card will be fully re-indexed on the next connect"))
+    .catch(e => toast("rescan failed: " + e.message));
+};
 
 /* nav moves the cursor. In the grid it only updates selection/decorations —
    full-size pulls would be wasteful while skimming thumbnails; the viewer
