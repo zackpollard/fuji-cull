@@ -46,30 +46,24 @@ the code every client links:
 11. **`ffmpegBin()` env override + `PostersAvailable()`**: engine poster
     path is now configurable (desktop keeps using system ffmpeg).
 
-### ⚠ Action needed: point the bulk path at the PATCHED aft
+### Patched aft for the bulk path — RESOLVED (2026-07-18)
 
 The new bulk commands (`lsprops-all`, `ls-handles`, `info-id`, `lsprops`)
-live in the patched aft and run through the **stock** aft resolver
-(`FUJI_AFT` / PATH `aft-mtp-cli`), NOT the `-part` binary
-(`FUJI_AFT_PART`). So:
+live in the patched aft, and are invoked through the bulk resolver
+`mtpcli.AftBin()`. That resolver now **prefers the patched binary
+automatically** (the same locations `mtppart.Bin()` checks: the bundle's
+exe-dir `aft-mtp-cli-part`, `~/.local/bin/aft-mtp-cli-part`, the dev tree
+build, or a PATH `aft-mtp-cli-part`), falling back to stock `aft-mtp-cli`.
+The patched build is a superset, so using it for the batch commands is safe.
+This covers the AppImage (already worked via its PATH symlink), the **macOS
+bundle** (finds `MacOS/aft-mtp-cli-part` next to the binary), and the
+**headless web binary on the dev machine** (finds
+`~/Source/aft-partial/build/cli/aft-mtp-cli`) — no `FUJI_AFT` needed.
 
-- **AppImage** — already covered: `build-appimage.sh` symlinks
-  `usr/bin/aft-mtp-cli → aft-mtp-cli-part` and `AppRun` prepends `usr/bin`
-  to PATH, so `LookPath` finds the patched binary. Fast index works. ✅
-- **macOS bundle** — NOT covered: it ships only `aft-mtp-cli-part`. On a Mac
-  with Homebrew `android-file-transfer`, `LookPath("aft-mtp-cli")` finds the
-  UNPATCHED Homebrew binary → the bulk commands error and silently fall back
-  to the slow per-folder `lsext` path. **Fix:** in `build-macos.sh`, also
-  place an `aft-mtp-cli` (symlink or copy of the patched binary) in the
-  bundle's `MacOS/` dir, or set `FUJI_AFT` to the patched path in
-  `setupBundleEnv`.
-- **Headless web binary run on the desktop** — same: set `FUJI_AFT` to the
-  patched binary (or install a patched `aft-mtp-cli` in PATH), otherwise the
-  fast index / dates / handle-diff never engage.
-
-Rebuild note: the vendored patch (`third_party/aft-partial/partial-reads.patch`)
-gained the new commands + capture dates, so the desktop bundles must rebuild
-aft from the current patch.
+Rebuild note still applies: the vendored patch
+(`third_party/aft-partial/partial-reads.patch`) gained the new commands +
+capture dates, so the desktop bundles must rebuild aft from the current
+patch (the CI/release scripts already build from it).
 
 ---
 
