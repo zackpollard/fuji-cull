@@ -81,6 +81,7 @@ type shotDTO struct {
 	Kind   string            `json:"kind"`
 	Files  map[string]string `json:"files"`
 	Size   int64             `json:"size"`
+	Date   string            `json:"date"`
 }
 
 func (a *App) counts() map[string]int {
@@ -125,7 +126,7 @@ func (a *App) handler() http.Handler {
 		for i, s := range a.catalog.Shots {
 			shots[i] = shotDTO{
 				ID: s.ID, Folder: s.Folder, Base: s.Base, Kind: s.Kind,
-				Files: s.Files, Size: s.TotalSize(),
+				Files: s.Files, Size: s.TotalSize(), Date: s.Date,
 			}
 		}
 		writeJSON(w, map[string]any{
@@ -153,6 +154,7 @@ func (a *App) handler() http.Handler {
 			"bulkSick":  bulkSick,
 			"partSick":  partSick,
 			"streaming": a.prefetch.StreamingAvailable() && !a.importer.Status().Running,
+			"posters":   a.prefetch.PostersAvailable(),
 		})
 	})
 
@@ -320,6 +322,62 @@ func (a *App) handler() http.Handler {
 			return
 		}
 		a.prefetch.SetCursor(req.Index)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// First 8 MB of a video for client-side poster extraction — via the
+	// shared partial-read session, so it never steals the streaming claim
+	// or triggers stream readahead. 503 = link busy, try again later.
+	mux.HandleFunc("GET /api/videohead", func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("id")
+		s := a.catalog.Get(id)
+		if s == nil || s.Kind != "video" {
+			http.Error(w, "unknown video", http.StatusNotFound)
+			return
+		}
+		var ext string
+		for _, e := range []string{"MOV", "MP4"} {
+			if _, ok := s.Files[e]; ok {
+				ext = e
+				break
+			}
+		}
+		data, err := a.prefetch.VideoHead(s, ext)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "video/quicktime")
+		w.Write(data)
+	})
+
+	// Poster extraction reads one frame off a streaming session and is done;
+	// without an explicit release the session idles for 20s holding the
+	// camera claim — per video, the sweep freezes for the janitor interval.
+	mux.HandleFunc("POST /api/releasestream", func(w http.ResponseWriter, r *http.Request) {
+		a.prefetch.CloseStream()
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// Drops the catalog cache so the next engine start re-reads the whole
+	// card index (covers card swaps and in-camera deletions).
+	mux.HandleFunc("POST /api/rescan", func(w http.ResponseWriter, r *http.Request) {
+		if cb, ok := a.backend.(*cliBackend); ok && cb.cacheDir != "" {
+			os.Remove(cb.cachePath())
+			log.Printf("catalog cache dropped — full rescan on next engine start")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// App-side events (poster jobs, UI-level failures) join the engine log
+	// so the diagnostics screen tells one coherent story.
+	mux.HandleFunc("POST /api/log", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Msg string `json:"msg"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) == nil && req.Msg != "" {
+			log.Printf("app: %.300s", req.Msg)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 

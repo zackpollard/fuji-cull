@@ -33,33 +33,82 @@ class EngineService : Service() {
         private set
     private var usb: UsbDeviceConnection? = null
     val usbAttached: Boolean get() = usb != null
+    private var fakeMode = false
     var claimDiag: String = ""
         private set
 
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (engine == null) {
-            try {
-                val dataDir = File(filesDir, "data").apply { mkdirs() }
-                val bufDir = File(cacheDir, "buffer").apply { mkdirs() }
-                val aft = File(applicationInfo.nativeLibraryDir, "libaftcli.so")
-                val prefs = getSharedPreferences("immich", MODE_PRIVATE)
-                engine = Mobile.start(
-                    dataDir.absolutePath,
-                    bufDir.absolutePath,
-                    if (aft.exists()) aft.absolutePath else "",
-                    prefs.getString("url", "") ?: "",
-                    prefs.getString("key", "") ?: "",
-                )
-                startError = null
-                Log.i(TAG, "engine started on port ${engine?.port()}")
-            } catch (t: Throwable) {
-                startError = t.message ?: t.toString()
-                Log.e(TAG, "engine start failed", t)
-            }
-        }
+        if (engine == null) startEngine()
         return START_STICKY
+    }
+
+    private fun startEngine() {
+        try {
+            val dataDir = File(filesDir, "data").apply { mkdirs() }
+            val bufDir = File(cacheDir, "buffer").apply { mkdirs() }
+            // bundled minimal ffmpeg: engine-side posters, including the
+            // 4:2:2 10-bit HEVC no Android codec decodes
+            val ffmpeg = File(applicationInfo.nativeLibraryDir, "libffmpeg.so")
+            if (ffmpeg.exists()) Mobile.setEnv("FUJI_FFMPEG", ffmpeg.absolutePath)
+            val prefs = getSharedPreferences("immich", MODE_PRIVATE)
+            engine = Mobile.start(
+                dataDir.absolutePath,
+                bufDir.absolutePath,
+                aftPath(),
+                prefs.getString("url", "") ?: "",
+                prefs.getString("key", "") ?: "",
+                prefs.getString("session", "") ?: "",
+                prefs.getBoolean("stack", false),
+            )
+            startError = null
+            usb?.let { engine?.setUSBFD(it.fileDescriptor.toLong()) }
+            if (fakeMode && usb == null) {
+                // dummy fd: aft-sim ignores it, but it routes the engine
+                // through the same fd code paths the phone uses (images via
+                // the persistent parts session, --device-fd plumbing)
+                engine?.setUSBFD(0)
+            }
+            Log.i(TAG, "engine started on port ${engine?.port()}")
+        } catch (t: Throwable) {
+            startError = t.message ?: t.toString()
+            Log.e(TAG, "engine start failed", t)
+        }
+    }
+
+    /** Applies new settings by restarting the engine (USB fd survives). */
+    fun restartEngine() {
+        try {
+            engine?.stop()
+        } catch (_: Throwable) {
+        }
+        engine = null
+        startError = null
+        startEngine()
+        engine?.logEvent("engine restarted (settings applied)")
+    }
+
+    /**
+     * Resolves the camera binary. Dev builds fall back to the aft-sim fake
+     * (libaftsim.so) when a populated fakecam dir exists in external files —
+     * the emulator harness pushes a corpus there to test the whole app
+     * without hardware.
+     */
+    private fun aftPath(): String {
+        val fakeRoot = File(getExternalFilesDir(null), "fakecam")
+        val sim = File(applicationInfo.nativeLibraryDir, "libaftsim.so")
+        if (sim.exists() && fakeRoot.isDirectory && !fakeRoot.list().isNullOrEmpty()) {
+            // must go through Go's env, not Os.setenv — Go snapshots environ
+            // at startup and exec'd children inherit the Go copy
+            Mobile.setEnv("FUJI_FAKE_ROOT", fakeRoot.absolutePath)
+            Mobile.setEnv("FUJI_FAKE_SETUP_MS", "400")
+            Log.w(TAG, "FAKE CAMERA MODE: $fakeRoot")
+            fakeMode = true
+            return sim.absolutePath
+        }
+        val aft = File(applicationInfo.nativeLibraryDir, "libaftcli.so")
+        return if (aft.exists()) aft.absolutePath else ""
     }
 
     /** Hands a freshly-opened camera connection to the engine. */
@@ -75,13 +124,16 @@ class EngineService : Service() {
             "intf$i(class ${intf.interfaceClass})=${if (ok) "claimed" else "BUSY"}"
         }
         Log.i(TAG, "usb fd ${connection.fileDescriptor} attached: $claimDiag")
+        engine?.logEvent("usb attached fd=${connection.fileDescriptor} $claimDiag")
         engine?.setUSBFD(connection.fileDescriptor.toLong())
         // connectedDevice FGS is only permitted while we hold a USB device
         // grant, so promotion has to wait until a camera is attached
         try {
             startForeground(1, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            engine?.logEvent("foreground service promoted")
         } catch (t: Throwable) {
             Log.w(TAG, "foreground promotion failed, staying background", t)
+            engine?.logEvent("foreground promotion failed: ${t.message}")
         }
     }
 
@@ -93,6 +145,31 @@ class EngineService : Service() {
         usb = null
         claimDiag = ""
         Log.i(TAG, "usb detached")
+        engine?.logEvent("usb detached")
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // swiping the app away kills the process WITHOUT onDestroy — stop
+        // the engine now so its camera sessions close gracefully (a hard-
+        // killed MTP session wedges the X-H2S: URB timeouts on reconnect)
+        Log.i(TAG, "task removed — stopping engine gracefully")
+        runCatching { engine?.stop() }
+        engine = null
+        usb?.close()
+        usb = null
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
+
+    /**
+     * Rebuilds the USB connection in place: the Android-level equivalent of
+     * a replug, for links that stay dead after a device reset.
+     */
+    fun rebuildUsb(device: android.hardware.usb.UsbDevice, connection: UsbDeviceConnection) {
+        engine?.logEvent("usb: rebuilding connection (link unresponsive)")
+        usb?.close()
+        usb = null
+        attachUsb(device, connection)
     }
 
     override fun onDestroy() {

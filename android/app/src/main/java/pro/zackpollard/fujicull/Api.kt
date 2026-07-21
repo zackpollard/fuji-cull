@@ -8,15 +8,19 @@ import java.net.URL
 import java.net.URLEncoder
 
 /** One catalog entry, as served by /api/state. */
-data class Shot(val id: String, val folder: String, val base: String, val kind: String)
+data class Shot(val id: String, val folder: String, val base: String, val kind: String, val date: String = "")
 
 /** Thin client for the engine's loopback HTTP API. */
+@androidx.compose.runtime.Stable
 class Api(private val port: Long) {
     val base get() = "http://127.0.0.1:$port"
 
-    fun thumbUrl(id: String, orient: Char = '0'): String {
+    fun thumbUrl(id: String, orient: Char = '0', tick: Int = 0): String {
         var u = "$base/api/thumb?id=" + URLEncoder.encode(id, "UTF-8")
         if (orient > '1') u += "&o=$orient"
+        // resume counter: busts Coil's per-URL cache so cells that failed
+        // while the process was frozen retry after foregrounding
+        if (tick > 0) u += "&rt=$tick"
         return u
     }
 
@@ -26,13 +30,21 @@ class Api(private val port: Long) {
     fun videoUrl(id: String): String =
         "$base/api/video?id=" + URLEncoder.encode(id, "UTF-8")
 
+    fun videoHeadUrl(id: String): String =
+        "$base/api/videohead?id=" + URLEncoder.encode(id, "UTF-8")
+
     suspend fun state(): Pair<List<Shot>, MutableMap<String, String>> = withContext(Dispatchers.IO) {
         val o = JSONObject(get("/api/state"))
         val shots = mutableListOf<Shot>()
         val arr = o.getJSONArray("shots")
         for (i in 0 until arr.length()) {
             val s = arr.getJSONObject(i)
-            shots.add(Shot(s.getString("id"), s.getString("folder"), s.getString("base"), s.getString("kind")))
+            shots.add(
+                Shot(
+                    s.getString("id"), s.getString("folder"), s.getString("base"),
+                    s.getString("kind"), s.optString("date"),
+                ),
+            )
         }
         val decisions = mutableMapOf<String, String>()
         val d = o.getJSONObject("decisions")
@@ -53,8 +65,38 @@ class Api(private val port: Long) {
         post("/api/import", JSONObject().put("dest", dest).put("album", album))
     }
 
-    suspend fun importStatus(): JSONObject = withContext(Dispatchers.IO) {
-        JSONObject(get("/api/status")).getJSONObject("import")
+    suspend fun status(): JSONObject = withContext(Dispatchers.IO) {
+        JSONObject(get("/api/status"))
+    }
+
+    /** Sweep origin for thumbnail work — call as the grid viewport moves. */
+    suspend fun thumbHint(index: Int) = withContext(Dispatchers.IO) {
+        runCatching { post("/api/thumbhint", JSONObject().put("index", index)) }
+    }
+
+    /** Buffer-window center — call as the viewer page changes. */
+    suspend fun cursor(index: Int) = withContext(Dispatchers.IO) {
+        runCatching { post("/api/cursor", JSONObject().put("index", index)) }
+    }
+
+    /** Clears a failed fetch so the engine tries the shot again now. */
+    suspend fun retryShot(id: String) = withContext(Dispatchers.IO) {
+        runCatching { post("/api/retry", JSONObject().put("id", id)) }
+    }
+
+    /** Hands the camera back after a one-shot stream use (poster grab). */
+    suspend fun releaseStream() = withContext(Dispatchers.IO) {
+        runCatching { post("/api/releasestream", JSONObject()) }
+    }
+
+    /** Adds an app-side event to the engine log (diagnostics screen). */
+    suspend fun logEvent(msg: String) = withContext(Dispatchers.IO) {
+        runCatching { post("/api/log", JSONObject().put("msg", msg)) }
+    }
+
+    /** Drops the catalog cache; takes effect on the next engine start. */
+    suspend fun rescan() = withContext(Dispatchers.IO) {
+        runCatching { post("/api/rescan", JSONObject()) }
     }
 
     private fun get(path: String): String {

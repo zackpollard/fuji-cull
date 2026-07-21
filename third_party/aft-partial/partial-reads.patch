@@ -1,8 +1,30 @@
 diff --git a/cli/Session.cpp b/cli/Session.cpp
-index 76980c3..5021a53 100644
+index 76980c3..57ba254 100644
 --- a/cli/Session.cpp
 +++ b/cli/Session.cpp
-@@ -138,6 +138,12 @@ namespace cli
+@@ -119,6 +119,21 @@ namespace cli
+ 			make_function([this]() -> void { List(true, true); }));
+ 		AddCommand("lsext-r", "<path> lists objects in <path> [extended info, recursive]",
+ 			make_function([this](const Path &path) -> void { List(path, true, true); }));
++		AddCommand("lsprops", "<path> bulk list via GetObjectPropList: handle size name",
++			make_function([this](const Path &path) -> void { ListProps(path); }));
++
++		AddCommand("lsprops-all", "bulk list EVERY object on the device: handle size parent name (3 requests total)",
++			make_function([this]() -> void { ListPropsAll(); }));
++
++		AddCommand("lsprops-probe", "<path> tries several GetObjectPropList request shapes and reports what the device returns",
++			make_function([this](const Path &path) -> void { ListPropsProbe(path); }));
++
++		AddCommand("ls-handles", "<path> object handles only — one GetObjectHandles request",
++			make_function([this](const Path &path) -> void { ListHandles(path); }));
++
++		AddCommand("info-id", "<id> prints: handle size filename",
++			make_function([this](mtp::u32 id) -> void { InfoId(mtp::ObjectId(id)); }));
++
+ 		AddCommand("ls-objects", "<object-format-hex>",
+ 			make_function([this](const std::string &format) -> void { ListObjects(format); }));
+ 
+@@ -138,6 +153,12 @@ namespace cli
  		AddCommand("get-id", "<id> <dst> get object by id to <dst>",
                          make_function([this](mtp::u32 id, const LocalPath &dst) -> void { Get(dst, mtp::ObjectId(id)); }));
  
@@ -15,7 +37,160 @@ index 76980c3..5021a53 100644
  		AddCommand("get-thumb", "<file> downloads thumbnail for file",
  			make_function([this](const Path &path) -> void { GetThumb(path); }));
  		AddCommand("get-thumb", "<file> <dst> downloads thumbnail to <dst>",
-@@ -694,6 +700,53 @@ namespace cli
+@@ -535,6 +556,152 @@ namespace cli
+ 	}
+ 
+ 
++	// ListProps lists a folder with sizes using TWO bulk GetObjectPropList
++	// requests instead of one GetObjectInfo round-trip per file — the
++	// difference between ~90s and ~1s on a 19k-file card.
++	void Session::ListProps(mtp::ObjectId parent)
++	{
++		using namespace mtp;
++		if (!_session->GetObjectPropertyListSupported())
++			throw std::runtime_error("GetObjectPropList not supported by device");
++		std::map<mtp::ObjectId, u64> sizes;
++		{
++			ByteArray data = _session->GetObjectPropertyList(parent, ObjectFormat::Any, ObjectProperty::ObjectSize, 0, 1);
++			ObjectPropertyListParser<u64> parser;
++			parser.Parse(data, [&sizes](ObjectId objectId, ObjectProperty, u64 size)
++			{ sizes[objectId] = size; });
++		}
++		ByteArray data = _session->GetObjectPropertyList(parent, ObjectFormat::Any, ObjectProperty::ObjectFilename, 0, 1);
++		ObjectPropertyListParser<std::string> parser;
++		size_t parsed = 0;
++		parser.Parse(data, [&sizes, &parsed](ObjectId objectId, ObjectProperty, const std::string &name)
++		{
++			++parsed;
++			auto it = sizes.find(objectId);
++			print(std::left, width(objectId, 10), " ", it != sizes.end()? it->second: 0, " ", name);
++		});
++		// a device can "support" the opcode yet answer with a dataset the
++		// parser cannot read — fail loudly so callers fall back visibly
++		// instead of listing folders as silently empty
++		if (parsed == 0 && data.size() > 12)
++			throw std::runtime_error("GetObjectPropList: " + std::to_string(data.size()) + " bytes but no parseable entries");
++	}
++
++	// ListPropsAll dumps every object on the device in three card-wide
++	// GetObjectPropList requests (handle=0xFFFFFFFF "all objects", depth 0 —
++	// the only shape the X-H2S honors: depth queries return
++	// UnsupportedSpecByDepth, format filters SpecificationByFormatUnsupported).
++	// 19,702 objects arrived in a single 689 KB response in field testing.
++	void Session::ListPropsAll()
++	{
++		using namespace mtp;
++		if (!_session->GetObjectPropertyListSupported())
++			throw std::runtime_error("GetObjectPropList not supported by device");
++		const ObjectId all(0xffffffffu);
++		std::map<mtp::ObjectId, u64> sizes;
++		{
++			ByteArray data = _session->GetObjectPropertyList(all, ObjectFormat::Any, ObjectProperty::ObjectSize, 0, 0);
++			ObjectPropertyListParser<u64> parser;
++			parser.Parse(data, [&sizes](ObjectId objectId, ObjectProperty, u64 size)
++			{ sizes[objectId] = size; });
++		}
++		std::map<mtp::ObjectId, u64> parents;
++		{
++			ByteArray data = _session->GetObjectPropertyList(all, ObjectFormat::Any, ObjectProperty::ParentObject, 0, 0);
++			ObjectPropertyListParser<u64> parser;
++			parser.Parse(data, [&parents](ObjectId objectId, ObjectProperty, u64 parent)
++			{ parents[objectId] = parent; });
++		}
++		std::map<mtp::ObjectId, std::string> dates;
++		try
++		{
++			// capture dates for timeline grouping; best-effort (some
++			// devices refuse the property card-wide)
++			ByteArray data = _session->GetObjectPropertyList(all, ObjectFormat::Any, ObjectProperty::DateCreated, 0, 0);
++			ObjectPropertyListParser<std::string> parser;
++			parser.Parse(data, [&dates](ObjectId objectId, ObjectProperty, const std::string &date)
++			{ dates[objectId] = date; });
++		}
++		catch (const std::exception &)
++		{ }
++		ByteArray data = _session->GetObjectPropertyList(all, ObjectFormat::Any, ObjectProperty::ObjectFilename, 0, 0);
++		ObjectPropertyListParser<std::string> parser;
++		size_t parsed = 0;
++		parser.Parse(data, [&sizes, &parents, &dates, &parsed](ObjectId objectId, ObjectProperty, const std::string &name)
++		{
++			++parsed;
++			auto sz = sizes.find(objectId);
++			auto pr = parents.find(objectId);
++			auto dt = dates.find(objectId);
++			print(std::left,
++				width(objectId, 10), " ",
++				sz != sizes.end()? sz->second: 0, " ",
++				pr != parents.end()? pr->second: 0, " ",
++				(dt != dates.end() && !dt->second.empty())? dt->second: std::string("-"), " ",
++				name);
++		});
++		if (parsed == 0 && data.size() > 12)
++			throw std::runtime_error("GetObjectPropList(all): " + std::to_string(data.size()) + " bytes but no parseable entries");
++	}
++
++	// ListPropsProbe tries several GetObjectPropList parameter shapes —
++	// devices are picky about which combinations they honor (the X-H2S
++	// answers the folder/depth-1 shape with an empty dataset), and this
++	// reports what each shape yields so the right one can be adopted.
++	void Session::ListPropsProbe(mtp::ObjectId parent)
++	{
++		using namespace mtp;
++		auto probe = [this](const std::string &name, ObjectId handle, ObjectFormat fmt, ObjectProperty prop, u32 group, u32 depth)
++		{
++			try
++			{
++				ByteArray data = _session->GetObjectPropertyList(handle, fmt, prop, group, depth);
++				size_t parsed = 0;
++				try
++				{
++					ObjectPropertyListParser<std::string> parser;
++					parser.Parse(data, [&parsed](ObjectId, ObjectProperty, const std::string &) { ++parsed; });
++					print("probe ", name, ": ", data.size(), " bytes, ", parsed, " entries");
++				}
++				catch (const std::exception &ex)
++				{ print("probe ", name, ": ", data.size(), " bytes, parse error after ", parsed, ": ", ex.what()); }
++			}
++			catch (const std::exception &ex)
++			{ print("probe ", name, ": request error: ", ex.what()); }
++		};
++		probe("folder/fname/d1   ", parent, ObjectFormat::Any, ObjectProperty::ObjectFilename, 0, 1);
++		probe("folder/allprops/d1", parent, ObjectFormat::Any, ObjectProperty::All, 0, 1);
++		probe("h0/fname/dAll     ", ObjectId(0), ObjectFormat::Any, ObjectProperty::ObjectFilename, 0, 0xffffffffu);
++		probe("hAll/fname/d0     ", ObjectId(0xffffffffu), ObjectFormat::Any, ObjectProperty::ObjectFilename, 0, 0);
++		probe("folder/fname/jpeg/d1", parent, ObjectFormat::ExifJpeg, ObjectProperty::ObjectFilename, 0, 1);
++	}
++
++	// ListHandles dumps a folder's object handles — a single always-supported
++	// MTP request, enabling cheap change detection against a cached catalog.
++	void Session::ListHandles(mtp::ObjectId parent)
++	{
++		using namespace mtp;
++		auto handles = _session->GetObjectHandles(_cs, mtp::ObjectFormat::Any, parent);
++		for(auto objectId : handles.ObjectHandles)
++			print(objectId.Id);
++	}
++
++	// InfoId prints handle, size and filename for one object. Size prefers
++	// the 64-bit ObjectSize property (GetObjectInfo caps at 4 GiB).
++	void Session::InfoId(mtp::ObjectId id)
++	{
++		using namespace mtp;
++		auto info = _session->GetObjectInfo(id);
++		u64 size = info.ObjectCompressedSize;
++		try
++		{ size = _session->GetObjectIntegerProperty(id, ObjectProperty::ObjectSize); }
++		catch (const std::exception &)
++		{ }
++		std::string date = !info.CaptureDate.empty()? info.CaptureDate: info.ModificationDate;
++		print(std::left, width(id.Id, 10), " ", size, " ",
++			date.empty()? std::string("-"): date, " ", info.Filename);
++	}
++
+ 	void Session::List(mtp::ObjectId parent, bool extended, bool recursive, const std::string &prefix)
+ 	{
+ 		using namespace mtp;
+@@ -694,6 +861,53 @@ namespace cli
  		}
  	}
  
@@ -70,7 +245,7 @@ index 76980c3..5021a53 100644
  	{
  		mtp::ObjectFormat format = static_cast<mtp::ObjectFormat>(_session->GetObjectIntegerProperty(srcId, mtp::ObjectProperty::ObjectFormat));
 diff --git a/cli/Session.h b/cli/Session.h
-index a2df6b6..83049ce 100644
+index a2df6b6..7d48032 100644
 --- a/cli/Session.h
 +++ b/cli/Session.h
 @@ -109,6 +109,8 @@ namespace cli
@@ -82,8 +257,34 @@ index a2df6b6..83049ce 100644
  		void GetThumb(const mtp::ObjectId srcId);
  		void GetThumb(const LocalPath &dst, mtp::ObjectId srcId)
  		{ Get(dst, srcId, true); }
+@@ -128,6 +130,25 @@ namespace cli
+ 		{ _cd = Resolve(path); }
+ 		void CurrentDirectory();
+ 
++		void ListProps(mtp::ObjectId parent);
++
++		void ListProps(const Path &path)
++		{ ListProps(Resolve(path)); }
++
++		void ListHandles(mtp::ObjectId parent);
++
++		void ListHandles(const Path &path)
++		{ ListHandles(Resolve(path)); }
++
++		void InfoId(mtp::ObjectId id);
++
++		void ListPropsAll();
++
++		void ListPropsProbe(mtp::ObjectId parent);
++
++		void ListPropsProbe(const Path &path)
++		{ ListPropsProbe(Resolve(path)); }
++
+ 		void List(bool extended, bool recursive)
+ 		{ return List(_cd, extended, recursive); }
+ 
 diff --git a/cli/cli.cpp b/cli/cli.cpp
-index 8907ee9..e0491e4 100644
+index 8907ee9..1caee8a 100644
 --- a/cli/cli.cpp
 +++ b/cli/cli.cpp
 @@ -74,6 +74,7 @@ int main(int argc, char **argv)
@@ -129,7 +330,25 @@ index 8907ee9..e0491e4 100644
  			"-l\t--device-list\tlist devices\n"
  			"-V\t--version\tshow version information"
  			);
-@@ -207,7 +213,15 @@ int main(int argc, char **argv)
+@@ -184,7 +190,16 @@ int main(int argc, char **argv)
+ 		exit(0);
+ 	}
+ 
+-	usb::ContextPtr ctx(new usb::Context);
++	usb::ContextPtr ctx;
++	try
++	{ ctx = std::make_shared<usb::Context>(); }
++	catch (const std::exception & ex)
++	{
++		// no /sys/dev scan rights (android): --device-fd needs no context
++		if (deviceFd < 0)
++			throw;
++		error("usb context unavailable: ", ex.what(), " (continuing with --device-fd)");
++	}
+ 	if (listDevices) {
+ 		for (usb::DeviceDescriptorPtr desc : ctx->GetDevices())
+ 		{
+@@ -207,7 +222,27 @@ int main(int argc, char **argv)
  
  	try
  	{
@@ -139,7 +358,19 @@ index 8907ee9..e0491e4 100644
 +		{
 +			// android usb host api: java opens the device and hands us the fd
 +			auto desc = std::make_shared<usb::DeviceDescriptor>(deviceFd);
-+			device = Device::Open(ctx, desc, claimInterface, resetDevice);
++			if (resetDevice)
++			{
++				// best-effort software replug for a degraded link (urb
++				// errors); a failed reset must not block the open
++				try
++				{
++					if (auto d = desc->TryOpen(ctx))
++						d->Reset();
++				}
++				catch (const std::exception &ex)
++				{ error("device reset failed: ", ex.what()); }
++			}
++			device = Device::Open(ctx, desc, claimInterface, false);
 +		}
 +		else
 +			device = Device::FindFirst(ctx, deviceFilter, claimInterface, resetDevice);
@@ -147,7 +378,7 @@ index 8907ee9..e0491e4 100644
  		{
  			error("device not found (filter = '", deviceFilter, "'");
 diff --git a/mtp/backend/linux/usb/DeviceDescriptor.cpp b/mtp/backend/linux/usb/DeviceDescriptor.cpp
-index d57d5d0..e2db149 100644
+index d57d5d0..8efa386 100644
 --- a/mtp/backend/linux/usb/DeviceDescriptor.cpp
 +++ b/mtp/backend/linux/usb/DeviceDescriptor.cpp
 @@ -25,6 +25,7 @@
@@ -158,7 +389,7 @@ index d57d5d0..e2db149 100644
  
  namespace mtp { namespace usb
  {
-@@ -39,6 +40,23 @@ namespace mtp { namespace usb
+@@ -39,6 +40,74 @@ namespace mtp { namespace usb
  		_configurationValue = Directory::ReadInt(path + "/bConfigurationValue", 10);
  	}
  
@@ -177,12 +408,63 @@ index d57d5d0..e2db149 100644
 +		_deviceNumber		= -1;
 +		_controlEp			= std::make_shared<Endpoint>(0, blob[7], EndpointDirection::Both, EndpointType::Control);
 +		_configurationValue	= blob[18 + 5]; // first configuration descriptor
++
++		// no sysfs on this path: synthesize configurations/interfaces/endpoints
++		// from the raw descriptor set that usbfs returns after the device
++		// descriptor (Device::Open finds MTP by class 6 subclass 1)
++		int confIndex = -1, currentInterface = -1;
++		u8 klass = 0, subclass = 0;
++		std::vector<EndpointPtr> eps;
++		auto flushInterface = [&]() {
++			if (confIndex >= 0 && currentInterface >= 0)
++				AddInterface(confIndex, currentInterface,
++					std::make_shared<Interface>(currentInterface, klass, subclass, std::move(eps)));
++			eps.clear();
++			currentInterface = -1;
++		};
++		size_t off = 0;
++		while (off + 2 <= blob.size())
++		{
++			u8 dlen = blob[off], dtype = blob[off + 1];
++			if (dlen < 2 || off + dlen > blob.size())
++				break;
++			switch (dtype)
++			{
++			case 2: // configuration
++				flushInterface();
++				++confIndex;
++				break;
++			case 4: // interface, alt-setting 0 only
++				flushInterface();
++				if (blob[off + 3] == 0)
++				{
++					currentInterface = blob[off + 2];
++					klass = blob[off + 5];
++					subclass = blob[off + 6];
++				}
++				break;
++			case 5: // endpoint
++				if (currentInterface >= 0 && dlen >= 7)
++				{
++					u8 addr = blob[off + 2];
++					u8 attrs = blob[off + 3] & 3;
++					u16 mps = blob[off + 4] | (blob[off + 5] << 8);
++					eps.push_back(std::make_shared<Endpoint>(addr, mps,
++						(addr & 0x80) ? EndpointDirection::In : EndpointDirection::Out,
++						static_cast<EndpointType>(attrs)));
++				}
++				break;
++			}
++			off += dlen;
++		}
++		flushInterface();
++		debug("fd descriptor parse: ", GetConfigurationsCount(), " configuration(s)");
 +	}
 +
  	DevicePtr DeviceDescriptor::Open(ContextPtr context)
  	{
  		DevicePtr device = TryOpen(context);
-@@ -49,6 +67,13 @@ namespace mtp { namespace usb
+@@ -49,6 +118,13 @@ namespace mtp { namespace usb
  
  	DevicePtr DeviceDescriptor::TryOpen(ContextPtr context)
  	{
@@ -197,7 +479,7 @@ index d57d5d0..e2db149 100644
  		snprintf(fname, sizeof(fname), "/dev/bus/usb/%03d/%03u", _busId, _deviceNumber);
  		int fd = open(fname, O_RDWR);
 diff --git a/mtp/backend/linux/usb/DeviceDescriptor.h b/mtp/backend/linux/usb/DeviceDescriptor.h
-index 01682a1..400e93a 100644
+index 01682a1..e8d0eb8 100644
 --- a/mtp/backend/linux/usb/DeviceDescriptor.h
 +++ b/mtp/backend/linux/usb/DeviceDescriptor.h
 @@ -30,6 +30,7 @@ namespace mtp { namespace usb
@@ -208,7 +490,19 @@ index 01682a1..400e93a 100644
  	public:
  		Configuration() { }
  
-@@ -63,7 +64,10 @@ namespace mtp { namespace usb
+@@ -49,6 +50,11 @@ namespace mtp { namespace usb
+ 		{
+ 			_interfaces[index] = std::make_shared<Interface>(index, path);
+ 		}
++
++		void AddInterface(int index, InterfacePtr iface)
++		{
++			_interfaces[index] = iface;
++		}
+ 	};
+ 
+ 	class DeviceDescriptor
+@@ -63,7 +69,10 @@ namespace mtp { namespace usb
  		EndpointPtr						_controlEp;
  		ByteArray						_descriptor;
  
@@ -219,6 +513,24 @@ index 01682a1..400e93a 100644
  		DeviceDescriptor(int busId, const std::string &path);
  		~DeviceDescriptor();
  
+@@ -92,6 +101,17 @@ namespace mtp { namespace usb
+ 			conf->AddInterface(interface, path);
+ 		}
+ 
++		void AddInterface(int confIndex, int interface, InterfacePtr iface)
++		{
++			ConfigurationPtr &conf = _configurationMap[confIndex];
++			if (!conf)
++			{
++				conf = std::make_shared<Configuration>();
++				_configuration.push_back(conf);
++			}
++			conf->AddInterface(interface, iface);
++		}
++
+ 		ByteArray GetDescriptor() const
+ 		{ return _descriptor; }
+ 	};
 diff --git a/mtp/backend/linux/usb/Endpoint.h b/mtp/backend/linux/usb/Endpoint.h
 index 9c40999..79945e2 100644
 --- a/mtp/backend/linux/usb/Endpoint.h
@@ -232,6 +544,20 @@ index 9c40999..79945e2 100644
  
  		u8 GetAddress() const
  		{ return _addr; }
+diff --git a/mtp/backend/linux/usb/Interface.h b/mtp/backend/linux/usb/Interface.h
+index cb93ca3..336c040 100644
+--- a/mtp/backend/linux/usb/Interface.h
++++ b/mtp/backend/linux/usb/Interface.h
+@@ -45,6 +45,9 @@ namespace mtp { namespace usb
+ 
+ 	public:
+ 		Interface(int index, const std::string &path);
++		// built straight from raw configuration descriptors (fd path: no sysfs)
++		Interface(int index, u8 klass, u8 subclass, std::vector<EndpointPtr> endpoints):
++			_endpoints(std::move(endpoints)), _class(klass), _subclass(subclass), _index(index) { }
+ 
+ 		u8 GetClass() const
+ 		{ return _class; }
 diff --git a/mtp/backend/posix/Exception.cpp b/mtp/backend/posix/Exception.cpp
 index d9caed9..736da2c 100644
 --- a/mtp/backend/posix/Exception.cpp

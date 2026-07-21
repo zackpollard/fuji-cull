@@ -91,6 +91,9 @@ func Start(o Options) (*App, http.Handler, error) {
 	if cache == "" {
 		cache = filepath.Join(home, ".cache", "fuji-cull", o.SessionName)
 	}
+	if cb, ok := backend.(*cliBackend); ok {
+		cb.cacheDir = cache // catalog cache lives with the image buffer
+	}
 
 	// Flags win; otherwise prefill from whatever the last import ran with.
 	remembered := loadImportDefaults()

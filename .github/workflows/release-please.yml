@@ -130,6 +130,43 @@ jobs:
             mkdir -p "android/app/src/main/jniLibs/$abi"
             cp "/tmp/aft/build-$abi/cli/aft-mtp-cli" "android/app/src/main/jniLibs/$abi/libaftcli.so"
           done
+      - name: cache bundled ffmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg-android
+          key: ffmpeg-n7.1-ndk-26.3.11579264-v2
+      - name: build minimal ffmpeg (posters — decodes the 4:2:2 hevc no android codec can)
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        env:
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/26.3.11579264
+        run: |
+          git clone --depth 1 --branch n7.1 https://git.ffmpeg.org/ffmpeg.git /tmp/ffm
+          NDKBIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
+          for pair in aarch64:arm64-v8a x86_64:x86_64; do
+            arch=${pair%%:*}; abi=${pair##*:}
+            extra=""
+            [ "$arch" = "x86_64" ] && extra="--disable-x86asm"
+            cd /tmp/ffm && (make distclean >/dev/null 2>&1 || true)
+            ./configure --cc="$NDKBIN/${arch}-linux-android29-clang" \
+              --enable-cross-compile --target-os=android --arch=$arch \
+              --disable-everything --disable-autodetect --disable-doc \
+              --disable-ffplay --disable-ffprobe --disable-network --disable-debug \
+              $extra --enable-small \
+              --enable-decoder=hevc,h264 --enable-demuxer=mov \
+              --enable-encoder=mjpeg --enable-muxer=image2 \
+              --enable-filter=scale,format --enable-protocol=file --enable-swscale \
+              --pkg-config=/bin/true >/dev/null
+            make -j"$(nproc)" ffmpeg_g >/dev/null
+            mkdir -p "$GITHUB_WORKSPACE/ffmpeg-android/$abi"
+            "$NDKBIN/llvm-strip" ffmpeg_g -o "$GITHUB_WORKSPACE/ffmpeg-android/$abi/libffmpeg.so"
+          done
+      - name: bundle ffmpeg
+        run: |
+          for abi in arm64-v8a x86_64; do
+            mkdir -p "android/app/src/main/jniLibs/$abi"
+            cp "ffmpeg-android/$abi/libffmpeg.so" "android/app/src/main/jniLibs/$abi/"
+          done
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"

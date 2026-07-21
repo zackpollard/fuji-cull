@@ -54,6 +54,12 @@ func RunBatch(ctx context.Context, cmds ...string) (string, error) {
 		}
 		out, err = runBatchOnce(ctx, cmds...)
 		if err == nil || !strings.Contains(out, "already used") {
+			if err != nil && TransportBroken(out) {
+				RequestReset()
+				NoteTransportResult(true)
+			} else if err == nil {
+				NoteTransportResult(false)
+			}
 			return out, err
 		}
 	}
@@ -67,6 +73,10 @@ func runBatchOnce(ctx context.Context, cmds ...string) (string, error) {
 	if f := USBFile(); f != nil {
 		args = append(args, "--device-fd", "3") // ExtraFiles[0] lands at fd 3
 		extra = []*os.File{f}
+		if ConsumeReset() {
+			args = append(args, "-R")
+			log.Printf("usb: link degraded — attempting device reset on this invocation")
+		}
 	}
 	c := exec.CommandContext(ctx, AftBin(), args...)
 	c.ExtraFiles = extra
@@ -96,6 +106,7 @@ func Ls(ctx context.Context, dir string) (string, error) {
 type Entry struct {
 	ObjectID string
 	Size     int64
+	Date     string // raw PTP or "YYYY-MM-DD ..." depending on source; "" unknown
 	Name     string
 }
 
@@ -116,7 +127,150 @@ func LsExt(ctx context.Context, dir string) ([]Entry, error) {
 		if err != nil {
 			continue
 		}
-		entries = append(entries, Entry{ObjectID: f[0], Size: size, Name: f[6]})
+		entries = append(entries, Entry{ObjectID: f[0], Size: size, Date: f[4], Name: f[6]})
+	}
+	return entries, nil
+}
+
+// LsProps lists a camera directory via bulk MTP GetObjectPropList (patched
+// aft "lsprops") — two round-trips per folder instead of one per FILE
+// (~90s → ~1s on a 19k-file card). Errors when the camera or binary lacks
+// support; callers fall back to LsExt.
+func LsProps(ctx context.Context, dir string) ([]Entry, error) {
+	out, err := RunBatch(ctx, fmt.Sprintf(`lsprops %q`, dir))
+	if err != nil {
+		return nil, err
+	}
+	var entries []Entry
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 {
+			continue
+		}
+		size, err := strconv.ParseInt(f[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		entries = append(entries, Entry{ObjectID: f[0], Size: size, Name: f[2]})
+	}
+	return entries, nil
+}
+
+// DirEntryID is a directory child with its object handle.
+type DirEntryID struct {
+	ObjectID string
+	Name     string
+}
+
+// LsIDs lists a directory's children with handles (parses ls "id\tname").
+func LsIDs(ctx context.Context, dir string) ([]DirEntryID, error) {
+	out, err := RunBatch(ctx, fmt.Sprintf(`cd %q`, dir), "ls")
+	if err != nil {
+		return nil, err
+	}
+	var entries []DirEntryID
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		if _, err := strconv.ParseUint(f[0], 10, 64); err != nil {
+			continue
+		}
+		entries = append(entries, DirEntryID{ObjectID: f[0], Name: f[1]})
+	}
+	return entries, nil
+}
+
+// AllEntry is one object from a card-wide bulk listing.
+type AllEntry struct {
+	ObjectID string
+	Size     int64
+	ParentID string
+	Date     string // raw PTP datetime ("20260714T101530"), "" if unknown
+	Name     string
+}
+
+// LsPropsAll lists EVERY object on the device in three bulk requests — the
+// only GetObjectPropList shape the X-H2S honors (handle 0xFFFFFFFF, depth
+// 0). 19,702 objects arrived in one 689 KB response in field testing.
+func LsPropsAll(ctx context.Context) ([]AllEntry, error) {
+	out, err := RunBatch(ctx, "lsprops-all")
+	if err != nil {
+		return nil, err
+	}
+	var entries []AllEntry
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 5 {
+			continue
+		}
+		size, err := strconv.ParseInt(f[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		if _, err := strconv.ParseUint(f[0], 10, 64); err != nil {
+			continue
+		}
+		date := f[3]
+		if date == "-" {
+			date = ""
+		}
+		entries = append(entries, AllEntry{ObjectID: f[0], Size: size, ParentID: f[2], Date: date, Name: f[4]})
+	}
+	return entries, nil
+}
+
+// LsHandles returns a folder's object handles — one always-supported MTP
+// request, for diffing against a cached catalog.
+func LsHandles(ctx context.Context, dir string) ([]string, error) {
+	out, err := RunBatch(ctx, fmt.Sprintf(`ls-handles %q`, dir))
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) != 1 {
+			continue
+		}
+		if _, err := strconv.ParseUint(f[0], 10, 64); err != nil {
+			continue
+		}
+		ids = append(ids, f[0])
+	}
+	return ids, nil
+}
+
+// InfoByIDs fetches name+size for specific handles (new files found by a
+// handle diff) in one invocation.
+func InfoByIDs(ctx context.Context, ids []string) ([]Entry, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	cmds := make([]string, 0, len(ids))
+	for _, id := range ids {
+		cmds = append(cmds, "info-id "+id)
+	}
+	out, err := RunBatch(ctx, cmds...)
+	if err != nil {
+		return nil, err
+	}
+	var entries []Entry
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 {
+			continue
+		}
+		size, err := strconv.ParseInt(f[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		date := f[2]
+		if date == "-" {
+			date = ""
+		}
+		entries = append(entries, Entry{ObjectID: f[0], Size: size, Date: date, Name: f[3]})
 	}
 	return entries, nil
 }

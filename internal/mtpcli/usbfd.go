@@ -2,7 +2,10 @@ package mtpcli
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -30,6 +33,7 @@ func SetUSBFD(fd int) {
 	} else {
 		usbFile = os.NewFile(uintptr(fd), "usb-device")
 	}
+	brokenStreak = 0 // fresh connection gets the benefit of the doubt
 	usbMu.Unlock()
 }
 
@@ -38,7 +42,61 @@ func SetUSBFD(fd int) {
 func ClearUSBFD() {
 	usbMu.Lock()
 	usbFile = nil
+	resetPending = false
 	usbMu.Unlock()
+}
+
+var resetPending bool
+
+// RequestReset schedules a best-effort USBDEVFS_RESET (aft -R) on the next
+// invocation — the software equivalent of replugging the cable, for links
+// that reconnect in a degraded state (URB submissions failing).
+func RequestReset() {
+	usbMu.Lock()
+	resetPending = true
+	usbMu.Unlock()
+}
+
+// ConsumeReset reports whether the next invocation should reset the device,
+// clearing the flag (one attempt per request).
+func ConsumeReset() bool {
+	usbMu.Lock()
+	defer usbMu.Unlock()
+	if resetPending && usbFile != nil {
+		resetPending = false
+		return true
+	}
+	return false
+}
+
+// TransportBroken recognizes stderr from a degraded USB link that a device
+// reset may cure (seen after the camera drops off the bus and reconnects).
+func TransportBroken(out string) bool {
+	return strings.Contains(out, "submitting urb") || strings.Contains(out, "REAPURB") ||
+		strings.Contains(out, "timeout reaping") || strings.Contains(out, "DISCARDURB")
+}
+
+var brokenStreak int
+
+// NoteTransportResult tracks consecutive broken-transport failures so the
+// app can tell "camera momentarily busy" from "link is dead" (a wedged
+// camera after an unclean shutdown survives even USBDEVFS_RESET and needs
+// a cable replug or power cycle).
+func NoteTransportResult(broken bool) {
+	usbMu.Lock()
+	if broken {
+		brokenStreak++
+	} else {
+		brokenStreak = 0
+	}
+	usbMu.Unlock()
+}
+
+// LinkDead reports a persistently unresponsive USB link.
+func LinkDead() bool {
+	usbMu.Lock()
+	defer usbMu.Unlock()
+	return brokenStreak >= 3
 }
 
 // USBFile returns the shared descriptor wrapper, or nil in normal
@@ -49,10 +107,33 @@ func USBFile() *os.File {
 	return usbFile
 }
 
-// AftBin resolves the stock aft-mtp-cli binary (env override for platforms
-// without a PATH-installed copy, e.g. Android's nativeLibraryDir).
+// AftBin resolves the aft binary for BULK batch commands. It prefers the
+// locally-patched aft (the same binary mtppart uses for partial reads):
+// that build is a superset of stock aft-mtp-cli — it serves every batch
+// command AND the bulk index commands (lsprops-all, ls-handles, info-id)
+// that stock aft-mtp-cli lacks. Falling back to a stock PATH copy means the
+// index quietly degrades to the slow per-folder path, so on the desktop
+// (AppImage exe-dir, macOS bundle, dev tree) we point at the patched binary
+// automatically — no FUJI_AFT needed. FUJI_AFT still overrides (Android).
 func AftBin() string {
 	if p := os.Getenv("FUJI_AFT"); p != "" {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		home + "/.local/bin/aft-mtp-cli-part",
+		home + "/Source/aft-partial/build/cli/aft-mtp-cli",
+	}
+	// release bundles ship the patched binary next to the app binary
+	if exe, err := os.Executable(); err == nil {
+		candidates = append([]string{filepath.Join(filepath.Dir(exe), "aft-mtp-cli-part")}, candidates...)
+	}
+	for _, c := range candidates {
+		if st, err := os.Stat(c); err == nil && st.Mode()&0o111 != 0 {
+			return c
+		}
+	}
+	if p, err := exec.LookPath("aft-mtp-cli-part"); err == nil {
 		return p
 	}
 	return "aft-mtp-cli"

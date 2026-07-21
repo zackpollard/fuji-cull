@@ -2,11 +2,13 @@ package cull
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/zack/fuji-tools/internal/gphoto"
 	"github.com/zack/fuji-tools/internal/mtpcli"
@@ -34,7 +36,29 @@ type listing struct {
 	Folder   string // base folder name, e.g. "151_FUJI"
 	Name     string // e.g. "DSCF0001.JPG"
 	Size     int64
+	Date     string // capture day "2006-01-02"; "" unknown
 	ObjectID string // MTP object ID (cli backend)
+}
+
+// captureDay normalizes PTP datetimes ("20260714T101530") and lsext-style
+// dates ("2026-07-14 ...") to a grouping day, or "".
+func captureDay(raw string) string {
+	if len(raw) >= 10 && raw[4] == '-' && raw[7] == '-' {
+		return raw[:10]
+	}
+	if len(raw) >= 8 {
+		allDigits := true
+		for _, r := range raw[:8] {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return raw[:4] + "-" + raw[4:6] + "-" + raw[6:8]
+		}
+	}
+	return ""
 }
 
 type fetchItem struct {
@@ -74,6 +98,9 @@ func buildCatalog(items []listing) *Catalog {
 		if it.ObjectID != "" {
 			s.ObjectIDs[ext] = it.ObjectID
 		}
+		if s.Date == "" && it.Date != "" {
+			s.Date = it.Date
+		}
 	}
 
 	ordered := make([]*photo.Shot, 0, len(shots))
@@ -104,56 +131,243 @@ func buildCatalog(items []listing) *Catalog {
 /* ── aft-mtp-cli backend ─────────────────────────────────── */
 
 type cliBackend struct {
-	roots []string // camera-absolute DCIM paths, e.g. "/SLOT 1/DCIM"
+	roots    []string // camera-absolute DCIM paths, e.g. "/SLOT 1/DCIM"
+	cacheDir string   // catalog cache home; empty disables caching
+	probed   bool     // lsprops-probe fired once this run
+}
+
+// catalogCache persists folder listings between runs; cached folders
+// refresh via a one-request handle diff on attach (new files fetched
+// individually, in-camera deletions dropped) — minutes down to seconds on
+// a 19k-file card. POST /api/rescan (or deleting the file) forces a full
+// re-read.
+type catalogCache struct {
+	Version int                  `json:"version"`
+	Folders map[string][]listing `json:"folders"` // key: root + "/" + folder
+}
+
+// cacheVersion bumps when listing gains fields (v2: capture dates) so old
+// caches take one fast re-list instead of serving incomplete data.
+const cacheVersion = 2
+
+func (b *cliBackend) cachePath() string {
+	return filepath.Join(b.cacheDir, "catalog-cache.json")
+}
+
+func (b *cliBackend) loadCache() *catalogCache {
+	c := &catalogCache{Folders: map[string][]listing{}}
+	if b.cacheDir == "" {
+		return c
+	}
+	raw, err := os.ReadFile(b.cachePath())
+	if err != nil {
+		return c
+	}
+	if json.Unmarshal(raw, c) != nil || c.Folders == nil || c.Version != cacheVersion {
+		c.Folders = map[string][]listing{}
+		c.Version = cacheVersion
+	}
+	return c
+}
+
+func (b *cliBackend) saveCache(c *catalogCache) {
+	if b.cacheDir == "" {
+		return
+	}
+	c.Version = cacheVersion
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return
+	}
+	tmp := b.cachePath() + ".tmp"
+	if os.WriteFile(tmp, raw, 0o644) == nil {
+		_ = os.Rename(tmp, b.cachePath())
+	}
+}
+
+// listFolder prefers the bulk lsprops path (2 MTP round-trips per folder);
+// an error disables it for the run (old binary / unsupported camera) and
+// an empty result falls back for just that folder.
+func (b *cliBackend) listFolder(ctx context.Context, dir string, bulkOK *bool) ([]mtpcli.Entry, error) {
+	if *bulkOK {
+		entries, err := mtpcli.LsProps(ctx, dir)
+		if err == nil && len(entries) > 0 {
+			return entries, nil
+		}
+		if err != nil {
+			log.Printf("bulk listing unavailable (falling back to per-file lsext): %.150v", err)
+			*bulkOK = false
+		} else {
+			log.Printf("bulk listing returned no entries for %s — using lsext for it", dir)
+			if !b.probed {
+				// one-shot diagnostic: which GetObjectPropList shapes does
+				// this camera actually honor? (the field log answers it)
+				b.probed = true
+				if out, perr := mtpcli.RunBatch(ctx, fmt.Sprintf("lsprops-probe %q", dir)); perr == nil {
+					log.Printf("lsprops probe results:\n%s", strings.TrimSpace(out))
+				}
+			}
+		}
+	}
+	return mtpcli.LsExt(ctx, dir)
+}
+
+// deltaFolder refreshes a cached folder listing with a handle diff: one
+// GetObjectHandles request (always supported) plus per-file info for NEW
+// handles only. Re-listing the highest folder in full cost ~40s per attach
+// on a 7,983-file folder; a no-change diff costs one round-trip. Deletions
+// in camera drop out of the catalog automatically.
+func (b *cliBackend) deltaFolder(ctx context.Context, dir, rel, folder string, cached []listing) ([]listing, bool, error) {
+	ids, err := mtpcli.LsHandles(ctx, dir)
+	if err != nil {
+		return nil, false, err
+	}
+	live := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		live[id] = true
+	}
+	known := make(map[string]bool, len(cached))
+	keep := make([]listing, 0, len(cached))
+	removed := 0
+	for _, l := range cached {
+		known[l.ObjectID] = true
+		if live[l.ObjectID] {
+			keep = append(keep, l)
+		} else {
+			removed++
+		}
+	}
+	var newIDs []string
+	for _, id := range ids {
+		if !known[id] {
+			newIDs = append(newIDs, id)
+		}
+	}
+	if len(newIDs) > 0 {
+		entries, err := mtpcli.InfoByIDs(ctx, newIDs)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, e := range entries {
+			if _, _, ok := photo.SplitMedia(e.Name); !ok {
+				continue
+			}
+			keep = append(keep, listing{
+				Dir: rel, Folder: folder, Name: e.Name,
+				Size: e.Size, Date: captureDay(e.Date), ObjectID: e.ObjectID,
+			})
+		}
+	}
+	changed := removed > 0 || len(newIDs) > 0
+	if changed {
+		log.Printf("  %s: +%d new, -%d removed (handle diff)", rel, len(newIDs), removed)
+	}
+	return keep, changed, nil
 }
 
 func (b *cliBackend) Name() string { return "cli" }
 
 func (b *cliBackend) Discover(ctx context.Context, progress func(stage string, files int)) ([]listing, error) {
+	cache := b.loadCache()
+	usedCache, cacheDirty := 0, false
+	bulkOK := true
+	// Card-wide bulk listing (3 MTP requests for EVERYTHING — the only
+	// GetObjectPropList shape the X-H2S honors) fetched lazily on the
+	// first uncached folder; entries grouped by parent handle.
+	var byParent map[string][]mtpcli.AllEntry
+	allTried := false
 	var out []listing
 	for _, root := range b.roots {
 		progress(root, len(out))
-		lsOut, err := mtpcli.Ls(ctx, root)
+		dirEntries, err := mtpcli.LsIDs(ctx, root)
 		if err != nil {
 			log.Printf("camera root %s: %v (skipping)", root, err)
 			continue
 		}
-		folderSet := map[string]struct{}{}
-		for _, m := range photo.FolderRe.FindAllString(lsOut, -1) {
-			folderSet[m] = struct{}{}
+		folderIDs := map[string]string{}
+		var folders []string
+		for _, d := range dirEntries {
+			if photo.FolderRe.MatchString(d.Name) {
+				folders = append(folders, d.Name)
+				folderIDs[d.Name] = d.ObjectID
+			}
 		}
-		if len(folderSet) == 0 {
+		if len(folders) == 0 {
 			log.Printf("camera root %s: no NNN_FUJI folders (skipping)", root)
 			continue
 		}
-		folders := make([]string, 0, len(folderSet))
-		for k := range folderSet {
-			folders = append(folders, k)
-		}
 		sort.Strings(folders)
 		for _, folder := range folders {
-			progress(filepath.Join(trimSlash(root), folder), len(out))
-			entries, err := mtpcli.LsExt(ctx, root+"/"+folder)
-			if err != nil {
-				return nil, fmt.Errorf("list %s/%s: %w", root, folder, err)
-			}
+			key := root + "/" + folder
 			rel := filepath.Join(trimSlash(root), folder)
-			count := 0
-			for _, e := range entries {
-				if _, _, ok := photo.SplitMedia(e.Name); !ok {
+			progress(rel, len(out))
+			// cached folders refresh via a one-request handle diff; only
+			// never-seen folders pay for a listing
+			if cached, ok := cache.Folders[key]; ok {
+				fresh, changed, err := b.deltaFolder(ctx, root+"/"+folder, rel, folder, cached)
+				if err == nil {
+					out = append(out, fresh...)
+					usedCache++
+					if changed {
+						cache.Folders[key] = fresh
+						cacheDirty = true
+					}
 					continue
 				}
-				out = append(out, listing{
-					Dir: rel, Folder: folder, Name: e.Name,
-					Size: e.Size, ObjectID: e.ObjectID,
-				})
-				count++
+				log.Printf("  %s: handle diff failed (%v) — full re-list", rel, err)
 			}
-			log.Printf("  %s: %d files", rel, count)
+			if byParent == nil && !allTried {
+				allTried = true
+				if all, err := mtpcli.LsPropsAll(ctx); err == nil && len(all) > 0 {
+					byParent = make(map[string][]mtpcli.AllEntry, 64)
+					for _, e := range all {
+						byParent[e.ParentID] = append(byParent[e.ParentID], e)
+					}
+					log.Printf("catalog: card-wide bulk listing — %d objects in 3 requests", len(all))
+				} else if err != nil {
+					log.Printf("card-wide bulk listing unavailable (%.120v) — per-folder listing", err)
+				}
+			}
+			fresh := []listing{}
+			if group, ok := byParent[folderIDs[folder]]; byParent != nil && ok {
+				for _, e := range group {
+					if _, _, ok := photo.SplitMedia(e.Name); !ok {
+						continue
+					}
+					fresh = append(fresh, listing{
+						Dir: rel, Folder: folder, Name: e.Name,
+						Size: e.Size, Date: captureDay(e.Date), ObjectID: e.ObjectID,
+					})
+				}
+			} else {
+				entries, err := b.listFolder(ctx, root+"/"+folder, &bulkOK)
+				if err != nil {
+					return nil, fmt.Errorf("list %s/%s: %w", root, folder, err)
+				}
+				for _, e := range entries {
+					if _, _, ok := photo.SplitMedia(e.Name); !ok {
+						continue
+					}
+					fresh = append(fresh, listing{
+						Dir: rel, Folder: folder, Name: e.Name,
+						Size: e.Size, Date: captureDay(e.Date), ObjectID: e.ObjectID,
+					})
+				}
+			}
+			log.Printf("  %s: %d files", rel, len(fresh))
+			out = append(out, fresh...)
+			cache.Folders[key] = fresh
+			cacheDirty = true
 		}
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("no Fuji media found under camera roots %v", b.roots)
+	}
+	if usedCache > 0 {
+		log.Printf("catalog: %d folders served from cache (settings → full rescan to re-read)", usedCache)
+	}
+	if cacheDirty {
+		b.saveCache(cache)
 	}
 	return out, nil
 }

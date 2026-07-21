@@ -33,6 +33,7 @@ type Shot struct {
 	CameraDir string            // dir relative to the camera root, e.g. "SLOT 1/DCIM/151_FUJI"
 	Folder    string            // base folder name, e.g. "151_FUJI" (used for dest layout)
 	Base      string            // "DSCF0001"
+	Date      string            // capture day "2006-01-02" for timeline grouping; "" unknown
 	Kind      string            // "photo" | "video"
 	Files     map[string]string // upper-case ext (without dot) -> filename, e.g. "JPG" -> "DSCF0001.JPG"
 	Sizes     map[string]int64  // upper-case ext -> size in bytes

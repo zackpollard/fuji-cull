@@ -2,6 +2,7 @@ package cull
 
 import (
 	"context"
+	"os"
 
 	"github.com/zack/fuji-tools/internal/photo"
 )
@@ -19,8 +20,28 @@ func (a *App) Discovery() (stage string, files int, errMsg string) {
 	return a.discStage, a.discFiles, a.discErr
 }
 
+// Nudge pokes the fetch pipeline: breakers and backoffs become eligible for
+// an immediate probe. The mobile app calls it on foreground resume.
+func (a *App) Nudge() {
+	if a.isReady() {
+		a.prefetch.Nudge()
+	}
+}
+
 // Shots returns the catalog in display order. Only valid once Ready.
 func (a *App) Shots() []*photo.Shot { return a.catalog.Shots }
+
+// Rescan drops the catalog cache so the next engine start re-reads the whole
+// card index (card swaps, in-camera deletions). Like POST /api/rescan it
+// takes effect on restart — the running catalog is not rebuilt in place.
+// Returns false when the backend has no cache to drop (e.g. dir backend).
+func (a *App) Rescan() bool {
+	if cb, ok := a.backend.(*cliBackend); ok && cb.cacheDir != "" {
+		os.Remove(cb.cachePath())
+		return true
+	}
+	return false
+}
 
 // ShotIndex returns the catalog position of a shot ID, or -1.
 func (a *App) ShotIndex(id string) int {

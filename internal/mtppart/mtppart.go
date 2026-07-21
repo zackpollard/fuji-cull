@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/zack/fuji-tools/internal/mtpcli"
 )
 
 // Bin locates the patched binary; empty string when unavailable.
@@ -89,6 +91,9 @@ func GetParts(ctx context.Context, reqs []PartReq) error {
 		}
 	}
 	if err != nil {
+		if mtpcli.TransportBroken(out.String()) {
+			mtpcli.RequestReset()
+		}
 		return fmt.Errorf("get-part: %w; output: %.200s", err, out.String())
 	}
 	if len(reqs) == 1 {
