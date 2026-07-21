@@ -273,11 +273,29 @@ func (p *Prefetcher) SetCursor(i int) {
 	p.cond.Broadcast()
 }
 
+// thumbHintJump is how far the grid viewport must move (in catalog index)
+// before a settling hint aborts the in-flight sweep batch. Ordinary scrolling
+// nudges the hint tens of shots and keeps the batch; a scrub across the card is
+// thousands and should refocus immediately.
+const thumbHintJump = 150
+
 // SetThumbHint retargets the thumbnail sweep at the region the grid viewport
 // is showing, without moving the culling cursor.
 func (p *Prefetcher) SetThumbHint(i int) {
 	p.mu.Lock()
+	prev := p.thumbCursor
+	if prev < 0 {
+		prev = p.cursor
+	}
 	p.thumbCursor = i
+	// A fast scrub lands the viewport far from where the in-flight batch was
+	// picked; finishing ~150 now-offscreen heads before refocusing is exactly
+	// the lag you see waiting for thumbnails at the bottom. Abort it on a big
+	// jump so the loop re-picks nearest the new viewport (partial results are
+	// already banked; the shared parts session survives the cancel).
+	if d := i - prev; p.thumbCancel != nil && (d > thumbHintJump || d < -thumbHintJump) {
+		p.interruptThumbsLocked()
+	}
 	p.mu.Unlock()
 	p.cond.Broadcast()
 }
