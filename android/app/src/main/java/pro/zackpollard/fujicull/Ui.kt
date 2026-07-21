@@ -738,17 +738,22 @@ private fun GridCell(
     Box(
         Modifier.padding(1.dp).aspectRatio(1.48f).background(Color(0xFF1D201D)).clickable(onClick = onClick),
     ) {
+        val ctx = LocalContext.current
+        // build the Coil request once per cell and keep it stable while thumb
+        // state / orient stream in. a fresh ImageRequest each recomposition
+        // makes AsyncImage restart the load and churns allocations — that was
+        // the tail of slow frames during a fling.
+        val thumbReq = remember(shot.id, orientC) { thumbRequest(ctx, api, shot.id, orientC) }
         if (shot.kind == "video") {
             if (hasThumb) {
                 // engine-made poster (bundled ffmpeg) served like any thumb
                 AsyncImage(
-                    model = thumbRequest(LocalContext.current, api, shot.id, orientC),
+                    model = thumbReq,
                     contentDescription = shot.base,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
                 )
             } else {
-                val ctx = LocalContext.current
                 // memory first (composition-safe); disk stats on IO only
                 val poster by produceState(initialValue = Posters.fromMemory(shot), shot.id) {
                     while (value == null) {
@@ -772,7 +777,7 @@ private fun GridCell(
             Box(Modifier.fillMaxWidth().height(3.dp).background(Amber).align(Alignment.TopStart))
         } else if (hasThumb) {
             AsyncImage(
-                model = thumbRequest(LocalContext.current, api, shot.id, orientC),
+                model = thumbReq,
                 contentDescription = shot.base,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
@@ -836,7 +841,7 @@ private fun Viewer(
             Text("${pager.currentPage + 1}/${shots.size}", color = Dim)
         }
 
-        HorizontalPager(state = pager, modifier = Modifier.weight(1f), beyondViewportPageCount = 1) { page ->
+        HorizontalPager(state = pager, modifier = Modifier.weight(1f), beyondViewportPageCount = 2) { page ->
             val shot = shots[page]
             if (shot.kind == "video") {
                 VideoPlayer(api, shot, active = page == pager.currentPage)
