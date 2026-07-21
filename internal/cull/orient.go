@@ -236,18 +236,37 @@ func (p *Prefetcher) fetchOrientBatch(ctx context.Context, batch []*photo.Shot) 
 	canceled := ctx.Err() != nil || cctx.Err() != nil
 	cancel()
 
-	got, garbage := 0, 0
-	p.mu.Lock()
+	// Read + parse WITHOUT p.mu (disk + JPEG work must not block /api/thumb
+	// serving, which needs the same lock); apply map updates briefly after.
+	type orientOut struct {
+		id      string
+		orient  uint8
+		garbage bool
+	}
+	outs := make([]orientOut, len(batch))
 	for i, s := range batch {
 		head, err := os.ReadFile(reqs[i].Dest)
 		if err != nil || len(head) == 0 {
 			continue // not transferred (cancel/error); retry naturally
 		}
 		if !mediaHead(head) {
+			outs[i] = orientOut{id: s.ID, garbage: true}
+			continue
+		}
+		outs[i] = orientOut{id: s.ID, orient: uint8(jpegmeta.Orientation(head))}
+	}
+
+	got, garbage := 0, 0
+	p.mu.Lock()
+	for _, o := range outs {
+		if o.id == "" {
+			continue
+		}
+		if o.garbage {
 			garbage++
 			continue
 		}
-		p.orient[s.ID] = uint8(jpegmeta.Orientation(head))
+		p.orient[o.id] = o.orient
 		p.orientDirty = true
 		got++
 	}
@@ -351,37 +370,74 @@ func (p *Prefetcher) fetchHealBatch(ctx context.Context, batch []*photo.Shot) {
 	canceled := ctx.Err() != nil || cctx.Err() != nil
 	cancel()
 
-	healed, bare, garbage := 0, 0, 0
-	p.mu.Lock()
+	// Phase 1 — disk reads, JPEG parsing and thumbnail writes happen WITHOUT
+	// p.mu held: this loop is heavy (128 KB read + 2 JPEG parses + a write
+	// per shot × the batch), and /api/thumb needs p.mu (HasThumb/OrientOf),
+	// so holding it here froze all thumbnail serving for the whole batch —
+	// the "thumbnails don't appear until the camera batch ends" stall.
+	type healOut struct {
+		id        string
+		orient    uint8
+		hasOrient bool
+		healed    bool
+		bare      bool
+		garbage   bool
+	}
+	outs := make([]healOut, len(batch))
 	for i, s := range batch {
 		head, err := os.ReadFile(reqs[i].Dest)
 		if err != nil || len(head) == 0 {
 			continue // not transferred (cancel/error); retry naturally
 		}
 		if !mediaHead(head) {
-			garbage++
+			outs[i] = healOut{id: s.ID, garbage: true}
 			continue
 		}
-		if _, known := p.orient[s.ID]; !known {
-			p.orient[s.ID] = uint8(jpegmeta.Orientation(head))
-			p.orientDirty = true
-		}
-		p.healTried[s.ID] = true
+		o := healOut{id: s.ID, orient: uint8(jpegmeta.Orientation(head)), hasOrient: true}
 		th := jpegmeta.Thumbnail(head)
 		if th == nil {
 			// No embedded thumbnail: fresh shots fall through to the gphoto2
 			// sweep, camera-impossible ones to the full-image generator.
+			o.bare = true
+		} else {
+			tmpFile := p.ThumbPath(s) + ".heal"
+			if os.WriteFile(tmpFile, th, 0o644) == nil && os.Rename(tmpFile, p.ThumbPath(s)) == nil {
+				o.healed = true
+			} else {
+				os.Remove(tmpFile)
+			}
+		}
+		outs[i] = o
+	}
+
+	// Phase 2 — apply map updates under the lock, held only for the fast
+	// in-memory bookkeeping.
+	healed, bare, garbage := 0, 0, 0
+	p.mu.Lock()
+	for _, o := range outs {
+		if o.id == "" {
+			continue
+		}
+		if o.garbage {
+			garbage++
+			continue
+		}
+		if o.hasOrient {
+			if _, known := p.orient[o.id]; !known {
+				p.orient[o.id] = o.orient
+				p.orientDirty = true
+			}
+		}
+		p.healTried[o.id] = true
+		if o.bare {
 			bare++
 			continue
 		}
-		tmpFile := p.ThumbPath(s) + ".heal"
-		if os.WriteFile(tmpFile, th, 0o644) != nil || os.Rename(tmpFile, p.ThumbPath(s)) != nil {
-			os.Remove(tmpFile)
-			continue
+		if o.healed {
+			p.thumbs[o.id] = thumbHave
+			delete(p.thumbStalls, o.id)
+			healed++
 		}
-		p.thumbs[s.ID] = thumbHave
-		delete(p.thumbStalls, s.ID)
-		healed++
 	}
 	if healed > 0 {
 		p.saveThumbFailedLocked()
