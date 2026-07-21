@@ -402,6 +402,7 @@ private fun CullScreen(
             }
             if (shots.isEmpty()) delay(1000)
         }
+        var lastHave = -1
         while (true) {
             // one failed poll (process freeze while backgrounded, engine
             // restart) must not kill this loop — a dead loop is exactly
@@ -420,7 +421,12 @@ private fun CullScreen(
                 }
             } catch (_: Throwable) {
             }
-            delay(2000)
+            // poll fast while thumbnails are still landing (a scrub's new tiles
+            // then show up promptly), and back off once the count stops moving
+            val have = thumbStates.count { it == '1' }
+            val populating = have != lastHave
+            lastHave = have
+            delay(if (populating) 600 else 2000)
         }
     }
 
@@ -560,21 +566,26 @@ private fun CullScreen(
         LaunchedEffect(shots.isEmpty()) {
             if (shots.isEmpty()) return@LaunchedEffect
             val loader = coil.Coil.imageLoader(preloadCtx)
-            val warmed = HashSet<Int>()
+            val inflight = ArrayList<coil.request.Disposable>()
             snapshotFlow {
                 val first = gridState.firstVisibleItemIndex
                 val last = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: first
                 first to last
             }
                 .distinctUntilChanged()
-                // collectLatest + a settle delay: during a fast scrub the
-                // position changes faster than the delay, so every
-                // intermediate window is CANCELLED before it enqueues —
-                // Coil never floods with thousands of stale requests that
-                // would starve the tiles you actually land on
                 .collectLatest { (firstRow, lastRow) ->
                     if (gridState.isScrollInProgress) delay(180) // let a fling/scrub settle
-                    if (warmed.size > 4000) warmed.clear()
+                    // cancel the previous window's warmers before enqueuing the
+                    // new one. isScrollInProgress flickers between the
+                    // scrubber's scrollToItem calls, so the delay above does NOT
+                    // reliably suppress intermediate windows — without this, a
+                    // long scrub leaves thousands of fire-and-forget requests
+                    // hogging Coil ahead of the tiles you actually land on
+                    // (that was the "takes a while to populate, worse the
+                    // further you scrub" lag; the engine serves a screenful in
+                    // well under a second on its own).
+                    inflight.forEach { it.dispose() }
+                    inflight.clear()
                     val first = shotAtRow.getOrElse(firstRow.coerceIn(0, rows.lastIndex)) { 0 }
                     val last = shotAtRow.getOrElse(lastRow.coerceIn(0, rows.lastIndex)) { 0 }
                     // visible span first (they are on screen NOW), then ahead,
@@ -583,10 +594,12 @@ private fun CullScreen(
                     val ahead = (last + 1)..minOf(last + 60, shots.lastIndex)
                     val behind = maxOf(first - 30, 0) until first
                     for (i in visible + ahead + behind) {
-                        if (thumbStates.getOrNull(i) != '1' || !warmed.add(i)) continue
+                        if (thumbStates.getOrNull(i) != '1') continue
                         val shot = shots[i]
-                        loader.enqueue(
-                            thumbRequest(preloadCtx, api, shot.id, orient.getOrNull(i) ?: '0'),
+                        inflight.add(
+                            loader.enqueue(
+                                thumbRequest(preloadCtx, api, shot.id, orient.getOrNull(i) ?: '0'),
+                            ),
                         )
                     }
                 }
