@@ -117,7 +117,7 @@ func Start(dataDir, cacheDir, aftPath, immichURL, immichKey, session string, imm
 		SessionName: session,
 		ImmichStack: immichStack,
 		CacheDir:    cacheDir,
-		Ahead:       120,
+		Ahead:       80,
 		Behind:      30,
 		EvictMargin: 300,
 		Batch:       6,
