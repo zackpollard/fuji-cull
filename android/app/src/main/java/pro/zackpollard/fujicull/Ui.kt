@@ -825,6 +825,20 @@ private fun Viewer(
             )
         }
     }
+    val decodeCtx = LocalContext.current
+    LaunchedEffect(pager.currentPage) {
+        // decode-ahead: the frames are already downloaded, so keep a
+        // forward-biased window DECODED in the memory cache — a fast swipe then
+        // lands on a ready bitmap instead of a 26MP decode. (Coil dedupes, so
+        // re-enqueuing the overlapping window every page is cheap.)
+        val loader = coil.Coil.imageLoader(decodeCtx)
+        val page = pager.currentPage
+        val window = ((page + 1)..(page + 8)) + ((page - 2) until page)
+        for (i in window) {
+            if (i < 0 || i > shots.lastIndex || shots[i].kind == "video") continue
+            loader.enqueue(displayRequest(decodeCtx, api, shots[i].id))
+        }
+    }
 
     Column(Modifier.fillMaxSize().background(Color.Black).safeDrawingPadding()) {
         Row(
@@ -993,10 +1007,7 @@ private fun ZoomableImage(api: Api, shot: Shot) {
             },
         ) {
             SubcomposeAsyncImage(
-                model = ImageRequest.Builder(LocalContext.current)
-                    .data(api.imageUrl(shot.id) + if (retry > 0) "&r=$retry" else "")
-                    .size(4096)
-                    .build(),
+                model = displayRequest(LocalContext.current, api, shot.id, retry),
                 loading = {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(color = Amber)
@@ -1222,6 +1233,24 @@ private fun thumbRequest(
         // launches (the old &rt= buster forced cold reloads every open)
         .data(api.thumbUrl(id, orientC))
         .size(256)
+        .build()
+
+// display image for the viewer. the whole jpeg is already downloaded (engine
+// window); the stall on a fast swipe was DECODING a 26MP frame each time. at
+// .size(4096) Coil can't downsample and decodes full-res (~100MB bitmap, so
+// the 30%-heap memory cache couldn't even hold two). 1536 lands inSampleSize=4
+// on a 26MP jpeg — ~16x cheaper to decode, dozens fit warm, and it's still
+// sharp fit to a ~1344px screen. pinch-zoom swaps in the full-res overlay.
+// the viewer AND the decode-ahead preloader must build it identically so a
+// warmed frame composes straight from the memory cache.
+const val displaySize = 1536
+
+private fun displayRequest(
+    ctx: android.content.Context, api: Api, id: String, retry: Int = 0,
+): ImageRequest =
+    ImageRequest.Builder(ctx)
+        .data(api.imageUrl(id) + if (retry > 0) "&r=$retry" else "")
+        .size(displaySize)
         .build()
 
 private suspend fun setDecision(
