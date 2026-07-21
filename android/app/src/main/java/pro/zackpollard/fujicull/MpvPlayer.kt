@@ -19,6 +19,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -56,6 +57,11 @@ fun MpvPlayer(api: Api, shot: Shot, modifier: Modifier = Modifier) {
     var buffering by remember(shot.id) { mutableStateOf(false) }
     var ready by remember(shot.id) { mutableStateOf(false) }
     var scrubbing by remember { mutableStateOf(false) }
+    // hardware-decode wedge detector: consecutive polls where the stream is
+    // buffered but the frame never advances (the 4:2:2 signature). Once it
+    // trips we flip to software and stop checking.
+    var wedgePolls by remember(shot.id) { mutableIntStateOf(0) }
+    var softwareForced by remember(shot.id) { mutableStateOf(false) }
 
     DisposableEffect(shot.id) {
         // mpv's own diagnostics into the app log: remote debugging of
@@ -72,15 +78,29 @@ fun MpvPlayer(api: Api, shot: Shot, modifier: Modifier = Modifier) {
         MPVLib.setOptionString("vo", "gpu")
         MPVLib.setOptionString("gpu-context", "android")
         MPVLib.setOptionString("opengl-es", "yes")
-        // software decode ONLY for now: ffmpeg handles everything incl.
-        // 4:2:2 10-bit. mediacodec accepted 4:2:2 streams then wedged
-        // black instead of falling back — revisit once mpv logs from the
-        // field say it's safe
-        MPVLib.setOptionString("hwdec", "no")
-        MPVLib.setOptionString("ao", "audiotrack")
+        // DIRECT mediacodec (not -copy). -copy failed to build its internal
+        // read-back surface ("native_window NULL") and dropped to software;
+        // direct renders the decoder surface as a GL external texture, which
+        // the gpu vo then letterboxes (correct aspect). 4:2:0 hardware-decodes
+        // here (verified: ~20% of one core on 4K60).
+        // Start on hardware. 4:2:0 (all recent footage) decodes here instantly.
+        // The Tensor rejects 4:2:2 ("Unsupported profile") and mpv WON'T fall
+        // back on its own — it just wedges black. The playback poll below
+        // detects that wedge and flips hwdec to software at runtime (mpv keeps
+        // the demuxer buffer, so no re-pull from the camera), which the gpu vo
+        // then renders. No per-clip probing, no engine round-trip.
+        MPVLib.setOptionString("hwdec", "mediacodec")
+        // audiotrack tripped "Invalid audio buffer size" and lost sound;
+        // opensles is the more forgiving Android ao.
+        MPVLib.setOptionString("ao", "opensles")
         MPVLib.setOptionString("vd-lavc-threads", "0")
-        // 4K 4:2:2 sw decode is heavy on a phone: prefer dropping frames
-        // over stalling playback
+        // when we DO fall to software (4:2:2), make it as fast as possible so
+        // it stays watchable for culling: skip the deblocking loop filter
+        // (big HEVC speedup, minor quality loss — fine for review) and allow
+        // fast/inexact decode; drop late frames rather than stall.
+        MPVLib.setOptionString("profile", "fast")
+        MPVLib.setOptionString("vd-lavc-fast", "yes")
+        MPVLib.setOptionString("vd-lavc-skiploopfilter", "all")
         MPVLib.setOptionString("vd-lavc-framedrop", "nonref")
         MPVLib.setOptionString("framedrop", "vo")
         MPVLib.setOptionString("cache", "yes")
@@ -127,12 +147,35 @@ fun MpvPlayer(api: Api, shot: Shot, modifier: Modifier = Modifier) {
                 bufferedAhead = snap.b
                 buffering = snap.c
                 if (duration > 0f) ready = true
+
+                // wedge detection: the file is open (duration known) and has
+                // buffered real data, yet the frame clock hasn't left zero and
+                // we're not paused or starved for cache — that's hardware
+                // choking on 4:2:2. Give it a moment (poll is 400ms), then drop
+                // to software on the already-buffered bytes.
+                if (!softwareForced && !scrubbing && !snap.p && !snap.c &&
+                    snap.d > 0f && snap.b > 0.5f && snap.t < 0.15f
+                ) {
+                    wedgePolls++
+                    if (wedgePolls >= 6) {
+                        softwareForced = true
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            runCatching {
+                                MPVLib.setPropertyString("hwdec", "no")
+                                MPVLib.command(arrayOf("seek", "0", "absolute"))
+                            }
+                        }
+                        api.logEvent("hwdec: hardware wedged (likely 4:2:2) — switched to software")
+                    }
+                } else if (snap.t >= 0.15f) {
+                    wedgePolls = 0
+                }
             }
             delay(400)
         }
     }
 
-    Box(modifier.background(Color.Black)) {
+    Box(modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
             factory = { ctx ->
                 SurfaceView(ctx).apply {
