@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/zackpollard/fuji-cull/compare/v1.4.0...v1.5.0) (2026-07-21)
+
+
+### Features
+
+* android app + hardware video decode & perf ([68547c0](https://github.com/zackpollard/fuji-cull/commit/68547c0483d7b86c4e9fad5b88ac4cb0d0f16e9f))
+
 ## [1.4.0](https://github.com/zackpollard/fuji-cull/compare/v1.3.0...v1.4.0) (2026-07-13)
 
 
