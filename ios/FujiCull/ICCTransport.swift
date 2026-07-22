@@ -71,9 +71,13 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
         // granted implicitly with USB access, but control must be requested —
         // unrequested, requestSendPTPCommand drops every command silently, no
         // callback, no error. Needs NSCameraUsageDescription in Info.plist.
-        note("auth: contents=\(browser.contentsAuthorizationStatus.rawValue) control=\(browser.controlAuthorizationStatus.rawValue)")
-        browser.requestControlAuthorization { [weak self] status in
-            self?.note("auth: control -> \(status.rawValue)")
+        // responds(to:) guard: the simulator's ImageCaptureCore is a stub
+        // without the authorization API — calling it there throws.
+        if browser.responds(to: #selector(ICDeviceBrowser.requestControlAuthorization(completion:))) {
+            note("auth: contents=\(browser.contentsAuthorizationStatus.rawValue) control=\(browser.controlAuthorizationStatus.rawValue)")
+            browser.requestControlAuthorization { [weak self] status in
+                self?.note("auth: control -> \(status.rawValue)")
+            }
         }
         browser.delegate = self
         if !browser.isBrowsing { browser.start() }

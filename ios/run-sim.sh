@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 export PATH="$(go env GOPATH)/bin:/opt/homebrew/bin:$PATH"
 export GOFLAGS=-mod=mod
 
-DEV="${SIM_DEVICE:-iPad Pro 11-inch (M4)}"
+DEV="${SIM_DEVICE:-iPad Pro 13-inch (M5)}"
 BUNDLE=pro.zackpollard.fujicull
 SHOT=""
 BIND=0
@@ -28,7 +28,8 @@ if [ "$BIND" = 1 ]; then
 fi
 
 echo "== xcodegen =="
-xcodegen generate --quiet
+# xcodegen fails transiently every so often; a retry beats a dead script
+xcodegen generate --quiet || { sleep 2; echo "(xcodegen retry)"; xcodegen generate --quiet; }
 # Xcode <16 cannot read xcodegen's default objectVersion 77.
 XCODE_MAJOR=$(xcodebuild -version 2>/dev/null | head -1 | sed -E 's/Xcode ([0-9]+).*/\1/')
 if [ "${XCODE_MAJOR:-0}" -lt 16 ]; then

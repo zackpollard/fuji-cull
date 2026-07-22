@@ -49,8 +49,13 @@ final class GridModel: ObservableObject {
         // the catalog can lag readiness for a beat; retry until it lands
         while shots.isEmpty {
             if let st = try? await api.fetchState(), !st.shots.isEmpty {
+                // group off the main actor: at 24k shots this pass plus the
+                // publish froze first render for ~3s when run inline
+                let grouped = await Task.detached(priority: .userInitiated) {
+                    Self.group(st.shots)
+                }.value
                 shots = st.shots
-                groups = Self.group(st.shots)
+                groups = grouped
                 decisions = st.decisions
                 counts = st.counts
                 cursor = st.cursor
@@ -146,7 +151,7 @@ final class GridModel: ObservableObject {
 
     // MARK: - grouping
 
-    static func group(_ shots: [Shot]) -> [MonthGroup] {
+    nonisolated static func group(_ shots: [Shot]) -> [MonthGroup] {
         var months: [MonthGroup] = []
         var curMonth = "\u{0}", curDay = "\u{0}"
         var monthDays: [DayGroup] = []
@@ -193,12 +198,12 @@ final class GridModel: ObservableObject {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f
     }()
 
-    static func prettyMonth(_ key: String) -> String {
+    nonisolated static func prettyMonth(_ key: String) -> String {
         guard let d = monthIn.date(from: key) else { return key }
         let f = DateFormatter(); f.dateFormat = "MMMM yyyy"
         return f.string(from: d)
     }
-    static func prettyDay(_ key: String) -> String {
+    nonisolated static func prettyDay(_ key: String) -> String {
         guard let d = dayIn.date(from: key) else { return key }
         let f = DateFormatter(); f.dateFormat = "EEE d MMM yyyy"
         return f.string(from: d)
@@ -212,6 +217,7 @@ struct GridView: View {
     @State private var showLog = false
     @State private var showImport = false
     @State private var showSettings = false
+    @State private var autoscrollAt = 0
 
     private let columns = [GridItem(.adaptive(minimum: 120, maximum: 180), spacing: 3)]
 
@@ -278,6 +284,13 @@ struct GridView: View {
                 MonthScrubber(months: model.groups) { id in
                     withAnimation { proxy.scrollTo(id, anchor: .top) }
                 }
+            }
+            // debug-probe autoscroll: walk month to month so uncached regions
+            // stream in hands-free while the probe snapshots and measures hangs
+            .onReceive(NotificationCenter.default.publisher(for: DebugProbe.autoscrollTick)) { _ in
+                guard !model.groups.isEmpty else { return }
+                autoscrollAt = (autoscrollAt + 1) % model.groups.count
+                withAnimation { proxy.scrollTo(model.groups[autoscrollAt].id, anchor: .top) }
             }
         }
     }

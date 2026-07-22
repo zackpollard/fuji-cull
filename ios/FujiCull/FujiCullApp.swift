@@ -10,7 +10,13 @@ struct FujiCullApp: App {
             RootView()
                 .environmentObject(engine)
                 .environmentObject(settings)
-                .onAppear { engine.start(settings.settings) }
+                .onAppear {
+                    engine.start(settings.settings)
+                    DebugProbe.armIfConfigured { [weak engine] msg in
+                        NSLog("%@", msg)
+                        engine?.logEvent(msg)
+                    }
+                }
                 .preferredColorScheme(.dark)
         }
     }
