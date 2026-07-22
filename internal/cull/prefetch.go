@@ -176,7 +176,11 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 	if ib, ok := backend.(*iccBackend); ok {
 		// iOS: partial reads ride the PTP transport, so the head sweep,
 		// orientation and chunked pulls all work with no subprocess. Posters
-		// stay off until the cgo libav shim lands (no exec to run ffmpeg).
+		// are the host's job here (no exec to run ffmpeg) — the app pulls
+		// each clip's head via /api/videohead and decodes frame 0 itself,
+		// exactly as the Android build does. Note that leaves videos '0' in
+		// ThumbStates forever, so a client counting only engine thumbs
+		// undercounts by the video count.
 		p.camera = ib
 		p.noFfmpeg = true
 	}
