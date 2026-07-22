@@ -43,6 +43,7 @@ final class GridModel: ObservableObject {
     @Published private(set) var immichChars: [Character] = []
     private var api: API?
     private var pollTask: Task<Void, Never>?
+    private var posterTask: Task<Void, Never>?
 
     func attach(base: URL?) {
         guard api == nil, let base else { return }
@@ -98,6 +99,7 @@ final class GridModel: ObservableObject {
                     if st.counts != self.counts { self.counts = st.counts }
                     if st.fetch != self.fetchStates { self.fetchStates = st.fetch }
                     if st.importStatus != self.importStatus { self.importStatus = st.importStatus }
+                    self.startPosterSweepIfNeeded()
                     if let imp = st.importStatus {
                         if imp.running {
                             self.importing = "importing \(imp.done)/\(imp.total)"
@@ -160,7 +162,34 @@ final class GridModel: ObservableObject {
         Task { await api?.startImport(dest: dest, album: album) }
     }
 
-    deinit { pollTask?.cancel() }
+    deinit { pollTask?.cancel(); posterTask?.cancel() }
+
+    /// Client-side video posters, mirroring the Android build: the engine has
+    /// no ffmpeg on mobile (status reports posters=false), so once the
+    /// catalog is up a single serial sweep pulls each video's 8 MB head and
+    /// extracts frame 0 locally (Posters). Transiently-deferred videos (busy
+    /// camera link) are retried each pass; the loop ends when every video has
+    /// a poster or a permanent failure marker.
+    func startPosterSweepIfNeeded() {
+        guard posterTask == nil, let api, !enginePosters, !shots.isEmpty else { return }
+        let videos = shots.filter { $0.kind == "video" }
+        guard !videos.isEmpty else { return }
+        posterTask = Task.detached(priority: .utility) {
+            while !Task.isCancelled {
+                var pending = 0
+                for shot in videos {
+                    if Task.isCancelled { return }
+                    if Posters.shared.resolved(shot) { continue }
+                    if await Posters.shared.load(api: api, shot: shot) == nil,
+                       !Posters.shared.isFailed(shot) {
+                        pending += 1
+                    }
+                }
+                if pending == 0 { return }
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+            }
+        }
+    }
 
     // MARK: - grouping
 

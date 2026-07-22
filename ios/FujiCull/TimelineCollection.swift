@@ -98,11 +98,14 @@ struct TimelineCollection: UIViewRepresentable {
                 guard let self, index < self.model.shots.count else { return }
                 let m = self.model
                 let shot = m.shots[index]
+                // videos: the engine has no poster to serve on mobile — the
+                // client-side poster file (Posters) is the thumbnail
+                let poster = shot.kind == "video" ? Posters.shared.cached(shot) : nil
                 cell.contentConfiguration = UIHostingConfiguration {
                     TileContent(
-                        url: m.thumbURL(shot.id, index),
-                        cacheKey: "\(shot.id):\(m.orientOf(index))",
-                        ready: m.thumbReady(index),
+                        url: poster ?? m.thumbURL(shot.id, index),
+                        cacheKey: poster != nil ? "\(shot.id):poster" : "\(shot.id):\(m.orientOf(index))",
+                        ready: poster != nil || m.thumbReady(index),
                         decision: m.decisions[shot.id] ?? "",
                         inImmich: m.inImmich(index),
                         buffered: m.buffered(shot.id),
@@ -155,6 +158,11 @@ struct TimelineCollection: UIViewRepresentable {
             NotificationCenter.default.addObserver(forName: DebugProbe.autoscrollTick,
                                                    object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.autoscrollStep() }
+            }
+            NotificationCenter.default.addObserver(forName: Posters.posterReady,
+                                                   object: nil, queue: .main) { [weak self] note in
+                guard let id = note.object as? String else { return }
+                MainActor.assumeIsolated { self?.posterLanded(id) }
             }
 
             modelDidChange()
@@ -223,6 +231,18 @@ struct TimelineCollection: UIViewRepresentable {
             }
             sections = secs
             groupsApplied = model.groups.count
+            idToIndex = Dictionary(uniqueKeysWithValues:
+                model.shots.enumerated().map { ($0.element.id, $0.offset) })
+            dataSource.apply(snap, animatingDifferences: false)
+        }
+
+        private var idToIndex: [String: Int] = [:]
+
+        private func posterLanded(_ id: String) {
+            guard let index = idToIndex[id] else { return }
+            var snap = dataSource.snapshot()
+            guard snap.indexOfItem(index) != nil else { return }
+            snap.reconfigureItems([index])
             dataSource.apply(snap, animatingDifferences: false)
         }
 
