@@ -10,40 +10,17 @@ struct ViewerView: View {
     @Environment(\.dismiss) private var dismiss
 
     private var shot: Shot? { model.shots.indices.contains(index) ? model.shots[index] : nil }
-    private var pageWindow: [Int] {
-        guard !model.shots.isEmpty else { return [] }
-        let lo = max(0, index - 2), hi = min(model.shots.count - 1, index + 2)
-        return Array(lo...hi)
-    }
     private var decision: String { shot.flatMap { model.decisions[$0.id] } ?? "" }
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            // Windowed pager: only ±2 pages exist, NOT all 24k. A full-catalog
-            // ForEach here rebuilt a 24k-element array per render and let
-            // SwiftUI's page management churn neighbor pages — which tore
-            // down and rebuilt the ACTIVE page, whose onDisappear paused the
-            // playing video 1-3s in (probe-verified: player paused with a
-            // full buffer). With a window keyed by catalog index, re-centering
-            // keeps the current page's identity, so only truly-departed pages
-            // are torn down.
-            TabView(selection: $index) {
-                ForEach(pageWindow, id: \.self) { i in
-                    let s = model.shots[i]
-                    Group {
-                        if s.kind == "video" {
-                            VideoFrame(model: model, shot: s, active: i == index)
-                        } else {
-                            ZoomableImage(url: model.imageURL(s.id))
-                        }
-                    }
-                    .tag(i)
-                }
-            }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-            .ignoresSafeArea()
+            // UIPageViewController pager (PagerView): natively virtualized —
+            // the previous windowed TabView mutated its page set while a
+            // swipe settled and stranded the pager halfway between pages.
+            PagerView(model: model, index: $index)
+                .ignoresSafeArea()
 
             VStack(spacing: 0) {
                 topBar
