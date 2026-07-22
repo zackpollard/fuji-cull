@@ -162,10 +162,28 @@ struct VideoFrame: View {
         p.actionAtItemEnd = .pause
         player = p
         p.play()
-        // surface a hard failure so the user can fall back to a local pull
+        // surface a hard failure so the user can fall back to a local pull —
+        // and log WHY: AVPlayer failures on a range server (unsupported
+        // codec vs 409 vs stalled stream) are indistinguishable on screen
         Task {
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
-            if item.status == .failed { failed = true; player = nil }
+            for _ in 0..<10 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if item.status == .failed {
+                    let err = item.error?.localizedDescription ?? "?"
+                    model.logEvent("video: \(shot.base) FAILED — \(err)")
+                    DebugProbe.trace("video failed: \(err)")
+                    failed = true
+                    player = nil
+                    return
+                }
+                if item.status == .readyToPlay {
+                    model.logEvent("video: \(shot.base) playing"
+                                   + " (\(Int(CMTimeGetSeconds(item.duration)))s)")
+                    DebugProbe.trace("video ready")
+                    return
+                }
+            }
+            model.logEvent("video: \(shot.base) never became ready (status=\(item.status.rawValue))")
         }
     }
 

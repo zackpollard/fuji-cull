@@ -20,7 +20,13 @@ enum DebugProbe {
     struct Config: Decodable {
         var snapshotEvery: Double?
         var autoscroll: Bool?
+        /// open the viewer on the first video once the catalog loads, so
+        /// playback can be exercised with no one to tap the screen
+        var openVideo: Bool?
     }
+
+    /// Set when the armed config asks for the video-playback rig.
+    private(set) static var openVideoRequested = false
 
     static let autoscrollTick = Notification.Name("debugAutoscrollTick")
 
@@ -55,6 +61,7 @@ enum DebugProbe {
         guard let data = try? Data(contentsOf: cfgURL),
               let cfg = try? JSONDecoder().decode(Config.self, from: data) else { return }
         armed = true
+        openVideoRequested = cfg.openVideo ?? false
         mainMachThread = mach_thread_self() // armIfConfigured runs on main
         log("debug-probe: armed (snapshotEvery=\(cfg.snapshotEvery ?? 0) autoscroll=\(cfg.autoscroll ?? false))")
 

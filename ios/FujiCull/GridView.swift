@@ -162,6 +162,9 @@ final class GridModel: ObservableObject {
 
     func retry(_ id: String) { Task { await api?.retryShot(id) } }
     func loadVideo(_ id: String) { Task { await api?.loadVideo(id) } }
+    /// Fold a client-side event into the engine log — the one place the
+    /// in-app diagnostics and the pulled engine.log both show.
+    func logEvent(_ msg: String) { Task { await api?.logEvent(msg) } }
     func startImport(dest: String, album: String) {
         importing = "importing…"
         Task { await api?.startImport(dest: dest, album: album) }
@@ -289,6 +292,11 @@ struct GridView: View {
             model.startPolling()
             let av = UserDefaults.standard.integer(forKey: "autoViewer")
             if av > 0 && av <= model.shots.count { model.openViewer(av - 1) }
+            if DebugProbe.openVideoRequested,
+               let v = model.shots.firstIndex(where: { $0.kind == "video" }) {
+                DebugProbe.trace("openVideo -> index \(v) \(model.shots[v].base)")
+                model.openViewer(v)
+            }
             if UserDefaults.standard.bool(forKey: "autoImport") { showImport = true }
         }
         .fullScreenCover(isPresented: $model.showViewer) {
@@ -352,7 +360,7 @@ struct HeaderBar: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("K \(model.counts["keep"] ?? 0)  X \(model.counts["reject"] ?? 0)  · \(model.counts["undecided"] ?? 0)")
                         .foregroundStyle(.white)
-                    Text("th \(model.haveThumbs + model.posterCount)/\(model.shots.count) · ex \(model.exifKnown)/\(model.exifTotal)"
+                    Text("th \(min(model.haveThumbs + model.posterCount, model.shots.count))/\(model.shots.count) · ex \(model.exifKnown)/\(model.exifTotal)"
                          + (model.sick ? " · CAMERA SICK" : ""))
                         .foregroundStyle(model.sick ? Color.rejectRed : .secondary)
                         .font(.system(size: 10, design: .monospaced))
