@@ -45,5 +45,10 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<!-- Required for ImageCaptureCore PTP commands on iOS (undocumented on the
+	     requestSendPTPCommand page): without it, requests are dropped silently
+	     with no callback and no error. -->
+	<key>NSCameraUsageDescription</key>
+	<string>fuji-cull talks to your Fuji camera over USB to browse, preview and download the photos on its card.</string>
 </dict>
 </plist>

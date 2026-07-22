@@ -66,10 +66,10 @@ func StartLocal(dataDir, cacheDir, mediaRoot, session string) (*Engine, error) {
 }
 
 // Transport is the object-level camera link the host implements — on iOS,
-// Swift's ICCTransport over ImageCaptureCore. Object-level rather than raw
-// PTP because ImageCaptureCore's PTP passthrough never delivers a callback on
-// iPadOS (see cull.Transport for the full account); Apple's content catalog
-// and ICCameraFile partial reads are the one sanctioned path.
+// Swift's ICCTransport over ImageCaptureCore. Object-level because ICC's
+// content catalog is mandatory and is itself a full index (see cull.Transport
+// for the full account, including the three gates behind the raw-PTP
+// passthrough that this design no longer depends on).
 //
 // gomobile only generates a host-implementable protocol for interfaces
 // declared in the *bound* package, hence this mirror of cull.Transport with a

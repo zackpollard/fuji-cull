@@ -6,14 +6,17 @@ import Mobile
 // the sanctioned PTP/MTP stack on iPadOS, since iOS has neither exec nor usbfs
 // for the patched aft-mtp-cli the desktop/Android builds use.
 //
-// The link is object-level, not raw PTP, and not by choice: ICC's
-// requestSendPTPCommand never delivers a callback on iPadOS (verified on 26.5
-// against the X-H2S — every container encoding, both API variants, both
-// threads, before and after the catalog; requests vanish without even an
-// error). What does work is ICC's own machinery: it enumerates the card as
-// soon as a session opens (~4 min for a 19k-file card, progress reported
-// here), and ICCameraFile.requestReadData serves partial reads — so the
-// engine's chunked pull/preempt model survives unchanged.
+// The link is object-level. Raw PTP (requestSendPTPCommand) does work on
+// iPadOS, but only behind three gates, none documented on its page: the app
+// needs NSCameraUsageDescription in Info.plist, control authorization from
+// requestControlAuthorization (distinct from the contents authorization that
+// lets us browse files — miss either and commands are dropped silently, no
+// callback, no error), and ICC's content catalog must have completed. Since
+// the catalog cannot be declined and IS a full index, the object API costs
+// nothing extra: the catalog is the index (~4 min for a 19k-file card,
+// progress reported here) and ICCameraFile.requestReadData serves partial
+// reads — the engine's chunked pull/preempt model survives unchanged. The
+// passthrough stays available for card-wide property sweeps (internal/ptp).
 //
 // `connected()` stays false until the catalog is enumerated; the engine's
 // discover loop just retries, so nothing here ever blocks waiting for the
@@ -31,6 +34,9 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
     /// in-app diagnostics screen tells one story — essential when the iPad is
     /// debugged wirelessly (the USB port belongs to the camera).
     private var pending: [String] = []
+    /// Same events, kept (not drained) so the log screen has something to show
+    /// before the engine exists — the whole catalog phase runs engine-less.
+    private var history: [String] = []
 
     private let browser = ICDeviceBrowser()
     private let gate = DispatchSemaphore(value: 1)   // one camera op at a time
@@ -50,6 +56,15 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
 
     /// Starts device discovery. Safe to call repeatedly.
     func start() {
+        // iOS gates ICC behind two authorizations macOS doesn't have:
+        // contents (browse/read files) and control (PTP commands). Contents is
+        // granted implicitly with USB access, but control must be requested —
+        // unrequested, requestSendPTPCommand drops every command silently, no
+        // callback, no error. Needs NSCameraUsageDescription in Info.plist.
+        note("auth: contents=\(browser.contentsAuthorizationStatus.rawValue) control=\(browser.controlAuthorizationStatus.rawValue)")
+        browser.requestControlAuthorization { [weak self] status in
+            self?.note("auth: control -> \(status.rawValue)")
+        }
         browser.delegate = self
         if !browser.isBrowsing { browser.start() }
     }
@@ -66,7 +81,16 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
         lock.lock()
         pending.append(msg)
         if pending.count > 300 { pending.removeFirst(pending.count - 300) }
+        history.append(msg)
+        if history.count > 500 { history.removeFirst(history.count - 500) }
         lock.unlock()
+    }
+
+    /// The camera-link log for the log screen while no engine is running.
+    func recentLog() -> String {
+        lock.lock(); defer { lock.unlock() }
+        return "— engine not started; camera link log —\n" + history.joined(separator: "\n")
+            + "\n\nstatus: " + status
     }
 
     private func setStatus(_ s: String) { lock.lock(); status = s; lock.unlock() }
@@ -349,6 +373,30 @@ extension ICCTransport: ICCameraDeviceDelegate {
         progressTimer?.cancel()
         note("ICC catalog complete")
         indexContents()
+        probePTP(device)
+    }
+
+    /// One-shot GetDeviceInfo over the PTP passthrough with all three gates
+    /// open (usage description, control authorization, catalog complete).
+    /// Answers on the X-H2S (259-byte DeviceInfo); logged on every connect as
+    /// a health check of the raw-PTP door before anything relies on it.
+    private func probePTP(_ cam: ICCameraDevice) {
+        var cmd = Data(count: 12) // container: len=12, type=1 (command), op 0x1001, txn 1
+        cmd.withUnsafeMutableBytes { b in
+            b.storeBytes(of: UInt32(12).littleEndian, toByteOffset: 0, as: UInt32.self)
+            b.storeBytes(of: UInt16(1).littleEndian, toByteOffset: 4, as: UInt16.self)
+            b.storeBytes(of: UInt16(0x1001).littleEndian, toByteOffset: 6, as: UInt16.self)
+            b.storeBytes(of: UInt32(1).littleEndian, toByteOffset: 8, as: UInt32.self)
+        }
+        note("PTP probe: GetDeviceInfo (control auth=\(browser.controlAuthorizationStatus.rawValue))")
+        DispatchQueue.main.async {
+            cam.requestSendPTPCommand(cmd, outData: nil) { [weak self] inData, response, error in
+                self?.note("PTP probe: data=\(inData.count) response=\(response.count) err=\(error?.localizedDescription ?? "nil")")
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 15) { [weak self] in
+                self?.note("PTP probe: (15s mark — silence above means still gated)")
+            }
+        }
     }
 
     func cameraDevice(_ camera: ICCameraDevice, didAdd items: [ICCameraItem]) {

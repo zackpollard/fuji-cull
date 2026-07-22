@@ -1,14 +1,15 @@
 // Package ptp encodes the handful of PTP/MTP requests the engine needs and
 // parses their datasets.
 //
-// Currently UNUSED in the shipping paths: it was written for iOS, where the
-// host would hand us ImageCaptureCore's PTP passthrough as a raw command pipe
-// — but that passthrough never delivers a callback on iPadOS (verified on
-// 26.5 against the X-H2S: every plausible container encoding, both API
-// variants, both threads, before and after the content catalog; requests are
-// discarded silently, without even an error). iOS therefore uses Apple's
-// object API instead (see cull.Transport). Kept, with its tests, as the
-// protocol reference should a raw pipe ever become available.
+// On iOS, ImageCaptureCore's requestSendPTPCommand provides the raw pipe for
+// these — but only behind three undocumented gates (NSCameraUsageDescription,
+// a control-authorization grant, and ICC's content catalog completing; miss
+// any and commands are dropped silently, with no callback and no error).
+// Since the mandatory catalog is itself a full index and requestReadData
+// covers partial reads, the shipping iOS path is object-level
+// (cull.Transport); this package is the protocol layer for card-wide
+// GetObjectPropList sweeps over the passthrough when they're needed (e.g.
+// bulk capture dates), verified answering on the X-H2S post-catalog.
 //
 // The requests mirror what the aft patch issues, notably the card-wide
 // GetObjectPropList sweep ("lsprops-all"): a few bulk round-trips instead of a

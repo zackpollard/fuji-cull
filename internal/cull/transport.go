@@ -13,14 +13,14 @@ import (
 // has neither exec nor usbfs, so the patched aft-mtp-cli cannot run there and
 // Apple's ImageCaptureCore (implemented in Swift) provides the link instead.
 //
-// The link is object-level, not raw PTP, and that is not a style choice:
-// ImageCaptureCore's requestSendPTPCommand never delivers a callback on iPadOS
-// (verified on 26.5 against the X-H2S — every container encoding, both API
-// variants, both threads, before and after the content catalog; see
-// internal/ptp for the sweep we would have run). Apple's object API is the
-// only door that opens: its content catalog is the index, and partial reads
-// ride ICCameraFile's requestReadData, which preserves the engine's chunked
-// pull/preempt model unchanged.
+// The link is object-level. iPadOS does allow raw PTP passthrough, but only
+// after ICC's content catalog completes (plus NSCameraUsageDescription and a
+// control-authorization grant — miss any gate and commands are dropped
+// silently). Since the catalog cannot be declined and is itself a full index,
+// object-level costs nothing: the catalog is the index, and partial reads
+// ride ICCameraFile's requestReadData, preserving the engine's chunked
+// pull/preempt model unchanged. The passthrough (internal/ptp) remains
+// available post-catalog for card-wide property sweeps.
 //
 // The implementation is injected through the gomobile facade as a reverse
 // binding, so only gomobile-representable types may cross the boundary: hence

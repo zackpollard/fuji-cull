@@ -181,7 +181,7 @@ final class Engine: ObservableObject {
 
     func nudge() { engine?.nudge() }
     func logEvent(_ msg: String) { engine?.logEvent(msg) }
-    func fullLog() -> String { engine?.fullLog() ?? "engine not running" }
+    func fullLog() -> String { engine?.fullLog() ?? ICCTransport.shared.recentLog() }
 
     deinit { pollTask?.cancel() }
 }
