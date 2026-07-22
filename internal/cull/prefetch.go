@@ -68,6 +68,7 @@ type Prefetcher struct {
 	photoSeq      []photoRank    // photos in catalog order with ranks, for density scans
 	partBin       string         // patched aft-mtp-cli with get-part; "" = partial reads off
 	noFfmpeg      bool           // ffmpeg missing: posters off, heads unaffected
+	localThumbs   bool           // dir backend: thumbnails come from source files (sim path)
 	partSick      bool           // partial reads returned stale-buffer garbage
 	partSickAt    time.Time      // drives the recovery probe
 	bulkSick      bool           // bulk reads (get-id) returned stale-buffer garbage
@@ -171,7 +172,10 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 			p.noFfmpeg = true
 		}
 	}
-	if p.thumbFetcher != nil || p.partBin != "" {
+	if _, ok := backend.(*dirBackend); ok {
+		p.localThumbs = true // every file is directly readable; thumbnail from source
+	}
+	if p.thumbFetcher != nil || p.partBin != "" || p.localThumbs {
 		if err := os.MkdirAll(p.thumbDir, 0o755); err != nil {
 			return nil, err
 		}
@@ -1348,7 +1352,7 @@ func (p *Prefetcher) ThumbStates() (string, int) {
 	buf := make([]byte, len(p.cat.Shots))
 	have := 0
 	for i, s := range p.cat.Shots {
-		if (p.thumbFetcher == nil && p.partBin == "") || (s.Kind != "photo" && p.partBin == "") {
+		if (p.thumbFetcher == nil && p.partBin == "" && !p.localThumbs) || (s.Kind != "photo" && p.partBin == "") {
 			buf[i] = '-'
 			continue
 		}

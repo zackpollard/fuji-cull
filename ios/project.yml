@@ -1,0 +1,34 @@
+name: FujiCull
+options:
+  bundleIdPrefix: pro.zackpollard
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  minimumXcodeGenVersion: "2.0.0"
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ENABLE_BITCODE: NO
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  FujiCull:
+    type: application
+    platform: iOS
+    sources:
+      - path: FujiCull
+    dependencies:
+      - framework: Mobile.xcframework
+        embed: false
+        link: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: pro.zackpollard.fujicull
+        INFOPLIST_FILE: FujiCull/Info.plist
+        # gomobile framework is a static archive of Go + its ObjC shim
+        OTHER_LDFLAGS: "-lresolv -framework CoreFoundation -framework Security"

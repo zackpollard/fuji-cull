@@ -165,6 +165,9 @@ func Start(o Options) (*App, http.Handler, error) {
 		if prefetch.thumbFetcher != nil || prefetch.partBin != "" {
 			go prefetch.localThumbGen()
 		}
+		if prefetch.localThumbs {
+			go prefetch.localThumbSweep()
+		}
 		app.finishInit(catalog, prefetch)
 		if app.imcheck != nil {
 			go app.imcheck.Backfill()

@@ -1,0 +1,7 @@
+# gomobile bind output — regenerate with `./run-sim.sh --bind`
+Mobile.xcframework/
+# xcodegen output — regenerate with `xcodegen generate` (run-sim.sh does this)
+FujiCull.xcodeproj/
+# build products
+build/
+*.ipa
