@@ -140,6 +140,24 @@ func (a *App) CanStreamVideo(id string) bool {
 }
 
 // VideoPathIfReady returns the buffered local path of a video shot.
+// VideoStreamPreview reports whether camera streaming of this video hits the
+// 4 GiB partial-read ceiling. When it does, only a preview streams (the full
+// clip needs a local pull, L), and fraction is the share of the clip that
+// preview covers (streamable bytes / total) — used to locate the preview wall
+// on the playback timeline.
+func (a *App) VideoStreamPreview(id string) (limited bool, fraction float64) {
+	s := a.catalog.Get(id)
+	if s == nil || s.Kind != "video" {
+		return false, 0
+	}
+	ext := s.DisplayExt()
+	total := s.Sizes[ext]
+	if total <= streamPartialLimit {
+		return false, 0
+	}
+	return true, float64(streamPartialLimit) / float64(total)
+}
+
 func (a *App) VideoPathIfReady(id string) (string, bool) {
 	s := a.catalog.Get(id)
 	if s == nil || s.Kind != "video" {

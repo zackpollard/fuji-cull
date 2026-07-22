@@ -79,10 +79,6 @@ func (u *ui) drawVideo(st sdl.Rect) {
 			u.videoDiag = true
 		}
 	}
-	if streaming {
-		u.text(u.fontSm, "STREAMING FROM CAMERA · L pulls a local copy", colDim, st.X+st.W/2, st.Y+sc(16), true)
-	}
-
 	// keep the video texture matched to the stage size. GL path: a TARGET
 	// texture mpv renders into via FBO; SW path: a STREAMING upload target.
 	if u.videoTex == nil || u.videoTexW != st.W || u.videoTexH != st.H {
@@ -134,6 +130,27 @@ func (u *ui) drawVideo(st sdl.Rect) {
 			label += "  ⏸"
 		}
 		u.text(u.fontSm, label, colFG, st.X+st.W/2, st.Y+st.H-sc(48), true)
+	}
+
+	// Streaming overlay drawn LAST, above the video frame and seek bar (drawing
+	// it earlier put it behind the frame — invisible). This camera can't
+	// partial-read past 4 GiB, so a long clip streams only a preview; mpv
+	// reaches eof at the cap (its moov claims more data, so it simply stops),
+	// which is the signal to send the user to the full local pull.
+	if streaming {
+		if limited, _ := u.app.VideoStreamPreview(s.ID); limited {
+			atWall := u.mpv.PropertyString("eof-reached") == "yes" ||
+				u.mpv.PropertyString("paused-for-cache") == "yes"
+			if atWall {
+				u.fillRect(st, sdl.Color{R: 0, G: 0, B: 0, A: 160})
+				u.text(u.font, "PREVIEW ENDED — press L to download the full clip", colAmber, st.X+st.W/2, st.Y+st.H/2-sc(14), true)
+				u.text(u.fontSm, "this clip is too long to stream from the camera; L pulls the full copy to keep watching", colDim, st.X+st.W/2, st.Y+st.H/2+sc(12), true)
+			} else {
+				u.text(u.fontSm, "STREAMING PREVIEW · press L to download the full clip to keep watching", colAmber, st.X+st.W/2, st.Y+sc(16), true)
+			}
+		} else {
+			u.text(u.fontSm, "STREAMING FROM CAMERA · L pulls a local copy", colDim, st.X+st.W/2, st.Y+sc(16), true)
+		}
 	}
 }
 
