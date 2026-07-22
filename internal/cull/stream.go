@@ -23,6 +23,30 @@ const (
 	streamIdle     = 20 * time.Second
 )
 
+// streamPartialLimit caps camera streaming at MTP GetPartialObject's 32-bit
+// offset ceiling. The X-H2S lacks GetPartialObject64 (0x95C1) — verified in the
+// field: reads past 4 GiB return "32 bit overflow" — so a clip longer than this
+// cannot be partial-read past the ceiling and would freeze mid-playback. We
+// expose only the streamable prefix as a preview (chunk-aligned, with headroom
+// so the final chunk's offset+size stays under 2^32) and the UI directs the
+// user to a full local pull (GetObject has no such limit) to watch the rest.
+const streamPartialLimit = 510 * streamChunk // 4080 MiB, safely below 2^32
+
+// streamSize is the byte length streamable off the camera for this file: the
+// whole file, or the preview prefix when it exceeds the partial-read ceiling.
+func streamSize(s *photo.Shot, ext string) int64 {
+	if sz := s.Sizes[ext]; sz <= streamPartialLimit {
+		return sz
+	}
+	return streamPartialLimit
+}
+
+// StreamLimited reports whether a video exceeds the partial-read ceiling, so
+// only a streamed preview is available and the full clip needs a local pull.
+func (p *Prefetcher) StreamLimited(s *photo.Shot, ext string) bool {
+	return s != nil && s.Sizes[ext] > streamPartialLimit
+}
+
 type streamState struct {
 	srv       *mtppart.Server
 	shotID    string
@@ -67,7 +91,7 @@ func (p *Prefetcher) StreamReader(s *photo.Shot, ext string) (io.ReadSeeker, err
 	if err := p.ensureStreamLocked(s, ext); err != nil {
 		return nil, err
 	}
-	return io.NewSectionReader(&streamReaderAt{p: p, shotID: s.ID, ext: ext, s: s}, 0, s.Sizes[ext]), nil
+	return io.NewSectionReader(&streamReaderAt{p: p, shotID: s.ID, ext: ext, s: s}, 0, streamSize(s, ext)), nil
 }
 
 // ensureStreamLocked opens (or re-targets) the serve-parts session and
@@ -88,7 +112,7 @@ func (p *Prefetcher) ensureStreamLocked(s *photo.Shot, ext string) error {
 	}
 	st := &streamState{
 		srv: srv, shotID: s.ID, objID: s.ObjectIDs[ext],
-		size: s.Sizes[ext], last: time.Now(),
+		size: streamSize(s, ext), last: time.Now(),
 		chunks: map[int64][]byte{}, inflight: map[int64]chan struct{}{},
 	}
 	p.stream = st // claim before the head fetch: streamFetch drops the lock
@@ -266,4 +290,28 @@ func (p *Prefetcher) closeStreamLocked() {
 	p.stream.srv.Close()
 	p.stream = nil
 	p.Resume()
+}
+
+// closeStreamIfElsewhere releases a live camera video stream once the cursor
+// has moved off its shot, resuming the prefetcher immediately instead of after
+// the janitor's streamIdle timeout (the "photos won't load right after a video"
+// stall). It reads the CURRENT cursor rather than a value captured when the
+// call was scheduled: SetCursor spawns this async, so a stale navigation could
+// otherwise tear down the stream a later navigation legitimately opened — which
+// showed up as a video failing to load on the first tab onto it. Safe to call
+// without p.mu held: it takes p.mu briefly, then streamMu, and
+// closeStreamLocked's Resume re-takes p.mu (lock order streamMu → p.mu).
+func (p *Prefetcher) closeStreamIfElsewhere() {
+	p.mu.Lock()
+	var cursorID string
+	if p.cursor >= 0 && p.cursor < len(p.cat.Shots) {
+		cursorID = p.cat.Shots[p.cursor].ID
+	}
+	p.mu.Unlock()
+	p.streamMu.Lock()
+	if st := p.stream; st != nil && st.shotID != cursorID {
+		log.Printf("stream: %s left, releasing camera (cursor moved)", st.shotID)
+		p.closeStreamLocked()
+	}
+	p.streamMu.Unlock()
 }

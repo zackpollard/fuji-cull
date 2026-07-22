@@ -42,6 +42,7 @@ type Prefetcher struct {
 	batch   int // max shots fetched per aft-mtp-cli invocation
 
 	cursor   int
+	navGen   uint64          // bumped per SetCursor; debounces the stream release
 	demand   map[string]bool // shot IDs explicitly requested
 	state    map[string]*fetchState
 	fetching int
@@ -264,12 +265,33 @@ func (p *Prefetcher) rafPath(s *photo.Shot) string {
 	return filepath.Join(p.cache, s.SafeID()+".raf")
 }
 
+// streamCloseDebounce delays the post-navigation stream release so that rapid
+// tabbing through a bank of videos supersedes it: only a cursor that has
+// SETTLED releases the camera. Firing on every hop tore down the stream mpv was
+// mid-load on, which left the video the user landed on stuck unloaded (its
+// mpv load errored during the churn and the GUI won't re-trigger it).
+const streamCloseDebounce = 400 * time.Millisecond
+
 func (p *Prefetcher) SetCursor(i int) {
 	p.mu.Lock()
 	p.cursor = i
 	p.thumbCursor = -1 // navigation retargets the sweep back to the cursor
 	p.interruptThumbsLocked()
+	p.navGen++
+	gen := p.navGen
 	p.mu.Unlock()
+	// Once navigation settles (see streamCloseDebounce), release a video stream
+	// the cursor has left so photo prefetch resumes ~0.4s later instead of
+	// waiting out the janitor's 20s idle — without thrashing the stream while
+	// you skip through consecutive videos.
+	time.AfterFunc(streamCloseDebounce, func() {
+		p.mu.Lock()
+		superseded := p.navGen != gen
+		p.mu.Unlock()
+		if !superseded {
+			p.closeStreamIfElsewhere()
+		}
+	})
 	p.cond.Broadcast()
 }
 
@@ -746,7 +768,7 @@ func (p *Prefetcher) Run() {
 			p.fetching = len(targets)
 			p.mu.Unlock()
 
-			if p.partBin == "" || mtpcli.USBFile() == nil {
+			if p.partBin == "" {
 				p.closePartsServer() // one-shot pulls need the device claim
 			}
 			p.fetchBatch(targets)
@@ -1603,11 +1625,13 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 		p.mu.Unlock()
 		fcancel()
 	}()
-	// On the phone's usbfs fd, full pulls ride the persistent partial-read
+	// Wherever the patched binary exists (Android's usbfs fd AND the desktop's
+	// persistent serve-parts session), full pulls ride the partial-read
 	// session: demand preemption then stops cleanly BETWEEN chunks. One-shot
-	// aft processes get SIGKILLed mid-URB when preempted faster than they
-	// can exit — the kill that wedges the camera off the bus while swiping.
-	useParts := p.partBin != "" && mtpcli.USBFile() != nil
+	// aft processes get SIGKILLed mid-URB when preempted faster than they can
+	// exit — the kill that wedges the camera off the bus while swiping through
+	// full-screen photos, tripping it into stale-buffer mode.
+	useParts := p.partBin != ""
 	fetchDone := make(chan error, 1)
 	go func() {
 		if useParts {
