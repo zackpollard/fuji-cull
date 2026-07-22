@@ -9,7 +9,7 @@ struct Shot: Identifiable, Decodable, Equatable {
     let date: String?
 }
 
-struct ImportStatus: Decodable {
+struct ImportStatus: Decodable, Equatable {
     let running: Bool
     let phase: String       // idle | copy | hash | upload | validate | done | error
     let done: Int

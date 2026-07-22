@@ -49,6 +49,14 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
 
     private let browser = ICDeviceBrowser()
     private let gate = DispatchSemaphore(value: 1)   // one camera op at a time
+    // Camera commands are issued from this queue, NEVER the main queue: while
+    // ICC's background crawl saturates the link, requestSendPTPCommand can
+    // block its calling thread until the daemon accepts the command — up to
+    // the full command timeout. Issued from main, that froze the entire UI in
+    // measured 30s chunks (debug-probe watchdog), one per read, indefinitely.
+    // (Delegate callbacks still ride the main run loop; only command issue
+    // moves off it.)
+    private let camQ = DispatchQueue(label: "icc.commands", qos: .userInitiated)
     private let lock = NSLock()
     private var camera: ICCameraDevice?
     private var sessionOpen = false
@@ -131,7 +139,7 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
         var out: Data?
         var failure: Error?
         let done = DispatchSemaphore(value: 0)
-        DispatchQueue.main.async {
+        camQ.async {
             cam.requestSendPTPCommand(command, outData: outData) { data, resp, error in
                 out = data
                 failure = error
@@ -224,10 +232,7 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
         var out: Data?
         var failure: Error?
         let done = DispatchSemaphore(value: 0)
-        // ImageCaptureCore is a run-loop framework: issue from the main thread
-        // (a lesson from the passthrough debugging — background-queue requests
-        // can vanish without a callback).
-        DispatchQueue.main.async {
+        camQ.async {
             file.requestReadData(atOffset: off_t(offset), length: off_t(size)) { data, error in
                 out = data
                 failure = error
@@ -423,7 +428,9 @@ extension ICCTransport: ICCameraDeviceDelegate {
     func deviceDidBecomeReady(withCompleteContentCatalog device: ICCameraDevice) {
         progressTimer?.cancel()
         note("ICC catalog complete — object fallback armed, link now crawl-free")
+        DebugProbe.trace("→icc.indexContents")
         indexContents()
+        DebugProbe.trace("←icc.indexContents")
     }
 
 
@@ -433,6 +440,7 @@ extension ICCTransport: ICCameraDeviceDelegate {
         addedCount += items.count
         let n = addedCount
         lock.unlock()
+        if n % 500 < items.count { DebugProbe.trace("icc.didAdd \(n)") }
         if n % 2000 < items.count { note("ICC enumerated \(n) items…") }
     }
     func cameraDevice(_ camera: ICCameraDevice, didRemove items: [ICCameraItem]) {}

@@ -6,7 +6,12 @@ import SwiftUI
 struct DayGroup: Identifiable {
     let id: String
     let label: String
-    let cells: [(index: Int, shot: Shot)]
+    // catalog indices, NOT (index, shot) tuples: ForEach re-diffs this array
+    // on every render pass, and copying tuple-of-struct arrays (retain/release
+    // per string field, ~10k elements for a big day) kept passes longer than
+    // the poll period at 24k shots — the probe's hung stacks were exactly
+    // swift_arrayInitWithCopy/arrayDestroy. [Int] diffs as a memcmp.
+    let cells: [Int]
 }
 
 struct MonthGroup: Identifiable {
@@ -33,9 +38,9 @@ final class GridModel: ObservableObject {
     @Published var showViewer = false
     @Published var viewerIndex = 0
 
-    private var states: [Character] = []
-    private var orientChars: [Character] = []
-    private var immichChars: [Character] = []
+    @Published private(set) var states: [Character] = []
+    @Published private(set) var orientChars: [Character] = []
+    @Published private(set) var immichChars: [Character] = []
     private var api: API?
     private var pollTask: Task<Void, Never>?
 
@@ -69,27 +74,35 @@ final class GridModel: ObservableObject {
         guard pollTask == nil, let api else { return }
         pollTask = Task { @MainActor [weak self] in
             var lastHave = -1
+            // change-guard every @Published assignment: each one invalidates
+            // every observer, and at 24k shots gratuitous invalidations from
+            // this loop kept SwiftUI re-rendering longer than the poll period
+            var rawStates = "", rawOrient = "", rawImmich = ""
             while !Task.isCancelled {
-                if let t = try? await api.fetchThumbs() {
-                    self?.states = Array(t.states)
-                    self?.orientChars = Array(t.orient)
-                    self?.immichChars = Array(t.immich)
-                    self?.haveThumbs = t.have
-                    self?.exifKnown = t.orient.filter { $0 >= "1" && $0 <= "8" }.count
-                    self?.exifTotal = t.orient.filter { $0 != "-" }.count
+                if let t = try? await api.fetchThumbs(), let self {
+                    if t.states != rawStates { rawStates = t.states; self.states = Array(t.states) }
+                    if t.orient != rawOrient {
+                        rawOrient = t.orient
+                        self.orientChars = Array(t.orient)
+                        self.exifKnown = t.orient.filter { $0 >= "1" && $0 <= "8" }.count
+                        self.exifTotal = t.orient.filter { $0 != "-" }.count
+                    }
+                    if t.immich != rawImmich { rawImmich = t.immich; self.immichChars = Array(t.immich) }
+                    if t.have != self.haveThumbs { self.haveThumbs = t.have }
                 }
-                if let st = try? await api.fetchStatus() {
-                    self?.sick = st.bulkSick || st.partSick
-                    self?.enginePosters = st.posters
-                    self?.decisions = st.decisions
-                    self?.counts = st.counts
-                    self?.fetchStates = st.fetch
-                    self?.importStatus = st.importStatus
+                if let st = try? await api.fetchStatus(), let self {
+                    let sick = st.bulkSick || st.partSick
+                    if sick != self.sick { self.sick = sick }
+                    if st.posters != self.enginePosters { self.enginePosters = st.posters }
+                    if st.decisions != self.decisions { self.decisions = st.decisions }
+                    if st.counts != self.counts { self.counts = st.counts }
+                    if st.fetch != self.fetchStates { self.fetchStates = st.fetch }
+                    if st.importStatus != self.importStatus { self.importStatus = st.importStatus }
                     if let imp = st.importStatus {
                         if imp.running {
-                            self?.importing = "importing \(imp.done)/\(imp.total)"
-                        } else if let cur = self?.importing, !cur.isEmpty, cur != "import done" {
-                            self?.importing = imp.error.isEmpty ? "import done" : imp.error
+                            self.importing = "importing \(imp.done)/\(imp.total)"
+                        } else if !self.importing.isEmpty, self.importing != "import done" {
+                            self.importing = imp.error.isEmpty ? "import done" : imp.error
                         }
                     }
                 }
@@ -155,13 +168,12 @@ final class GridModel: ObservableObject {
         var months: [MonthGroup] = []
         var curMonth = "\u{0}", curDay = "\u{0}"
         var monthDays: [DayGroup] = []
-        var dayCells: [(Int, Shot)] = []
+        var dayCells: [Int] = []
         var monthLabel = "", dayLabel = "", monthID = "", dayID = ""
 
         func flushDay() {
             guard !dayCells.isEmpty else { return }
-            monthDays.append(DayGroup(id: dayID, label: dayLabel,
-                                      cells: dayCells.map { (index: $0.0, shot: $0.1) }))
+            monthDays.append(DayGroup(id: dayID, label: dayLabel, cells: dayCells))
             dayCells = []
         }
         func flushMonth() {
@@ -185,7 +197,7 @@ final class GridModel: ObservableObject {
                 curDay = day
                 dayID = "\(month)/\(day)"; dayLabel = prettyDay(day)
             }
-            dayCells.append((i, s))
+            dayCells.append(i)
         }
         flushMonth()
         return months
@@ -217,9 +229,6 @@ struct GridView: View {
     @State private var showLog = false
     @State private var showImport = false
     @State private var showSettings = false
-    @State private var autoscrollAt = 0
-
-    private let columns = [GridItem(.adaptive(minimum: 120, maximum: 180), spacing: 3)]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -255,56 +264,12 @@ struct GridView: View {
     }
 
     private var timeline: some View {
-        ScrollViewReader { proxy in
-            HStack(spacing: 0) {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                        ForEach(model.groups) { month in
-                            Section {
-                                ForEach(month.days) { day in
-                                    Text(day.label)
-                                        .font(.system(.caption, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                        .padding(.horizontal, 8).padding(.top, 10).padding(.bottom, 4)
-                                    LazyVGrid(columns: columns, spacing: 3) {
-                                        ForEach(day.cells, id: \.shot.id) { cell in
-                                            Tile(shot: cell.shot, index: cell.index, model: model)
-                                                .onAppear { model.hint(cell.index) }
-                                        }
-                                    }
-                                    .padding(.horizontal, 3)
-                                }
-                            } header: {
-                                MonthHeader(label: month.label)
-                            }
-                            .id(month.id)
-                        }
-                    }
-                }
-                MonthScrubber(months: model.groups) { id in
-                    withAnimation { proxy.scrollTo(id, anchor: .top) }
-                }
-            }
-            // debug-probe autoscroll: walk month to month so uncached regions
-            // stream in hands-free while the probe snapshots and measures hangs
-            .onReceive(NotificationCenter.default.publisher(for: DebugProbe.autoscrollTick)) { _ in
-                guard !model.groups.isEmpty else { return }
-                autoscrollAt = (autoscrollAt + 1) % model.groups.count
-                withAnimation { proxy.scrollTo(model.groups[autoscrollAt].id, anchor: .top) }
+        HStack(spacing: 0) {
+            TimelineCollection(model: model)
+            MonthScrubber(months: model.groups) { id in
+                NotificationCenter.default.post(name: TimelineCollection.jumpToMonth, object: id)
             }
         }
-    }
-}
-
-struct MonthHeader: View {
-    let label: String
-    var body: some View {
-        Text(label)
-            .font(.system(.subheadline, design: .monospaced).weight(.semibold))
-            .foregroundStyle(Color.amber)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 8).padding(.vertical, 6)
-            .background(Color.appBG.opacity(0.95))
     }
 }
 
@@ -374,51 +339,3 @@ struct HeaderBar: View {
     }
 }
 
-struct Tile: View {
-    let shot: Shot
-    let index: Int
-    @ObservedObject var model: GridModel
-
-    var body: some View {
-        let decision = model.decisions[shot.id] ?? ""
-        ZStack(alignment: .bottom) {
-            if let url = model.thumbURL(shot.id, index) {
-                ThumbView(url: url, cacheKey: "\(shot.id):\(model.orientOf(index))", ready: model.thumbReady(index))
-            } else {
-                Rectangle().fill(Color.white.opacity(0.04))
-            }
-            if decision == "keep" || decision == "reject" {
-                Rectangle()
-                    .fill(decision == "keep" ? Color.keepGreen : Color.rejectRed)
-                    .frame(height: 5)
-            }
-        }
-        .aspectRatio(3.0 / 2.0, contentMode: .fill)
-        .clipped()
-        .overlay(alignment: .topLeading) {
-            if model.inImmich(index) {
-                Image(systemName: "cloud.fill")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .padding(4)
-                    .shadow(radius: 2)
-            }
-        }
-        .overlay(alignment: .topTrailing) {
-            HStack(spacing: 3) {
-                if model.buffered(shot.id) {
-                    Circle().fill(Color(red: 0.18, green: 0.5, blue: 0.88)).frame(width: 6, height: 6)
-                }
-                if shot.kind == "video" {
-                    Image(systemName: "play.circle.fill").foregroundStyle(.white).shadow(radius: 2)
-                }
-            }
-            .padding(4)
-        }
-        .overlay(
-            Rectangle().stroke(model.cursor == index ? Color.amber : .clear, lineWidth: 2)
-        )
-        .contentShape(Rectangle())
-        .onTapGesture { model.openViewer(index) }
-    }
-}

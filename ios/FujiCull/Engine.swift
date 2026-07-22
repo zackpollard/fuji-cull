@@ -165,15 +165,54 @@ final class Engine: ObservableObject {
     }
 
     private func poll() {
-        cameraStatus = ICCTransport.shared.status
+        // breadcrumbed: main deadlocks permanently mid-session; a call that
+        // never returns can't log its own duration, so each is bracketed with
+        // direct-to-disk breadcrumbs — the unclosed "→" names the blocker
+        func timed<T>(_ name: String, _ f: () -> T) -> T {
+            DebugProbe.trace("→poll.\(name)")
+            let t0 = Date()
+            let v = f()
+            let ms = Int(Date().timeIntervalSince(t0) * 1000)
+            DebugProbe.trace("←poll.\(name) \(ms)ms")
+            if ms > 500 { NSLog("[hang] poll.%@ took %dms", name, ms); engine?.logEvent("hang: poll.\(name) \(ms)ms") }
+            return v
+        }
+        // Every @Published assignment fires objectWillChange and re-renders
+        // every observer of the engine — at 24k shots an unconditional set
+        // each 600ms kept SwiftUI in a render pass longer than the poll
+        // period, permanently starving the main thread (probe-verified: the
+        // hung stack was AttributeGraph churn, not a lock). So: assign only
+        // on change, and keep the connect-screen log tail SMALL — the full
+        // 3000-line string re-laid-out per poll was the biggest single input.
+        let cs = timed("status") { ICCTransport.shared.status }
+        if cs != cameraStatus { cameraStatus = cs }
         // fold camera-link events into the engine log so the in-app diagnostics
         // screen is the single place to look when debugging wirelessly
-        for line in ICCTransport.shared.drainLog() { engine?.logEvent("icc: " + line) }
+        for line in timed("drainLog", { ICCTransport.shared.drainLog() }) { engine?.logEvent("icc: " + line) }
         guard let e = engine else { return }
-        ready = e.ready()
-        shotCount = e.shotCount()
-        status = ready ? "ready" : e.discoveryStatus()
-        log = e.fullLog()
+        let r = timed("ready") { e.ready() }
+        if r != ready { ready = r }
+        let sc = timed("shotCount") { e.shotCount() }
+        if sc != shotCount { shotCount = sc }
+        let st = r ? "ready" : timed("discoveryStatus") { e.discoveryStatus() }
+        if st != status { status = st }
+        if !r {
+            // connect screen only; the grid never renders this string and the
+            // log sheet fetches its own copy on demand
+            let tail = Self.lastLines(timed("fullLog") { e.fullLog() }, 30)
+            if tail != log { log = tail }
+        }
+    }
+
+    private static func lastLines(_ s: String, _ n: Int) -> String {
+        var lines = [Substring]()
+        var end = s.endIndex
+        while lines.count < n, let nl = s[..<end].lastIndex(of: "\n") {
+            lines.append(s[s.index(after: nl)..<end])
+            end = nl
+        }
+        if lines.count < n { lines.append(s[..<end]) }
+        return lines.reversed().joined(separator: "\n")
     }
 
     // MARK: - passthroughs

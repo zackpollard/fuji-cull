@@ -75,25 +75,38 @@ struct ConnectView: View {
 }
 
 // LogTailView renders the engine log, auto-scrolled to the newest line.
+// Callers must keep `text` modest (a few hundred lines at most): a huge
+// selectable Text re-laid-out on every change once starved the main thread
+// into a permanent freeze.
 struct LogTailView: View {
     let text: String
+    var selectable = false
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                Text(text.isEmpty ? "…" : text)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .id("logbottom")
+                Group {
+                    if selectable {
+                        logText.textSelection(.enabled)
+                    } else {
+                        logText
+                    }
+                }
+                .id("logbottom")
             }
             .onChange(of: text) { _ in
-                withAnimation { proxy.scrollTo("logbottom", anchor: .bottom) }
+                proxy.scrollTo("logbottom", anchor: .bottom)
             }
         }
         .background(Color.black.opacity(0.35))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var logText: some View {
+        Text(text.isEmpty ? "…" : text)
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -106,7 +119,9 @@ struct LogSheet: View {
 
     var body: some View {
         NavigationStack {
-            LogTailView(text: text)
+            // render a bounded tail (full text still shared via ShareLink) —
+            // an unbounded selectable Text was a main-thread killer
+            LogTailView(text: String(text.suffix(40_000)), selectable: true)
                 .padding(8)
                 .navigationTitle("engine log :\(engine.port)")
                 .navigationBarTitleDisplayMode(.inline)
@@ -118,7 +133,8 @@ struct LogSheet: View {
                 }
                 .task {
                     while !Task.isCancelled {
-                        text = engine.fullLog()
+                        let t = engine.fullLog()
+                        if t != text { text = t }
                         try? await Task.sleep(nanoseconds: 2_000_000_000)
                     }
                 }
