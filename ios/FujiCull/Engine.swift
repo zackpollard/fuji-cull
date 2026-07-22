@@ -1,4 +1,5 @@
 import Foundation
+import AVFAudio
 import Mobile
 
 // Engine wraps the gomobile fuji-cull core and decides which camera link to run:
@@ -50,6 +51,11 @@ final class Engine: ObservableObject {
     func start(_ s: AppSettings) {
         guard engine == nil, bootTask == nil else { return }
         settings = s
+        // A real playback session: the default (.soloAmbient) is the most
+        // interruptible category iOS has, and interruptions pause AVPlayer
+        // silently — probe-measured as videos freezing seconds in with a
+        // full buffer and rate=0.
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         ICCTransport.shared.start()
         bootTask = Task { await boot() }
     }

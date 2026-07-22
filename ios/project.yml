@@ -16,6 +16,14 @@ settings:
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
 
+# libmpv for video playback: ffmpeg software decode covers the 4:2:2 10-bit
+# HEVC that AVPlayer refuses to sustain, hwdec=videotoolbox covers the rest —
+# the same libmpv approach the Android build uses (MPVLib there).
+packages:
+  MPVKit:
+    url: https://github.com/mpvkit/MPVKit
+    exactVersion: 0.41.0
+
 targets:
   FujiCull:
     type: application
@@ -26,6 +34,8 @@ targets:
       - framework: Mobile.xcframework
         embed: false
         link: true
+      - package: MPVKit
+        product: MPVKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: pro.zackpollard.fujicull

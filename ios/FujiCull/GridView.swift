@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 // Immich-style timeline grouping: month sections containing day groups, with
 // each shot keeping its catalog index (thumb/orient/immich state strings are
@@ -292,10 +293,62 @@ struct GridView: View {
             model.startPolling()
             let av = UserDefaults.standard.integer(forKey: "autoViewer")
             if av > 0 && av <= model.shots.count { model.openViewer(av - 1) }
-            if DebugProbe.openVideoRequested,
-               let v = model.shots.firstIndex(where: { $0.kind == "video" }) {
-                DebugProbe.trace("openVideo -> index \(v) \(model.shots[v].base)")
-                model.openViewer(v)
+            if DebugProbe.codecAuditRequested || DebugProbe.openVideoRequested {
+                let videoIdx = model.shots.indices.filter { model.shots[$0].kind == "video" }
+                let m = model
+                Task {
+                    // codec audit: profile_idc from hvcC byte 1 & 0x1F —
+                    // 1 Main (4:2:0 8-bit), 2 Main10 (4:2:0 10-bit),
+                    // 4 Rext (4:2:2). moov-only loads, no playback.
+                    var byProfile: [Int: [Int]] = [:] // profile -> shot indices
+                    if DebugProbe.codecAuditRequested {
+                        for idx in videoIdx {
+                            guard let url = m.videoURL(m.shots[idx].id) else { continue }
+                            let asset = AVURLAsset(url: url)
+                            var profile = -1
+                            if let track = try? await asset.loadTracks(withMediaType: .video).first,
+                               let fd = try? await track.load(.formatDescriptions).first,
+                               let atoms = CMFormatDescriptionGetExtension(
+                                   fd, extensionKey: kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms)
+                                   as? [String: Any],
+                               let hvcc = atoms["hvcC"] as? Data, hvcc.count > 1 {
+                                profile = Int(hvcc[1] & 0x1F)
+                            }
+                            byProfile[profile, default: []].append(idx)
+                        }
+                        m.logEvent("codecAudit done: \(videoIdx.count) clips, profiles "
+                                   + byProfile.map { "\($0.key): \($0.value.count)" }.sorted().joined(separator: ", "))
+                    }
+                    guard DebugProbe.openVideoRequested, !videoIdx.isEmpty else { return }
+                    if DebugProbe.waitForCrawlRequested {
+                        while !ICCTransport.shared.isCrawlComplete {
+                            try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        }
+                        m.logEvent("probe: crawl complete — camera idle, starting playback")
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    }
+                    // with audit data: play a couple of each profile so both
+                    // 4:2:0 and 4:2:2 get an explicit hardware verdict;
+                    // without: an even spread
+                    var sample: [(String, Int)] = []
+                    if byProfile.isEmpty {
+                        let step = max(1, videoIdx.count / 6)
+                        sample = stride(from: 0, to: videoIdx.count, by: step).prefix(6).map { ("?", videoIdx[$0]) }
+                    } else {
+                        for (profile, idxs) in byProfile.sorted(by: { $0.key < $1.key }) {
+                            for idx in idxs.prefix(2) { sample.append(("p\(profile)", idx)) }
+                        }
+                    }
+                    guard let first = sample.first else { return }
+                    m.openViewer(first.1)
+                    for (n, pick) in sample.enumerated() {
+                        DebugProbe.trace("openVideo \(n + 1)/\(sample.count) [\(pick.0)] -> \(m.shots[pick.1].base)")
+                        m.logEvent("probe: playing [\(pick.0)] \(m.shots[pick.1].base)")
+                        m.viewerIndex = pick.1
+                        try? await Task.sleep(nanoseconds: 18_000_000_000)
+                    }
+                    m.showViewer = false
+                }
             }
             if UserDefaults.standard.bool(forKey: "autoImport") { showImport = true }
         }

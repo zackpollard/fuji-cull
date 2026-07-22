@@ -10,14 +10,28 @@ struct ViewerView: View {
     @Environment(\.dismiss) private var dismiss
 
     private var shot: Shot? { model.shots.indices.contains(index) ? model.shots[index] : nil }
+    private var pageWindow: [Int] {
+        guard !model.shots.isEmpty else { return [] }
+        let lo = max(0, index - 2), hi = min(model.shots.count - 1, index + 2)
+        return Array(lo...hi)
+    }
     private var decision: String { shot.flatMap { model.decisions[$0.id] } ?? "" }
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
+            // Windowed pager: only ±2 pages exist, NOT all 24k. A full-catalog
+            // ForEach here rebuilt a 24k-element array per render and let
+            // SwiftUI's page management churn neighbor pages — which tore
+            // down and rebuilt the ACTIVE page, whose onDisappear paused the
+            // playing video 1-3s in (probe-verified: player paused with a
+            // full buffer). With a window keyed by catalog index, re-centering
+            // keeps the current page's identity, so only truly-departed pages
+            // are torn down.
             TabView(selection: $index) {
-                ForEach(Array(model.shots.enumerated()), id: \.element.id) { i, s in
+                ForEach(pageWindow, id: \.self) { i in
+                    let s = model.shots[i]
                     Group {
                         if s.kind == "video" {
                             VideoFrame(model: model, shot: s, active: i == index)
@@ -118,78 +132,24 @@ struct ViewerView: View {
 }
 
 // VideoFrame plays a clip straight off the camera via the engine's /api/video
-// range server (AVPlayer). If the hardware refuses the 4:2:2 10-bit HEVC the
-// X-H2S records, the plan's fallback is an MPVKit screen — the pull-a-local-copy
-// path below also gives AVPlayer a plain file to chew on.
+// range server, through libmpv (MpvPlayerView) — AVPlayer could not sustain
+// this card's footage: it froze Rext (4:2:2 10-bit) clips seconds in with a
+// full buffer and starved everything else in a 64 KB-per-request crawl, the
+// same class of platform-player failure that pushed Android onto libmpv.
 struct VideoFrame: View {
     @ObservedObject var model: GridModel
     let shot: Shot
     let active: Bool
 
-    @State private var player: AVPlayer?
-    @State private var failed = false
-
     var body: some View {
         ZStack {
             Color.black
-            if let player {
-                VideoPlayer(player: player)
-                    .onDisappear { player.pause() }
-            } else if failed {
-                VStack(spacing: 10) {
-                    Image(systemName: "film").font(.system(size: 40)).foregroundStyle(Color.amber)
-                    Text("VIDEO UNAVAILABLE").font(.system(.headline, design: .monospaced))
-                    Text("pull a local copy to play it")
-                        .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
-                    Button("PULL VIDEO") { model.loadVideo(shot.id) }
-                        .buttonStyle(.borderedProminent).tint(Color.amber)
-                }
+            if active {
+                MpvPlayerView(model: model, shot: shot)
             } else {
                 ProgressView().tint(.white)
             }
         }
-        .onChange(of: active) { on in
-            if on { start() } else { stop() }
-        }
-        .onAppear { if active { start() } }
-        .onDisappear { stop() }
-    }
-
-    private func start() {
-        guard player == nil, let url = model.videoURL(shot.id) else { return }
-        let item = AVPlayerItem(url: url)
-        let p = AVPlayer(playerItem: item)
-        p.actionAtItemEnd = .pause
-        player = p
-        p.play()
-        // surface a hard failure so the user can fall back to a local pull —
-        // and log WHY: AVPlayer failures on a range server (unsupported
-        // codec vs 409 vs stalled stream) are indistinguishable on screen
-        Task {
-            for _ in 0..<10 {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                if item.status == .failed {
-                    let err = item.error?.localizedDescription ?? "?"
-                    model.logEvent("video: \(shot.base) FAILED — \(err)")
-                    DebugProbe.trace("video failed: \(err)")
-                    failed = true
-                    player = nil
-                    return
-                }
-                if item.status == .readyToPlay {
-                    model.logEvent("video: \(shot.base) playing"
-                                   + " (\(Int(CMTimeGetSeconds(item.duration)))s)")
-                    DebugProbe.trace("video ready")
-                    return
-                }
-            }
-            model.logEvent("video: \(shot.base) never became ready (status=\(item.status.rawValue))")
-        }
-    }
-
-    private func stop() {
-        player?.pause()
-        player = nil
     }
 }
 

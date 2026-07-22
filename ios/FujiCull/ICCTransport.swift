@@ -126,6 +126,13 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
         return camera != nil && sessionOpen
     }
 
+    /// Whether ICC's background crawl has finished (no camera counts as
+    /// finished, so simulator probes never wait on it).
+    var isCrawlComplete: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return camera == nil || catalogComplete
+    }
+
     /// Sends one PTP command container, returns its data phase. The engine
     /// builds and parses everything (internal/ptp); this only moves bytes.
     /// Serialized by `gate`: MTP is a single-threaded link, and one in-flight

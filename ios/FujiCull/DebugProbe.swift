@@ -23,10 +23,18 @@ enum DebugProbe {
         /// open the viewer on the first video once the catalog loads, so
         /// playback can be exercised with no one to tap the screen
         var openVideo: Bool?
+        /// walk every video's format description (moov-only, no playback)
+        /// and log its HEVC profile — finds 4:2:2 (Rext) clips to play-test
+        var codecAudit: Bool?
+        /// hold the playback cycle until ICC's crawl finishes — the A/B for
+        /// "does a busy camera explain the stalls"
+        var waitForCrawl: Bool?
     }
 
     /// Set when the armed config asks for the video-playback rig.
     private(set) static var openVideoRequested = false
+    private(set) static var codecAuditRequested = false
+    private(set) static var waitForCrawlRequested = false
 
     static let autoscrollTick = Notification.Name("debugAutoscrollTick")
 
@@ -62,6 +70,8 @@ enum DebugProbe {
               let cfg = try? JSONDecoder().decode(Config.self, from: data) else { return }
         armed = true
         openVideoRequested = cfg.openVideo ?? false
+        codecAuditRequested = cfg.codecAudit ?? false
+        waitForCrawlRequested = cfg.waitForCrawl ?? false
         mainMachThread = mach_thread_self() // armIfConfigured runs on main
         log("debug-probe: armed (snapshotEvery=\(cfg.snapshotEvery ?? 0) autoscroll=\(cfg.autoscroll ?? false))")
 
