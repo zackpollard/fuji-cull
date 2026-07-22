@@ -17,6 +17,26 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
     /// Human-readable link state for the connect screen.
     private(set) var status: String = "looking for a camera…"
 
+    /// Camera-link events, drained into the engine log by Engine.poll() so the
+    /// in-app diagnostics screen tells one story — essential when the iPad is
+    /// debugged wirelessly (the USB port belongs to the camera).
+    private var pending: [String] = []
+
+    func drainLog() -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        let out = pending
+        pending.removeAll()
+        return out
+    }
+
+    private func note(_ msg: String) {
+        NSLog("[icc] %@", msg)
+        lock.lock()
+        pending.append(msg)
+        if pending.count > 300 { pending.removeFirst(pending.count - 300) }
+        lock.unlock()
+    }
+
     private let browser = ICDeviceBrowser()
     private let gate = DispatchSemaphore(value: 1)   // one camera op at a time
     private let lock = NSLock()                      // guards the fields below
@@ -202,7 +222,7 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
         catalogComplete = true
         status = "camera ready — \(folders.count) folders, \(files.count) files"
         lock.unlock()
-        NSLog("[icc] catalog: %d folders, %d files", folders.count, files.count)
+        note("catalog: \(folders.count) folders, \(files.count) files")
         signalReady()
     }
 }
@@ -212,7 +232,7 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
 extension ICCTransport: ICDeviceBrowserDelegate {
     func deviceBrowser(_ browser: ICDeviceBrowser, didAdd device: ICDevice, moreComing: Bool) {
         guard let cam = device as? ICCameraDevice else { return }
-        NSLog("[icc] camera attached: %@", cam.name ?? "?")
+        note("camera attached: \(cam.name ?? "?")")
         lock.lock()
         camera = cam
         catalogComplete = false
@@ -231,7 +251,7 @@ extension ICCTransport: ICDeviceBrowserDelegate {
         folderList.removeAll()
         status = "camera disconnected"
         lock.unlock()
-        NSLog("[icc] camera detached")
+        note("camera detached")
         signalReady() // unblock waiters; they re-check and error out
     }
 }
@@ -249,22 +269,22 @@ extension ICCTransport: ICCameraDeviceDelegate {
 
     func device(_ device: ICDevice, didOpenSessionWithError error: Error?) {
         if let error {
-            NSLog("[icc] open session failed: %@", error.localizedDescription)
+            note("open session failed: \(error.localizedDescription)")
             setStatus("camera session failed: \(error.localizedDescription)")
             signalReady()
             return
         }
-        NSLog("[icc] session open — enumerating")
+        note("session open — enumerating the card")
         setStatus("enumerating the card…")
     }
 
     func device(_ device: ICDevice, didCloseSessionWithError error: Error?) {
-        NSLog("[icc] session closed")
+        note("session closed")
     }
 
     // ICCameraDeviceDelegate
     func deviceDidBecomeReady(withCompleteContentCatalog device: ICCameraDevice) {
-        NSLog("[icc] content catalog complete")
+        note("content catalog complete")
         indexContents()
     }
 

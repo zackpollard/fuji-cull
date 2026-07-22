@@ -29,9 +29,12 @@ fi
 
 echo "== xcodegen =="
 xcodegen generate --quiet
-# Xcode 15.4 cannot read xcodegen's default objectVersion 77.
-sed -i '' -e 's/objectVersion = 77;/objectVersion = 56;/' \
-          -e '/preferredProjectObjectVersion = 77;/d' FujiCull.xcodeproj/project.pbxproj
+# Xcode <16 cannot read xcodegen's default objectVersion 77.
+XCODE_MAJOR=$(xcodebuild -version 2>/dev/null | head -1 | sed -E 's/Xcode ([0-9]+).*/\1/')
+if [ "${XCODE_MAJOR:-0}" -lt 16 ]; then
+  sed -i '' -e 's/objectVersion = 77;/objectVersion = 56;/' \
+            -e '/preferredProjectObjectVersion = 77;/d' FujiCull.xcodeproj/project.pbxproj
+fi
 
 echo "== build =="
 set -o pipefail

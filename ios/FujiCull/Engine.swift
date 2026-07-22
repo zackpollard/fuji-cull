@@ -125,6 +125,9 @@ final class Engine: ObservableObject {
 
     private func poll() {
         cameraStatus = ICCTransport.shared.status
+        // fold camera-link events into the engine log so the in-app diagnostics
+        // screen is the single place to look when debugging wirelessly
+        for line in ICCTransport.shared.drainLog() { engine?.logEvent("icc: " + line) }
         guard let e = engine else { return }
         ready = e.ready()
         shotCount = e.shotCount()

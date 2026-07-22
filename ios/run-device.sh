@@ -41,38 +41,46 @@ fi
 
 echo "== xcodegen =="
 xcodegen generate --quiet
-sed -i '' -e 's/objectVersion = 77;/objectVersion = 56;/' \
-          -e '/preferredProjectObjectVersion = 77;/d' FujiCull.xcodeproj/project.pbxproj
+# Xcode <16 can't read xcodegen's default project format (objectVersion 77).
+XCODE_MAJOR=$(xcodebuild -version 2>/dev/null | head -1 | sed -E 's/Xcode ([0-9]+).*/\1/')
+if [ "${XCODE_MAJOR:-0}" -lt 16 ]; then
+  sed -i '' -e 's/objectVersion = 77;/objectVersion = 56;/' \
+            -e '/preferredProjectObjectVersion = 77;/d' FujiCull.xcodeproj/project.pbxproj
+fi
 
-# first connected physical device
-DEVID=$(xcrun devicectl list devices --json-output /tmp/fc-devices.json >/dev/null 2>&1 && \
-  python3 - <<'PY'
+# Connected device: xcodebuild wants the hardware UDID, devicectl its own id.
+xcrun devicectl list devices --json-output /tmp/fc-devices.json >/dev/null 2>&1 || true
+read -r UDID COREID <<EOF
+$(python3 - <<'PY'
 import json
 try:
     d = json.load(open('/tmp/fc-devices.json'))
 except Exception:
     raise SystemExit()
 for dev in d.get('result', {}).get('devices', []):
-    state = dev.get('connectionProperties', {}).get('tunnelState', '')
-    if state in ('connected', 'available', 'connecting'):
-        print(dev.get('identifier', ''))
+    if dev.get('connectionProperties', {}).get('tunnelState') in ('connected', 'available', 'connecting'):
+        print(dev.get('hardwareProperties', {}).get('udid', ''), dev.get('identifier', ''))
         break
 PY
 )
-if [ -z "${DEVID:-}" ]; then
-  echo "No connected iPad found. Plug it in, unlock it, and trust this Mac."
+EOF
+if [ -z "${UDID:-}" ]; then
+  echo "No connected iPad found. Plug it in (or pair over Wi-Fi), unlock it, trust this Mac."
   echo "(list devices with: ./run-device.sh --list)"
   exit 1
 fi
-echo "== device: $DEVID =="
+echo "== device: $UDID =="
 
 echo "== build (signed, team $TEAM) =="
+# Target the device by UDID: that is what makes Xcode register it with your
+# Apple ID and mint a provisioning profile that includes it.
 xcodebuild -project FujiCull.xcodeproj -scheme FujiCull \
-  -destination "id=$DEVID" \
+  -destination "platform=iOS,id=$UDID" \
   -derivedDataPath /tmp/fc-dd-device \
   DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Automatic \
   -allowProvisioningUpdates \
   build 2>&1 | grep -iE "error:|BUILD SUCCEEDED|BUILD FAILED" || { echo "build failed"; exit 1; }
+DEVID="$COREID"
 
 APP=/tmp/fc-dd-device/Build/Products/Debug-iphoneos/FujiCull.app
 echo "== install =="
