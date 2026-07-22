@@ -186,6 +186,11 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 	}
 	if _, ok := backend.(*dirBackend); ok {
 		p.localThumbs = true // every file is directly readable; thumbnail from source
+		if _, err := exec.LookPath(ffmpegBin()); err != nil {
+			// no exec on mobile: posters are the host's job there too, and
+			// reporting them "available" would leave every video thumb-less
+			p.noFfmpeg = true
+		}
 	}
 	if p.thumbFetcher != nil || p.partsOK() || p.localThumbs {
 		if err := os.MkdirAll(p.thumbDir, 0o755); err != nil {
@@ -574,7 +579,25 @@ func (p *Prefetcher) closePartsServer() {
 // extraction needs. Refuses (rather than queues) while streaming, import or
 // a tripped breaker owns the link: the caller treats that as transient.
 func (p *Prefetcher) VideoHead(s *photo.Shot, ext string) ([]byte, error) {
-	if !p.partsOK() || s == nil || s.ObjectIDs[ext] == "" {
+	if s == nil {
+		return nil, fmt.Errorf("video head unavailable")
+	}
+	// directly-readable video (dir backend, or an already-pulled cache copy):
+	// serve the head off the file — no camera, no link gating
+	if path, ok := p.backend.LocalPath(s, ext); ok {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		buf := make([]byte, 8<<20)
+		n, err := io.ReadFull(f, buf)
+		if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+			return nil, err
+		}
+		return buf[:n], nil
+	}
+	if !p.partsOK() || s.ObjectIDs[ext] == "" {
 		return nil, fmt.Errorf("video head unavailable")
 	}
 	p.streamMu.Lock()

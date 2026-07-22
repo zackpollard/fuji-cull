@@ -155,18 +155,36 @@ struct VideoFrame: View {
 
 // Filmstrip is the horizontal thumbnail strip under the frame: current one
 // highlighted, decisions marked, tap to jump; auto-scrolls to the cursor.
+//
+// Windowed (±25 shots), like every other 24k surface in this app: a
+// full-catalog LazyHStack rebuilt a 24k array per render — and LazyHStack is
+// greedy on its cross axis, so the strip filled all the height the layout
+// offered and floated its tiles at mid-screen. A fixed height belts the
+// braces.
 struct Filmstrip: View {
     @ObservedObject var model: GridModel
     @Binding var index: Int
 
+    private var window: [Int] {
+        guard !model.shots.isEmpty else { return [] }
+        let lo = max(0, index - 25), hi = min(model.shots.count - 1, index + 25)
+        return Array(lo...hi)
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 3) {
-                    ForEach(Array(model.shots.enumerated()), id: \.element.id) { i, s in
+                HStack(spacing: 3) {
+                    ForEach(window, id: \.self) { i in
+                        let s = model.shots[i]
                         let decision = model.decisions[s.id] ?? ""
+                        // videos use the client-side poster (the engine never
+                        // has a thumb for them on mobile)
+                        let poster = s.kind == "video" ? Posters.shared.cached(s) : nil
                         ZStack(alignment: .bottom) {
-                            if let url = model.thumbURL(s.id, i) {
+                            if let poster {
+                                ThumbView(url: poster, cacheKey: "\(s.id):poster", ready: true)
+                            } else if let url = model.thumbURL(s.id, i) {
                                 ThumbView(url: url, cacheKey: "\(s.id):\(model.orientOf(i))", ready: model.thumbReady(i))
                             } else {
                                 Color.white.opacity(0.05)
@@ -187,6 +205,7 @@ struct Filmstrip: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
             }
+            .frame(height: 56)
             .background(Color.black.opacity(0.45))
             .onChange(of: index) { i in withAnimation { proxy.scrollTo(i, anchor: .center) } }
             .onAppear { proxy.scrollTo(index, anchor: .center) }
