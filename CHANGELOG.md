@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/zackpollard/fuji-cull/compare/v1.5.0...v1.5.1) (2026-07-22)
+
+
+### Bug Fixes
+
+* reliable X-H2S camera video streaming and macOS preemption ([#15](https://github.com/zackpollard/fuji-cull/issues/15)) ([6795815](https://github.com/zackpollard/fuji-cull/commit/679581532204b02dee0b46bec8002bca25a4e2e2))
+
 ## [1.5.0](https://github.com/zackpollard/fuji-cull/compare/v1.4.0...v1.5.0) (2026-07-21)
 
 
