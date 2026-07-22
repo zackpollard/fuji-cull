@@ -90,15 +90,14 @@ final class Engine: ObservableObject {
             e = fake
             mode = .fake
         } else {
-            // Wait for ImageCaptureCore to report an enumerated camera —
-            // connected() stays false until its content catalog is complete
-            // (~4 min for a 19k-file card), and the connect screen shows the
-            // catalog percent meanwhile. On real hardware we wait
+            // Wait for a camera session — connected() flips as soon as the
+            // session opens, so the engine starts within seconds and its
+            // discover loop retries PTP sweeps through ICC's ~150s startup
+            // block (progress shows in the app). On real hardware we wait
             // indefinitely. Only the simulator (where a camera can never
             // appear) falls through to the fake corpus, after a short grace
             // period. The link log is NOT drained here: it accumulates in the
-            // transport and flushes into the engine log once the engine is up,
-            // so the catalog phase stays visible in Documents/engine/engine.log.
+            // transport and flushes into the engine log once the engine is up.
             var waited = 0
             while !ICCTransport.shared.connected() {
                 if Task.isCancelled { return }

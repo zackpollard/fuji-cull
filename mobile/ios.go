@@ -65,17 +65,18 @@ func StartLocal(dataDir, cacheDir, mediaRoot, session string) (*Engine, error) {
 	return e, nil
 }
 
-// Transport is the object-level camera link the host implements — on iOS,
-// Swift's ICCTransport over ImageCaptureCore. Object-level because ICC's
-// content catalog is mandatory and is itself a full index (see cull.Transport
-// for the full account, including the three gates behind the raw-PTP
-// passthrough that this design no longer depends on).
+// Transport is the camera link the host implements — on iOS, Swift's
+// ICCTransport over ImageCaptureCore. SendPTP is the primary path (the engine
+// indexes and reads over raw PTP, shared with the desktop protocol in
+// internal/ptp); the object-level methods are the fallback served from ICC's
+// own catalog once it completes. See cull.Transport for the full account.
 //
 // gomobile only generates a host-implementable protocol for interfaces
 // declared in the *bound* package, hence this mirror of cull.Transport with a
 // thin adapter. Implementations must serialize their own access: MTP is a
 // single-threaded link.
 type Transport interface {
+	SendPTP(command []byte, outData []byte) ([]byte, error)
 	Folders() ([]byte, error)
 	Entries(dir string) ([]byte, error)
 	ReadAt(objectID string, offset, size int64) ([]byte, error)
@@ -86,6 +87,9 @@ type Transport interface {
 // transportAdapter presents a host Transport to the engine.
 type transportAdapter struct{ t Transport }
 
+func (a transportAdapter) SendPTP(command, outData []byte) ([]byte, error) {
+	return a.t.SendPTP(command, outData)
+}
 func (a transportAdapter) Folders() ([]byte, error)           { return a.t.Folders() }
 func (a transportAdapter) Entries(dir string) ([]byte, error) { return a.t.Entries(dir) }
 func (a transportAdapter) ReadAt(objectID string, offset, size int64) ([]byte, error) {

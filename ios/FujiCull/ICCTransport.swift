@@ -6,23 +6,32 @@ import Mobile
 // the sanctioned PTP/MTP stack on iPadOS, since iOS has neither exec nor usbfs
 // for the patched aft-mtp-cli the desktop/Android builds use.
 //
-// The link is object-level. Raw PTP (requestSendPTPCommand) does work on
-// iPadOS, but only behind three gates, none documented on its page: the app
-// needs NSCameraUsageDescription in Info.plist, control authorization from
-// requestControlAuthorization (distinct from the contents authorization that
-// lets us browse files — miss either and commands are dropped silently, no
-// callback, no error), and ICC's content catalog must have completed. Since
-// the catalog cannot be declined and IS a full index, the object API costs
-// nothing extra: the catalog is the index (~4 min for a 19k-file card,
-// progress reported here) and ICCameraFile.requestReadData serves partial
-// reads — the engine's chunked pull/preempt model survives unchanged. The
-// passthrough stays available for card-wide property sweeps (internal/ptp).
+// The primary path is raw PTP through requestSendPTPCommand — the engine
+// indexes with card-wide GetObjectPropList sweeps and reads with
+// GetPartialObject, all built and parsed in shared Go (internal/ptp), exactly
+// like the desktop/Android builds. Two hard-won facts about the passthrough:
 //
-// `connected()` stays false until the catalog is enumerated; the engine's
-// discover loop just retries, so nothing here ever blocks waiting for the
-// catalog. The engine calls these methods from Go goroutines (never the main
-// thread); reads bridge to ICC's callbacks with a semaphore plus a timeout
-// above the engine's own watchdogs, serialized because MTP is a
+//  1. It works only behind two undocumented app-side gates:
+//     NSCameraUsageDescription in Info.plist and a control-authorization
+//     grant (distinct from the contents authorization that lets us browse
+//     files). Miss either and commands are dropped silently — no callback,
+//     no error.
+//  2. Opening the session — which PTP requires — starts ICC's own content
+//     enumeration (no API declines it), beginning with a ~150s internal
+//     operation that head-of-line blocks the link: measured on a 24.6k-file
+//     X-H2S card, 8 probes issued 20s apart all answered in the same instant
+//     at ~150s, after which a card-wide filename sweep answered in 0.6s while
+//     ICC's crawl was still running. So commands interleave with the crawl
+//     fine; they just queue behind that startup block. The engine's discover
+//     loop retries through it.
+//
+// The object-level path (ICC's finished catalog + ICCameraFile partial reads)
+// is kept as a fallback for when the sweeps fail; it becomes available once
+// the catalog completes (~4-5 min).
+//
+// `connected()` is true from session open. The engine calls these methods
+// from Go goroutines (never the main thread); calls bridge to ICC's
+// callbacks with a semaphore plus a timeout, serialized because MTP is a
 // single-threaded link.
 final class ICCTransport: NSObject, MobileTransportProtocol {
     static let shared = ICCTransport()
@@ -42,6 +51,7 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
     private let gate = DispatchSemaphore(value: 1)   // one camera op at a time
     private let lock = NSLock()
     private var camera: ICCameraDevice?
+    private var sessionOpen = false
     private var catalogComplete = false
     private var filesByID: [String: ICCameraFile] = [:]
     private var folderList: [(dir: String, folder: String)] = []
@@ -97,13 +107,46 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
 
     // MARK: - MobileTransport
 
-    /// True only once the card is enumerated — the engine's discover loop
-    /// polls this, so folders()/entries() are never called before the index
-    /// exists and nothing has to block.
+    /// True from session open — the engine starts immediately and its
+    /// discover loop retries PTP sweeps through ICC's ~150s startup block.
     func connected() -> Bool {
         lock.lock(); defer { lock.unlock() }
-        return camera != nil && catalogComplete
+        return camera != nil && sessionOpen
     }
+
+    /// Sends one PTP command container, returns its data phase. The engine
+    /// builds and parses everything (internal/ptp); this only moves bytes.
+    /// Serialized by `gate`: MTP is a single-threaded link, and one in-flight
+    /// request keeps queueing behind ICC's own crawl fair.
+    func sendPTP(_ command: Data?, outData: Data?) throws -> Data {
+        guard let command else { throw err("empty PTP command") }
+        lock.lock(); let cam = camera; let open = sessionOpen; lock.unlock()
+        guard let cam, open else { throw err("no camera session") }
+        gate.wait(); defer { gate.signal() }
+
+        var out: Data?
+        var failure: Error?
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            cam.requestSendPTPCommand(command, outData: outData) { data, resp, error in
+                out = data
+                failure = error
+                _ = resp // response container; the engine only needs the data phase
+                done.signal()
+            }
+        }
+        // Below the engine's discover retry cadence: during ICC's startup
+        // block individual calls time out and the engine retries until one
+        // lands inside the window where the queue drains.
+        if done.wait(timeout: .now() + 30) == .timedOut {
+            throw err("PTP command timed out")
+        }
+        if let failure { throw failure }
+        guard let out else { throw err("PTP command returned no data") }
+        return out
+    }
+
+    // Object-path fallback: available once ICC's own catalog completes.
 
     func folders() throws -> Data {
         lock.lock(); let list = folderList; let ready = catalogComplete; lock.unlock()
@@ -314,6 +357,7 @@ extension ICCTransport: ICDeviceBrowserDelegate {
         note("camera attached: \(cam.name ?? "?")")
         lock.lock()
         camera = cam
+        sessionOpen = false
         catalogComplete = false
         addedCount = 0
         lock.unlock()
@@ -326,6 +370,7 @@ extension ICCTransport: ICDeviceBrowserDelegate {
         lock.lock()
         guard device === camera else { lock.unlock(); return }
         camera = nil
+        sessionOpen = false
         catalogComplete = false
         filesByID.removeAll()
         folderList.removeAll()
@@ -342,6 +387,7 @@ extension ICCTransport: ICCameraDeviceDelegate {
         lock.lock()
         if device === camera {
             camera = nil
+            sessionOpen = false
             catalogComplete = false
             filesByID.removeAll()
             folderList.removeAll()
@@ -355,8 +401,9 @@ extension ICCTransport: ICCameraDeviceDelegate {
             setStatus("camera session failed: \(error.localizedDescription)")
             return
         }
-        note("session open — waiting for the card catalog")
-        setStatus("camera indexing the card…")
+        lock.lock(); sessionOpen = true; lock.unlock()
+        note("session open — engine indexes over PTP; ICC crawls in the background")
+        setStatus("connecting to the camera…")
         startCatalogProgress()
     }
 
@@ -365,39 +412,16 @@ extension ICCTransport: ICCameraDeviceDelegate {
     }
 
     func device(_ device: ICDevice, didCloseSessionWithError error: Error?) {
-        lock.lock(); catalogComplete = false; lock.unlock()
+        lock.lock(); sessionOpen = false; catalogComplete = false; lock.unlock()
         note("session closed")
     }
 
     func deviceDidBecomeReady(withCompleteContentCatalog device: ICCameraDevice) {
         progressTimer?.cancel()
-        note("ICC catalog complete")
+        note("ICC catalog complete — object fallback armed, link now crawl-free")
         indexContents()
-        probePTP(device)
     }
 
-    /// One-shot GetDeviceInfo over the PTP passthrough with all three gates
-    /// open (usage description, control authorization, catalog complete).
-    /// Answers on the X-H2S (259-byte DeviceInfo); logged on every connect as
-    /// a health check of the raw-PTP door before anything relies on it.
-    private func probePTP(_ cam: ICCameraDevice) {
-        var cmd = Data(count: 12) // container: len=12, type=1 (command), op 0x1001, txn 1
-        cmd.withUnsafeMutableBytes { b in
-            b.storeBytes(of: UInt32(12).littleEndian, toByteOffset: 0, as: UInt32.self)
-            b.storeBytes(of: UInt16(1).littleEndian, toByteOffset: 4, as: UInt16.self)
-            b.storeBytes(of: UInt16(0x1001).littleEndian, toByteOffset: 6, as: UInt16.self)
-            b.storeBytes(of: UInt32(1).littleEndian, toByteOffset: 8, as: UInt32.self)
-        }
-        note("PTP probe: GetDeviceInfo (control auth=\(browser.controlAuthorizationStatus.rawValue))")
-        DispatchQueue.main.async {
-            cam.requestSendPTPCommand(cmd, outData: nil) { [weak self] inData, response, error in
-                self?.note("PTP probe: data=\(inData.count) response=\(response.count) err=\(error?.localizedDescription ?? "nil")")
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 15) { [weak self] in
-                self?.note("PTP probe: (15s mark — silence above means still gated)")
-            }
-        }
-    }
 
     func cameraDevice(_ camera: ICCameraDevice, didAdd items: [ICCameraItem]) {
         // one line per k items, not 19k lines per card
