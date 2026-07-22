@@ -28,6 +28,11 @@ final class GridModel: ObservableObject {
     @Published var counts: [String: Int] = [:]
     @Published var cursor: Int = 0
     @Published private(set) var haveThumbs: Int = 0
+    // Videos count toward the engine's thumb total but it can never satisfy
+    // them on mobile (no ffmpeg), so their posters — made client-side — are
+    // added to the header count; otherwise it sits short forever and reads
+    // like a stall.
+    @Published private(set) var posterCount: Int = 0
     @Published private(set) var exifKnown: Int = 0
     @Published private(set) var exifTotal: Int = 0
     @Published var sick = false
@@ -174,14 +179,18 @@ final class GridModel: ObservableObject {
         guard posterTask == nil, let api, !enginePosters, !shots.isEmpty else { return }
         let videos = shots.filter { $0.kind == "video" }
         guard !videos.isEmpty else { return }
-        posterTask = Task.detached(priority: .utility) {
+        posterTask = Task.detached(priority: .utility) { [weak self] in
+            // count what previous runs already cached
+            let already = videos.filter { Posters.shared.cached($0) != nil }.count
+            await MainActor.run { self?.posterCount = already }
             while !Task.isCancelled {
                 var pending = 0
                 for shot in videos {
                     if Task.isCancelled { return }
                     if Posters.shared.resolved(shot) { continue }
-                    if await Posters.shared.load(api: api, shot: shot) == nil,
-                       !Posters.shared.isFailed(shot) {
+                    if await Posters.shared.load(api: api, shot: shot) != nil {
+                        await MainActor.run { self?.posterCount += 1 }
+                    } else if !Posters.shared.isFailed(shot) {
                         pending += 1
                     }
                 }
@@ -343,7 +352,7 @@ struct HeaderBar: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("K \(model.counts["keep"] ?? 0)  X \(model.counts["reject"] ?? 0)  · \(model.counts["undecided"] ?? 0)")
                         .foregroundStyle(.white)
-                    Text("th \(model.haveThumbs)/\(model.shots.count) · ex \(model.exifKnown)/\(model.exifTotal)"
+                    Text("th \(model.haveThumbs + model.posterCount)/\(model.shots.count) · ex \(model.exifKnown)/\(model.exifTotal)"
                          + (model.sick ? " · CAMERA SICK" : ""))
                         .foregroundStyle(model.sick ? Color.rejectRed : .secondary)
                         .font(.system(size: 10, design: .monospaced))

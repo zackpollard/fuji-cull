@@ -39,6 +39,14 @@ struct ThumbView: View {
         if image != nil { return }
         if let cached = ThumbCache.shared.image(for: cacheKey) { image = cached; return }
         guard ready else { return }
+        // local files (client-side video posters): no HTTP response to check —
+        // the status-code guard below silently rejected every file:// load
+        if url.isFileURL {
+            guard let img = UIImage(contentsOfFile: url.path) else { return }
+            ThumbCache.shared.set(img, for: cacheKey)
+            image = img
+            return
+        }
         guard let (data, resp) = try? await URLSession.shared.data(from: url),
               (resp as? HTTPURLResponse)?.statusCode == 200,
               let img = UIImage(data: data) else { return }
