@@ -7,8 +7,10 @@ import SwiftUI
 struct ImportView: View {
     @ObservedObject var model: GridModel
     let defaultDest: String
+    var album: String = ""
     @Environment(\.dismiss) private var dismiss
     @State private var dest: String = ""
+    @State private var albumName: String = ""
 
     private var keepers: Int { model.counts["keep"] ?? 0 }
     private var status: ImportStatus? { model.importStatus }
@@ -24,9 +26,14 @@ struct ImportView: View {
                         .textInputAutocapitalization(.never)
                 }
 
+                Section("Immich album (optional)") {
+                    TextField("album name", text: $albumName)
+                        .autocorrectionDisabled()
+                }
+
                 Section {
                     Button {
-                        model.startImport(dest: dest, album: "")
+                        model.startImport(dest: dest, album: albumName)
                     } label: {
                         Label("Import \(keepers) keeper\(keepers == 1 ? "" : "s")",
                               systemImage: "square.and.arrow.down")
@@ -57,7 +64,10 @@ struct ImportView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
             }
-            .onAppear { if dest.isEmpty { dest = defaultDest } }
+            .onAppear {
+                if dest.isEmpty { dest = defaultDest }
+                if albumName.isEmpty { albumName = album }
+            }
         }
     }
 }

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	xdraw "golang.org/x/image/draw"
 	"golang.org/x/image/font"
@@ -64,6 +65,90 @@ func StartLocal(dataDir, cacheDir, mediaRoot, session string) (*Engine, error) {
 	return e, nil
 }
 
+// Transport is the camera link the host implements — on iOS, Swift's
+// ICCTransport over ImageCaptureCore. gomobile only generates a
+// host-implementable protocol for interfaces declared in the *bound* package,
+// so this mirrors cull.Transport and transportAdapter bridges the two.
+//
+// Listings cross as JSON because only bytes/strings/ints may traverse the
+// gomobile boundary:
+//
+//	Folders() -> [{"dir":"SLOT 1/DCIM/151_FUJI","folder":"151_FUJI"}]
+//	Entries() -> [{"objectID":"12","name":"DSCF0001.JPG","size":123,"date":"2026-05-10"}]
+//
+// Implementations must serialize their own access: the engine assumes a
+// single-threaded MTP link.
+type Transport interface {
+	Folders() ([]byte, error)
+	Entries(dir string) ([]byte, error)
+	ReadAt(objectID string, offset, size int64) ([]byte, error)
+	Download(objectID, destPath string) error
+	Connected() bool
+}
+
+// transportAdapter presents a host Transport to the engine.
+type transportAdapter struct{ t Transport }
+
+func (a transportAdapter) Folders() ([]byte, error)           { return a.t.Folders() }
+func (a transportAdapter) Entries(dir string) ([]byte, error) { return a.t.Entries(dir) }
+func (a transportAdapter) ReadAt(objectID string, offset, size int64) ([]byte, error) {
+	return a.t.ReadAt(objectID, offset, size)
+}
+func (a transportAdapter) Download(objectID, destPath string) error {
+	return a.t.Download(objectID, destPath)
+}
+func (a transportAdapter) Connected() bool { return a.t.Connected() }
+
+// StartICC boots the engine against a camera reached through an injected
+// Transport — on iOS that is the Swift ICCTransport over ImageCaptureCore,
+// since iOS has neither exec nor usbfs for the patched aft binary. Partial
+// reads (head sweep, orientation, chunked image pulls) all ride
+// Transport.ReadAt; the breakers and magic-byte validation are unchanged,
+// because the X-H2S stale-buffer bug is transport-agnostic.
+func StartICC(dataDir, cacheDir string, t Transport, immichURL, immichKey, session string, immichStack bool) (*Engine, error) {
+	os.Setenv("HOME", dataDir)
+	sinks := []io.Writer{os.Stderr, engineLog}
+	if f := openLogFile(dataDir); f != nil {
+		sinks = append(sinks, f)
+	}
+	log.SetOutput(io.MultiWriter(sinks...))
+	if session == "" {
+		session = "default"
+	}
+	o := cull.Options{
+		Transport:   transportAdapter{t},
+		SessionName: session,
+		ImmichStack: immichStack,
+		CacheDir:    cacheDir,
+		Ahead:       80,
+		Behind:      30,
+		EvictMargin: 300,
+		Batch:       6,
+		ImmichURL:   immichURL,
+		ImmichKey:   immichKey,
+		SkipImmich:  immichURL == "" || immichKey == "",
+		Retries:     3,
+		UploadConc:  2,
+		HashConc:    2,
+	}
+	app, handler, err := cull.Start(o)
+	if err != nil {
+		return nil, err
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		app.Close()
+		return nil, err
+	}
+	e := &Engine{app: app, ln: ln, port: ln.Addr().(*net.TCPAddr).Port}
+	go http.Serve(ln, handler)
+	return e, nil
+}
+
+// corpusEpoch anchors the synthetic corpus's capture dates, so the timeline
+// groups into believable month/day sections.
+var corpusEpoch = time.Date(2026, 5, 3, 9, 0, 0, 0, time.Local)
+
 // SeedFakeCorpus writes a synthetic media tree under root when it is empty:
 // `root/SLOT 1/DCIM/{151_FUJI,152_FUJI,...}/DSCF####.JPG`, one distinctly
 // tinted JPEG per shot so grid tiles are visually separable. Idempotent — a
@@ -91,6 +176,10 @@ func SeedFakeCorpus(root string, folders, perFolder int) error {
 			if err := writeTintedJPEG(path, idx, total); err != nil {
 				return err
 			}
+			// spread the corpus over ~40 days so the timeline groups into real
+			// month/day sections (the dir backend takes the day from mtime)
+			shot := corpusEpoch.AddDate(0, 0, idx/6).Add(time.Duration(idx%6) * time.Hour)
+			_ = os.Chtimes(path, shot, shot)
 			idx++
 		}
 	}

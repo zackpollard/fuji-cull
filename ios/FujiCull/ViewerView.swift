@@ -1,3 +1,4 @@
+import AVKit
 import SwiftUI
 
 // ViewerView is the full-screen culling surface: swipe between frames, pinch to
@@ -17,8 +18,14 @@ struct ViewerView: View {
 
             TabView(selection: $index) {
                 ForEach(Array(model.shots.enumerated()), id: \.element.id) { i, s in
-                    ZoomableImage(url: model.imageURL(s.id))
-                        .tag(i)
+                    Group {
+                        if s.kind == "video" {
+                            VideoFrame(model: model, shot: s, active: i == index)
+                        } else {
+                            ZoomableImage(url: model.imageURL(s.id))
+                        }
+                    }
+                    .tag(i)
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
@@ -107,6 +114,64 @@ struct ViewerView: View {
         if index < model.shots.count - 1 {
             withAnimation { index += 1 }
         }
+    }
+}
+
+// VideoFrame plays a clip straight off the camera via the engine's /api/video
+// range server (AVPlayer). If the hardware refuses the 4:2:2 10-bit HEVC the
+// X-H2S records, the plan's fallback is an MPVKit screen — the pull-a-local-copy
+// path below also gives AVPlayer a plain file to chew on.
+struct VideoFrame: View {
+    @ObservedObject var model: GridModel
+    let shot: Shot
+    let active: Bool
+
+    @State private var player: AVPlayer?
+    @State private var failed = false
+
+    var body: some View {
+        ZStack {
+            Color.black
+            if let player {
+                VideoPlayer(player: player)
+                    .onDisappear { player.pause() }
+            } else if failed {
+                VStack(spacing: 10) {
+                    Image(systemName: "film").font(.system(size: 40)).foregroundStyle(Color.amber)
+                    Text("VIDEO UNAVAILABLE").font(.system(.headline, design: .monospaced))
+                    Text("pull a local copy to play it")
+                        .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                    Button("PULL VIDEO") { model.loadVideo(shot.id) }
+                        .buttonStyle(.borderedProminent).tint(Color.amber)
+                }
+            } else {
+                ProgressView().tint(.white)
+            }
+        }
+        .onChange(of: active) { on in
+            if on { start() } else { stop() }
+        }
+        .onAppear { if active { start() } }
+        .onDisappear { stop() }
+    }
+
+    private func start() {
+        guard player == nil, let url = model.videoURL(shot.id) else { return }
+        let item = AVPlayerItem(url: url)
+        let p = AVPlayer(playerItem: item)
+        p.actionAtItemEnd = .pause
+        player = p
+        p.play()
+        // surface a hard failure so the user can fall back to a local pull
+        Task {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if item.status == .failed { failed = true; player = nil }
+        }
+    }
+
+    private func stop() {
+        player?.pause()
+        player = nil
     }
 }
 

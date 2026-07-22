@@ -2,28 +2,33 @@ import SwiftUI
 
 @main
 struct FujiCullApp: App {
+    @StateObject private var settings = SettingsStore()
     @StateObject private var engine = Engine()
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(engine)
-                .onAppear { engine.start() }
+                .environmentObject(settings)
+                .onAppear { engine.start(settings.settings) }
                 .preferredColorScheme(.dark)
         }
     }
 }
 
-// RootView shows the connect screen until discovery completes, then the app
-// proper (grid — Phase 2). For now readiness reveals a placeholder home.
+// RootView shows the connect screen until discovery completes, then the culling
+// grid. Keyed on the engine epoch so a settings save (which restarts the engine
+// on a new port) rebuilds the whole tree — same approach as the Android app.
 struct RootView: View {
     @EnvironmentObject var engine: Engine
 
     var body: some View {
-        if engine.ready {
-            GridView()
-        } else {
-            ConnectView()
+        Group {
+            if engine.ready {
+                GridView().id(engine.epoch)
+            } else {
+                ConnectView()
+            }
         }
     }
 }

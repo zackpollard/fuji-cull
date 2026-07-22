@@ -5,3 +5,6 @@ FujiCull.xcodeproj/
 # build products
 build/
 *.ipa
+# free-account team id (local only)
+.teamid
+.DS_Store

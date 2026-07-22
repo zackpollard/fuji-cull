@@ -450,10 +450,14 @@ func (b *dirBackend) Discover(ctx context.Context, progress func(stage string, f
 					continue
 				}
 				var size int64
+				var day string
 				if info, err := f.Info(); err == nil {
 					size = info.Size()
+					// no EXIF read here: mtime is the capture day for local
+					// trees (and what the timeline groups by)
+					day = info.ModTime().Format("2006-01-02")
 				}
-				out = append(out, listing{Dir: rel, Folder: folder.Name(), Name: f.Name(), Size: size})
+				out = append(out, listing{Dir: rel, Folder: folder.Name(), Name: f.Name(), Size: size, Date: day})
 				count++
 			}
 			log.Printf("  %s: %d files", rel, count)
