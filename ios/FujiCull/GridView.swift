@@ -271,6 +271,7 @@ struct GridView: View {
     @State private var showLog = false
     @State private var showImport = false
     @State private var showSettings = false
+    @StateObject private var scrub = ScrubState()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -363,41 +364,12 @@ struct GridView: View {
     }
 
     private var timeline: some View {
-        HStack(spacing: 0) {
-            TimelineCollection(model: model)
-            MonthScrubber(months: model.groups) { id in
-                NotificationCenter.default.post(name: TimelineCollection.jumpToMonth, object: id)
-            }
+        // scrubber overlays the grid's right edge, Android-style — it fades
+        // in while scrolling instead of reserving a permanent column
+        ZStack(alignment: .trailing) {
+            TimelineCollection(model: model, scrub: scrub)
+            TimelineScrubber(scrub: scrub)
         }
-    }
-}
-
-// MonthScrubber is the right-edge jump strip — the touch equivalent of the
-// desktop timeline scrubber, for crossing thousands of shots quickly.
-struct MonthScrubber: View {
-    let months: [MonthGroup]
-    let onJump: (String) -> Void
-
-    var body: some View {
-        VStack(spacing: 2) {
-            ForEach(months) { m in
-                Text(shortLabel(m.label))
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .frame(maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .onTapGesture { onJump(m.id) }
-            }
-        }
-        .frame(width: 46)
-        .padding(.vertical, 6)
-        .background(Color.black.opacity(0.25))
-    }
-
-    private func shortLabel(_ l: String) -> String {
-        let parts = l.split(separator: " ")
-        guard parts.count == 2 else { return l }
-        return "\(parts[0].prefix(3))\n\(parts[1].suffix(2))"
     }
 }
 
