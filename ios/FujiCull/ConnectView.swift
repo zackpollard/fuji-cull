@@ -49,9 +49,9 @@ struct ConnectView: View {
                     .padding(.horizontal)
             }
             if engine.mode == .fake {
-                Text("no camera — running the built-in fake corpus")
+                Label("FAKE CORPUS — not your card", systemImage: "exclamationmark.triangle.fill")
                     .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color.rejectRed)
             }
 
             HStack(spacing: 18) {

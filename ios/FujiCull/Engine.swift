@@ -25,7 +25,20 @@ final class Engine: ObservableObject {
 
     private var engine: MobileEngine?
     private var pollTask: Task<Void, Never>?
+    private var bootTask: Task<Void, Never>?
     private var settings = AppSettings()
+
+    /// The fake corpus exists so the app is buildable/testable without a camera.
+    /// On real hardware it is never entered automatically — culling a synthetic
+    /// corpus while believing you are looking at the card would be far worse
+    /// than waiting for the camera. Only an explicit Settings opt-in allows it.
+    private var fakeAllowed: Bool {
+        #if targetEnvironment(simulator)
+        return true
+        #else
+        return settings.forceFake
+        #endif
+    }
 
     var baseURL: URL? { port > 0 ? URL(string: "http://127.0.0.1:\(port)") : nil }
     var defaultImportDest: String { settings.importDest }
@@ -35,20 +48,21 @@ final class Engine: ObservableObject {
     // MARK: - lifecycle
 
     func start(_ s: AppSettings) {
-        guard engine == nil else { return }
+        guard engine == nil, bootTask == nil else { return }
         settings = s
         ICCTransport.shared.start()
-        Task { await boot() }
+        bootTask = Task { await boot() }
     }
 
     /// Settings changed (or the link changed): tear the engine down and rebuild.
     func restart(_ s: AppSettings) {
         settings = s
         stop()
-        Task { await boot() }
+        bootTask = Task { await boot() }
     }
 
     func stop() {
+        bootTask?.cancel(); bootTask = nil
         pollTask?.cancel(); pollTask = nil
         engine?.stop()
         engine = nil
@@ -67,37 +81,50 @@ final class Engine: ObservableObject {
             try? FileManager.default.createDirectory(atPath: p, withIntermediateDirectories: true)
         }
 
-        // Give ImageCaptureCore a moment to report an attached camera before
-        // falling back to the fake corpus.
-        if !settings.forceFake {
-            status = "looking for a camera…"
-            for _ in 0..<20 {
-                if ICCTransport.shared.connected() { break }
-                try? await Task.sleep(nanoseconds: 250_000_000)
-            }
-        }
-
         var e: MobileEngine?
         var nsErr: NSError?
-        if !settings.forceFake && ICCTransport.shared.connected() {
-            status = "starting engine (camera)…"
-            e = MobileStartICC(dataDir, cacheDir, ICCTransport.shared,
-                               settings.immichURL, settings.immichKey,
-                               settings.session, settings.stack, &nsErr)
-            mode = .camera
+
+        if settings.forceFake {
+            // explicit opt-in only
+            guard let fake = startFake(dataDir: dataDir, cacheDir: cacheDir, err: &nsErr) else { return }
+            e = fake
+            mode = .fake
         } else {
-            status = "starting engine (fake corpus)…"
-            let corpus = docs.appendingPathComponent("fake-corpus").path
-            try? FileManager.default.createDirectory(atPath: corpus, withIntermediateDirectories: true)
-            var seedErr: NSError?
-            MobileSeedFakeCorpus(corpus, 6, 40, &seedErr)
-            if let seedErr {
-                startError = seedErr.localizedDescription
-                status = "corpus seed failed"
+            // Wait for ImageCaptureCore to report an enumerated camera —
+            // connected() stays false until its content catalog is complete
+            // (~4 min for a 19k-file card), and the connect screen shows the
+            // catalog percent meanwhile. On real hardware we wait
+            // indefinitely. Only the simulator (where a camera can never
+            // appear) falls through to the fake corpus, after a short grace
+            // period. The link log is NOT drained here: it accumulates in the
+            // transport and flushes into the engine log once the engine is up,
+            // so the catalog phase stays visible in Documents/engine/engine.log.
+            var waited = 0
+            while !ICCTransport.shared.connected() {
+                if Task.isCancelled { return }
+                status = "waiting for the camera…"
+                cameraStatus = ICCTransport.shared.status
+                #if targetEnvironment(simulator)
+                if waited >= 8 { break }   // ~2s: no camera is ever coming here
+                #endif
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                waited += 1
+            }
+
+            if ICCTransport.shared.connected() {
+                status = "starting engine (camera)…"
+                e = MobileStartICC(dataDir, cacheDir, ICCTransport.shared,
+                                   settings.immichURL, settings.immichKey,
+                                   settings.session, settings.stack, &nsErr)
+                mode = .camera
+            } else if fakeAllowed {
+                guard let fake = startFake(dataDir: dataDir, cacheDir: cacheDir, err: &nsErr) else { return }
+                e = fake
+                mode = .fake
+            } else {
+                status = "no camera"
                 return
             }
-            e = MobileStartLocal(dataDir, cacheDir, corpus, settings.session, &nsErr)
-            mode = .fake
         }
 
         guard let e else {
@@ -110,6 +137,21 @@ final class Engine: ObservableObject {
         port = e.port()
         epoch += 1
         startPolling()
+    }
+
+    /// Seeds and starts the synthetic corpus (simulator, or explicit opt-in).
+    private func startFake(dataDir: String, cacheDir: String, err: inout NSError?) -> MobileEngine? {
+        status = "starting engine (fake corpus)…"
+        let corpus = docs.appendingPathComponent("fake-corpus").path
+        try? FileManager.default.createDirectory(atPath: corpus, withIntermediateDirectories: true)
+        var seedErr: NSError?
+        MobileSeedFakeCorpus(corpus, 6, 40, &seedErr)
+        if let seedErr {
+            startError = seedErr.localizedDescription
+            status = "corpus seed failed"
+            return nil
+        }
+        return MobileStartLocal(dataDir, cacheDir, corpus, settings.session, &err)
     }
 
     // MARK: - polling
@@ -133,13 +175,6 @@ final class Engine: ObservableObject {
         shotCount = e.shotCount()
         status = ready ? "ready" : e.discoveryStatus()
         log = e.fullLog()
-
-        // Started on the fake corpus but a camera has since been plugged in —
-        // switch over (the fake backend is only ever a fallback).
-        if mode == .fake && !settings.forceFake && ICCTransport.shared.connected() {
-            logEvent("camera attached — restarting engine on the ImageCaptureCore link")
-            restart(settings)
-        }
     }
 
     // MARK: - passthroughs

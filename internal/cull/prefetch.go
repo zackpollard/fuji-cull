@@ -67,7 +67,7 @@ type Prefetcher struct {
 	thumbRank     map[string]int // shot ID -> 1-based file index within its camera folder
 	photoSeq      []photoRank    // photos in catalog order with ranks, for density scans
 	partBin       string         // patched aft-mtp-cli with get-part; "" = partial reads off
-	transport     Transport      // iOS: partial reads ride ImageCaptureCore instead of aft
+	camera        cameraReader   // iOS: partial reads ride the camera Transport instead of aft
 	noFfmpeg      bool           // ffmpeg missing: posters off, heads unaffected
 	localThumbs   bool           // dir backend: thumbnails come from source files (sim path)
 	partSick      bool           // partial reads returned stale-buffer garbage
@@ -174,10 +174,10 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 		}
 	}
 	if ib, ok := backend.(*iccBackend); ok {
-		// iOS: ImageCaptureCore serves partial reads, so the head sweep,
+		// iOS: partial reads ride the PTP transport, so the head sweep,
 		// orientation and chunked pulls all work with no subprocess. Posters
 		// stay off until the cgo libav shim lands (no exec to run ffmpeg).
-		p.transport = ib.t
+		p.camera = ib
 		p.noFfmpeg = true
 	}
 	if _, ok := backend.(*dirBackend); ok {
@@ -448,10 +448,16 @@ func (p *Prefetcher) interruptImagesLocked(id string) {
 	p.imgCancel()
 }
 
+// cameraReader reads byte ranges straight off the camera without a subprocess
+// (the iOS camera Transport). Implemented by iccBackend.
+type cameraReader interface {
+	readAt(objectID string, offset, size int64) ([]byte, error)
+}
+
 // partsOK reports whether partial reads are available at all — either the
 // patched aft binary (desktop/Android) or an injected Transport (iOS). It gates
 // the head sweep, orientation sweep, posters and chunked pulls.
-func (p *Prefetcher) partsOK() bool { return p.partBin != "" || p.transport != nil }
+func (p *Prefetcher) partsOK() bool { return p.partBin != "" || p.camera != nil }
 
 // partsReadAt reads via the shared persistent partial-read session, opening
 // it on demand. A watchdog closes the session if the camera wedges mid-read
@@ -462,14 +468,14 @@ func (p *Prefetcher) partsReadAt(ctx context.Context, objID string, off, size in
 	// claim or close — just call through. Cancellation is honored by returning
 	// early; the transport enforces its own timeout (kept above the engine's)
 	// so a wedged camera cannot block us forever.
-	if p.transport != nil {
+	if p.camera != nil {
 		type res struct {
 			data []byte
 			err  error
 		}
 		ch := make(chan res, 1)
 		go func() {
-			d, err := p.transport.ReadAt(objID, off, size)
+			d, err := p.camera.readAt(objID, off, size)
 			ch <- res{d, err}
 		}()
 		timeout := 30*time.Second + time.Duration(size>>20)*2*time.Second

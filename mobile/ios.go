@@ -65,19 +65,16 @@ func StartLocal(dataDir, cacheDir, mediaRoot, session string) (*Engine, error) {
 	return e, nil
 }
 
-// Transport is the camera link the host implements — on iOS, Swift's
-// ICCTransport over ImageCaptureCore. gomobile only generates a
-// host-implementable protocol for interfaces declared in the *bound* package,
-// so this mirrors cull.Transport and transportAdapter bridges the two.
+// Transport is the object-level camera link the host implements — on iOS,
+// Swift's ICCTransport over ImageCaptureCore. Object-level rather than raw
+// PTP because ImageCaptureCore's PTP passthrough never delivers a callback on
+// iPadOS (see cull.Transport for the full account); Apple's content catalog
+// and ICCameraFile partial reads are the one sanctioned path.
 //
-// Listings cross as JSON because only bytes/strings/ints may traverse the
-// gomobile boundary:
-//
-//	Folders() -> [{"dir":"SLOT 1/DCIM/151_FUJI","folder":"151_FUJI"}]
-//	Entries() -> [{"objectID":"12","name":"DSCF0001.JPG","size":123,"date":"2026-05-10"}]
-//
-// Implementations must serialize their own access: the engine assumes a
-// single-threaded MTP link.
+// gomobile only generates a host-implementable protocol for interfaces
+// declared in the *bound* package, hence this mirror of cull.Transport with a
+// thin adapter. Implementations must serialize their own access: MTP is a
+// single-threaded link.
 type Transport interface {
 	Folders() ([]byte, error)
 	Entries(dir string) ([]byte, error)

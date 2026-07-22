@@ -57,15 +57,25 @@ try:
     d = json.load(open('/tmp/fc-devices.json'))
 except Exception:
     raise SystemExit()
+# A paired device is enough: over Wi-Fi the tunnel sleeps when the iPad locks
+# and comes back on demand, so requiring tunnelState==connected is too strict.
+best = None
 for dev in d.get('result', {}).get('devices', []):
-    if dev.get('connectionProperties', {}).get('tunnelState') in ('connected', 'available', 'connecting'):
-        print(dev.get('hardwareProperties', {}).get('udid', ''), dev.get('identifier', ''))
+    c = dev.get('connectionProperties', {})
+    if c.get('pairingState') != 'paired':
+        continue
+    row = (dev.get('hardwareProperties', {}).get('udid', ''), dev.get('identifier', ''))
+    if c.get('tunnelState') == 'connected':
+        best = row
         break
+    best = best or row
+if best:
+    print(best[0], best[1])
 PY
 )
 EOF
 if [ -z "${UDID:-}" ]; then
-  echo "No connected iPad found. Plug it in (or pair over Wi-Fi), unlock it, trust this Mac."
+  echo "No paired iPad found. Plug it in (or pair over Wi-Fi), unlock it, trust this Mac."
   echo "(list devices with: ./run-device.sh --list)"
   exit 1
 fi
