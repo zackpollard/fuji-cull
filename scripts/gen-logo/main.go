@@ -27,11 +27,11 @@ const hi = 4096 // render resolution; everything downsamples from here
 type rgba = color.NRGBA
 
 var (
-	charcoal = rgba{11, 12, 11, 255}    // app background
-	tileGrey = rgba{22, 24, 21, 255}    // photo tile
-	amber    = rgba{255, 179, 46, 255}  // the app's accent
-	cream    = rgba{245, 242, 233, 255} // snowcap
-	green    = rgba{56, 214, 122, 255}  // keep decision bar
+	charcoal = rgba{R: 11, G: 12, B: 11, A: 255}    // app background
+	tileGrey = rgba{R: 22, G: 24, B: 21, A: 255}    // photo tile
+	amber    = rgba{R: 255, G: 179, B: 46, A: 255}  // the app's accent
+	cream    = rgba{R: 245, G: 242, B: 233, A: 255} // snowcap
+	green    = rgba{R: 56, G: 214, B: 122, A: 255}  // keep decision bar
 )
 
 type poly [][2]float64
@@ -96,7 +96,7 @@ func render(tileInset float64, transparentOutside bool) *image.NRGBA {
 			switch {
 			case !inRoundedRect(x, y, t0, t0, t1, t1, corner):
 				if transparentOutside {
-					c = rgba{0, 0, 0, 0}
+					c = rgba{}
 				} else {
 					c = charcoal
 				}
@@ -140,11 +140,11 @@ func downsample(src *image.NRGBA, size int) *image.NRGBA {
 				}
 			}
 			if a == 0 {
-				out.SetNRGBA(ox, oy, rgba{0, 0, 0, 0})
+				out.SetNRGBA(ox, oy, rgba{})
 				continue
 			}
 			out.SetNRGBA(ox, oy, rgba{
-				uint8(r / a), uint8(g / a), uint8(b / a), uint8(a / n),
+				R: uint8(r / a), G: uint8(g / a), B: uint8(b / a), A: uint8(a / n),
 			})
 		}
 	}
@@ -172,7 +172,7 @@ func main() {
 	adaptive := render(0.22, true)   // adaptive foreground: content in the 66% safe zone
 
 	save(downsample(square, 1024), "assets/fuji-cull-square.png")
-	save(downsample(tile, 1024), "assets/fuji-cull.png")
+	save(downsample(tile, 512), "assets/fuji-cull.png") // 512: linuxdeploy's icon ceiling
 	save(downsample(square, 1024), "ios/FujiCull/Assets.xcassets/AppIcon.appiconset/icon-1024.png")
 
 	// android: legacy launcher icons (full square; launchers mask them) and
