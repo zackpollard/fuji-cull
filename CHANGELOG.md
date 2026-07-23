@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.7.0](https://github.com/zackpollard/fuji-cull/compare/v1.6.0...v1.7.0) (2026-07-23)
+
+
+### Features
+
+* **android:** design-system pass — tokens, tile grammar, no session field ([6b45de5](https://github.com/zackpollard/fuji-cull/commit/6b45de591541d2deba0f2cb66601007410545aea))
+* **desktop:** design-system pass — tokens and tile grammar in SDL ([49fbffb](https://github.com/zackpollard/fuji-cull/commit/49fbffb0300722155e976d8ca81ca716d6cb3340))
+* **ios:** design-system foundation — tokens, IBM Plex, the new tile ([8cca68b](https://github.com/zackpollard/fuji-cull/commit/8cca68b83eeae3c686c89caf671fe499544294cc))
+* **ios:** design-system screens — viewer, video, connect, import, settings ([0c21a20](https://github.com/zackpollard/fuji-cull/commit/0c21a20cca21b34f215b4509b8f322ef1c04244a))
+* **ios:** instant photo cuts in the viewer (no swipe animation) ([44f7a3f](https://github.com/zackpollard/fuji-cull/commit/44f7a3fe8e0f5b0d4c65500bd219000832ef33ff))
+* per-camera sessions — decisions follow the camera, not a name ([ad20605](https://github.com/zackpollard/fuji-cull/commit/ad206055f6e8cb4486a63c602bee676bd3dc4be4))
+* **web:** design-system pass — tokens, IBM Plex, tile grammar ([ed273e1](https://github.com/zackpollard/fuji-cull/commit/ed273e107c201fac03e467ffa2af41ac88d1684b))
+
+
+### Bug Fixes
+
+* camera-scoped caches; carry-zoom on mobile viewers ([a07286f](https://github.com/zackpollard/fuji-cull/commit/a07286fc5b0a7e0bd738d828c61a30563513f1c5))
+* **ci:** gen-logo vet compliance; 512px desktop icon for linuxdeploy ([89d27de](https://github.com/zackpollard/fuji-cull/commit/89d27de9d3c4f9a5f507ce04414c2b92331b92a8))
+* **ci:** harden xcodegen retries — it SIGABRTs transiently on runners ([2ac9a03](https://github.com/zackpollard/fuji-cull/commit/2ac9a0388e9695c226aecabeebde53257f2a455b))
+* **ios:** kill the black flash between photos (+ video-teardown crash) ([e97f3b7](https://github.com/zackpollard/fuji-cull/commit/e97f3b7cc022711810402896d91d8d095785e3e2))
+* **ios:** pan while zoomed instead of paging the viewer ([22f9557](https://github.com/zackpollard/fuji-cull/commit/22f95572e6c4b406d555a1e65357573f0587a3a6))
+
 ## [1.6.0](https://github.com/zackpollard/fuji-cull/compare/v1.5.1...v1.6.0) (2026-07-23)
 
 
