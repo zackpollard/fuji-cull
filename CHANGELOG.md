@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.6.0](https://github.com/zackpollard/fuji-cull/compare/v1.5.1...v1.6.0) (2026-07-23)
+
+
+### Features
+
+* fuji-cull identity — one generated mark, applied everywhere ([60dbcbe](https://github.com/zackpollard/fuji-cull/commit/60dbcbe35abab5fe3c7fe710fbbbd02361b829df))
+* iOS app (simulator) — SwiftUI culling client over the gomobile engine ([4fe1dd7](https://github.com/zackpollard/fuji-cull/commit/4fe1dd7dd00111a72160054421600e3a6b24aa3b))
+* **ios:** client-side video posters — full port of the Android mechanism ([c4d39c9](https://github.com/zackpollard/fuji-cull/commit/c4d39c90c8fe2ce5dac48c90a294240f2678af24))
+* **ios:** ImageCaptureCore camera link and full Android feature parity ([f94c2c5](https://github.com/zackpollard/fuji-cull/commit/f94c2c592f99023b8d2e4a3258a79726dd088d2a))
+* **ios:** index over our own PTP sweeps — ready in ~3min, not ~5 ([5f01b43](https://github.com/zackpollard/fuji-cull/commit/5f01b433ab19637776ce09df38988db99aa27ab6))
+* **ios:** make-ipa.sh — unsigned release ipa for sideload distribution ([97f4c64](https://github.com/zackpollard/fuji-cull/commit/97f4c641aafa77ac20558e5ac127c454fbac278e))
+* **ios:** real date scrubber on the timeline — the Android rail, ported ([8537378](https://github.com/zackpollard/fuji-cull/commit/8537378e5056e58695611820912af0fa57ed88f5))
+* **ios:** real-camera link over ImageCaptureCore's object API ([7b8d348](https://github.com/zackpollard/fuji-cull/commit/7b8d348891e9bc5071f3588a50c90e5c95df29f2))
+* **ios:** self-serve debug probe + fix 3s startup hang at 24k shots ([0d3418c](https://github.com/zackpollard/fuji-cull/commit/0d3418cba456cacc24a0ca4e343eee2b7aa728a9))
+* **ios:** SideStore source feed template; ignore dist/ ([e4a94c3](https://github.com/zackpollard/fuji-cull/commit/e4a94c30071ac854ca51a181e0aba685abb53c48))
+* **ios:** video streaming for 4:2:0 AND 4:2:2 — libmpv, as on Android ([6b808ba](https://github.com/zackpollard/fuji-cull/commit/6b808ba490b078f5cba90eba345f2be4560de79c))
+
+
+### Bug Fixes
+
+* **ios:** count video posters in the thumbnail total ([1b1be22](https://github.com/zackpollard/fuji-cull/commit/1b1be228aa4f41a428b4d24a26f16c4b704002e2))
+* **ios:** device bring-up — ICC log routing and correct device targeting ([b851d38](https://github.com/zackpollard/fuji-cull/commit/b851d386c5d0a621087024dbcd5df01a866e6632))
+* **ios:** open the PTP passthrough — it was gated, not broken ([3393155](https://github.com/zackpollard/fuji-cull/commit/3393155a5919198239cd652e136600631a2ab7c7))
+* **ios:** video posters render — ThumbView rejected every file:// URL ([000f2c5](https://github.com/zackpollard/fuji-cull/commit/000f2c577ec2f1bb9e3b52a3885f200a15d4b940))
+* **ios:** viewer filmstrip — pinned height, windowed, video posters ([5da50f2](https://github.com/zackpollard/fuji-cull/commit/5da50f29067649b49ffe1b6af178624754c763a5))
+* **ios:** viewer pager — UIPageViewController, swipes land on pages ([51ae69b](https://github.com/zackpollard/fuji-cull/commit/51ae69b1bb74718db62e35b7542e286f63ebe322))
+* **ios:** virtualize the timeline — the 24k-shot freeze was SwiftUI's ([605d117](https://github.com/zackpollard/fuji-cull/commit/605d1171ba13790c93933b26fff3317b69b9f102))
+
+
+### Performance Improvements
+
+* **ios:** photo thumbs at poster speed — raw serving, metadata rotation ([8958fce](https://github.com/zackpollard/fuji-cull/commit/8958fced95e8be2c2f0d5b97ed0168a595ad9376))
+
 ## [1.5.1](https://github.com/zackpollard/fuji-cull/compare/v1.5.0...v1.5.1) (2026-07-22)
 
 
