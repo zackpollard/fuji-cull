@@ -43,6 +43,9 @@ final class GridModel: ObservableObject {
     @Published var fetchStates: [String: String] = [:]
     @Published var showViewer = false
     @Published var viewerIndex = 0
+    // shared viewer zoom: paging keeps the magnification (not @Published —
+    // pages read it on load; publishing it would re-render per pinch)
+    var viewerZoom: CGFloat = 1
     @Published private(set) var cameraID = ""
 
     @Published private(set) var states: [Character] = []
@@ -148,6 +151,7 @@ final class GridModel: ObservableObject {
     func openViewer(_ i: Int) {
         select(i)
         viewerIndex = i
+        viewerZoom = 1 // fresh viewing session starts unzoomed
         showViewer = true
     }
 
@@ -385,9 +389,15 @@ struct HeaderBar: View {
         HStack(spacing: DS.s3) {
             // connected-device identity chip (design: green dot + model/serial)
             if !model.cameraID.isEmpty {
+                // "X-H2S · …3E21" — the full 30-hex serial keys the session;
+                // the chip only needs to distinguish cameras at a glance
+                let parts = model.cameraID.split(separator: " ", maxSplits: 1)
+                let label = parts.count == 2 && parts[1].count > 6
+                    ? "\(parts[0]) · …\(parts[1].suffix(4))"
+                    : model.cameraID
                 HStack(spacing: 6) {
                     Circle().fill(DS.keep).frame(width: 6, height: 6)
-                    Text(model.cameraID)
+                    Text(label)
                         .font(DS.label(12))
                         .foregroundStyle(DS.text2)
                         .lineLimit(1)

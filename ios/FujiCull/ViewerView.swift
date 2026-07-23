@@ -262,6 +262,9 @@ struct Filmstrip: View {
 // and blocks until ready) and supports pinch-zoom + double-tap.
 struct ZoomableImage: View {
     let url: URL?
+    // holds the shared zoom so advancing to the next shot keeps the level —
+    // the desktop comparison workflow ("same crop, next frame") on touch
+    var model: GridModel? = nil
     @State private var image: UIImage?
     @State private var loadFailed = false
     @State private var scale: CGFloat = 1
@@ -278,9 +281,15 @@ struct ZoomableImage: View {
                         .gesture(
                             MagnificationGesture()
                                 .updating($pinch) { v, s, _ in s = v }
-                                .onEnded { v in scale = min(max(scale * v, 1), 5) }
+                                .onEnded { v in
+                                    scale = min(max(scale * v, 1), 5)
+                                    model?.viewerZoom = scale
+                                }
                         )
-                        .onTapGesture(count: 2) { withAnimation { scale = scale > 1 ? 1 : 2.5 } }
+                        .onTapGesture(count: 2) {
+                            withAnimation { scale = scale > 1 ? 1 : 2.5 }
+                            model?.viewerZoom = scale
+                        }
                 } else if loadFailed {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.system(size: 40)).foregroundStyle(.orange)
@@ -294,7 +303,9 @@ struct ZoomableImage: View {
     }
 
     private func load() async {
-        image = nil; loadFailed = false; scale = 1
+        // inherit the shared zoom instead of resetting: paging to the next
+        // shot keeps the magnification you were comparing at
+        image = nil; loadFailed = false; scale = model?.viewerZoom ?? 1
         guard let url,
               let (data, resp) = try? await URLSession.shared.data(from: url),
               (resp as? HTTPURLResponse)?.statusCode == 200,

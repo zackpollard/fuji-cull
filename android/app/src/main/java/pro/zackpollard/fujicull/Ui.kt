@@ -831,6 +831,10 @@ private fun Viewer(
     val pager = rememberPagerState(initialPage = start) { shots.size }
     val scope = rememberCoroutineScope()
     val film = rememberLazyListState()
+    // shared viewer zoom/pan: pages inherit it, so tapping through the
+    // timeline compares the same crop across shots
+    val viewerZoom = remember { mutableFloatStateOf(1f) }
+    val viewerPan = remember { mutableStateOf(Offset.Zero) }
 
     BackHandler { onClose(pager.currentPage) }
 
@@ -886,7 +890,7 @@ private fun Viewer(
             if (shot.kind == "video") {
                 VideoPlayer(api, shot, active = page == pager.currentPage)
             } else {
-                ZoomableImage(api, shot)
+                ZoomableImage(api, shot, viewerZoom, viewerPan)
             }
         }
 
@@ -964,10 +968,16 @@ private fun Viewer(
  * checks (only for the page being zoomed — 26 MP bitmaps are ~100 MB each).
  */
 @Composable
-private fun ZoomableImage(api: Api, shot: Shot) {
+private fun ZoomableImage(
+    api: Api, shot: Shot,
+    zoomState: androidx.compose.runtime.MutableFloatState,
+    panState: androidx.compose.runtime.MutableState<Offset>,
+) {
     var retry by remember(shot.id) { mutableIntStateOf(0) }
-    var scale by remember(shot.id) { mutableFloatStateOf(1f) }
-    var offset by remember(shot.id) { mutableStateOf(Offset.Zero) }
+    // shared across pages: advancing keeps the zoom + crop ("same detail,
+    // next frame"); resets when the viewer opens
+    var scale by zoomState
+    var offset by panState
     var box by remember { mutableStateOf(IntSize.Zero) }
     val scope = rememberCoroutineScope()
 

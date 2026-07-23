@@ -191,6 +191,10 @@ func (b *iccBackend) discoverPTP(ctx context.Context, progress func(stage string
 		b.identity = strings.TrimSpace(di.Model + " " + di.Serial)
 		b.mu.Unlock()
 		log.Printf("camera: %s (serial %s)", di.Model, di.Serial)
+	} else {
+		// the identity keys the session — a silent parse failure cost a
+		// debug cycle once; dump the dataset so it never costs another
+		log.Printf("camera: DeviceInfo parse failed (%v, model=%q) — dataset: %x", err, di.Model, info)
 	}
 
 	sweep := func(label string, prop uint16) ([]ptp.PropEntry, error) {

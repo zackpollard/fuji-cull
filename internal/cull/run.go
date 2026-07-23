@@ -192,8 +192,33 @@ func startWith(o Options, backend Backend, session *Session, cache string) (*App
 						session = keyed
 						log.Printf("session: keyed to camera %q", id)
 					}
+					// The CACHE must scope with the camera too: thumbs and
+					// orientation are keyed by shot ID (SLOT 1/DCIM/...),
+					// and the fake corpus mirrors real folder layouts — a
+					// force-fake run wrote synthetic thumbnails that then
+					// served for REAL shots with colliding IDs.
+					// migration cleanup: the pre-scoping flat cache may hold
+					// another source's thumbnails under colliding IDs (the
+					// fake-corpus gradients did exactly this); it's derived
+					// data, so reclaim it rather than leave a poisoned GB
+					for _, stale := range []string{
+						filepath.Join(cache, "thumbs"),
+						filepath.Join(cache, "orientation.json"),
+					} {
+						if _, err := os.Stat(stale); err == nil {
+							os.RemoveAll(stale)
+							log.Printf("cache: removed legacy unscoped %s", stale)
+						}
+					}
+					cache = filepath.Join(cache, slug)
+					log.Printf("cache: scoped to %s", cache)
 				}
 			}
+		}
+		if _, ok := backend.(*dirBackend); ok {
+			// local trees (fake corpus, --backend dir) get their own cache
+			// namespace so they can never pollute a camera's
+			cache = filepath.Join(cache, "local")
 		}
 		cursor := session.Cursor()
 		if cursor < 0 || cursor >= len(catalog.Shots) {
