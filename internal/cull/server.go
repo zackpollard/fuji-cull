@@ -190,6 +190,19 @@ func (a *App) handler() http.Handler {
 			http.Error(w, "shot has no video file", http.StatusNotFound)
 			return
 		}
+		// Name the container explicitly. ServeContent would otherwise infer
+		// it from the file extension, and Go's builtin mime table has no
+		// .mov/.mp4 — with no system mime.types (iOS, Android) it sniffs,
+		// and QuickTime's "qt  " brand doesn't match Go's mp4 signature, so
+		// it served application/octet-stream. AVPlayer, given a URL with no
+		// extension either, then refuses the stream with "Cannot Open".
+		//
+		// video/mp4 deliberately, ALSO for .MOV: Fuji MOVs are plain
+		// ISO-BMFF, and AVPlayer range-streams video/mp4 normally where
+		// video/quicktime dropped it into a ~64 KB-per-request sequential
+		// crawl (~2 MB/s effective — a stall for 40 MB/s footage).
+		w.Header().Set("Content-Type", "video/mp4")
+
 		// Local copies win (direct backend path or the pulled cache copy);
 		// otherwise stream ranges straight off the camera via the persistent
 		// partial-read session. Explicit /api/loadvideo still pulls a full
@@ -205,7 +218,15 @@ func (a *App) handler() http.Handler {
 					http.Error(w, err.Error(), http.StatusBadGateway)
 					return
 				}
-				http.ServeContent(w, r, name, time.Time{}, rs)
+				// request-level trace: cache-hit serving is invisible at the
+				// chunk-fetch layer, so player stalls need THIS to show
+				// whether the client stopped asking or we stopped answering
+				t0 := time.Now()
+				cw := &countingWriter{ResponseWriter: w}
+				http.ServeContent(cw, r, name, time.Time{}, rs)
+				log.Printf("videoreq: range=%q sent %.1f MB in %s",
+					r.Header.Get("Range"), float64(cw.n)/(1<<20),
+					time.Since(t0).Round(time.Millisecond))
 				return
 			}
 			http.Error(w, "video not buffered; POST /api/loadvideo first", http.StatusConflict)
@@ -232,6 +253,16 @@ func (a *App) handler() http.Handler {
 		// Thumb files stay in sensor orientation; rotate at delivery once the
 		// shot's orientation is known. Clients re-request with an &o= cache
 		// buster when orientation data arrives after the first fetch.
+		//
+		// raw=1 opts out: iOS applies EXIF orientation at display time for
+		// free (UIImage.Orientation), so it takes the file as stored — one
+		// stable, HTTP-cacheable URL and no per-request decode-rotate-encode,
+		// which is what made photo tiles visibly "load in" while local video
+		// posters appeared instantly.
+		if r.URL.Query().Get("raw") == "1" {
+			http.ServeFile(w, r, a.prefetch.ThumbPath(s))
+			return
+		}
 		if or := a.prefetch.OrientOf(id); or > 1 {
 			if data, err := rotatedThumbJPEG(a.prefetch.ThumbPath(s), or); err == nil {
 				w.Write(data)
@@ -433,4 +464,16 @@ func writeJSON(w http.ResponseWriter, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		log.Printf("WARN: encode response: %v", err)
 	}
+}
+
+// countingWriter counts response bytes for the videoreq trace.
+type countingWriter struct {
+	http.ResponseWriter
+	n int64
+}
+
+func (c *countingWriter) Write(b []byte) (int, error) {
+	n, err := c.ResponseWriter.Write(b)
+	c.n += int64(n)
+	return n, err
 }

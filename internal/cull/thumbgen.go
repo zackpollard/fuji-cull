@@ -86,10 +86,69 @@ func (p *Prefetcher) localThumbGen() {
 	}
 }
 
+// localThumbSweep generates thumbnails for the whole catalog directly from the
+// backend's source files (the dir backend exposes every file), nearest the
+// grid viewport first and re-steering as the cursor moves. No camera, no
+// partial reads — the simulator / fake-backend thumbnail path.
+func (p *Prefetcher) localThumbSweep() {
+	tick := time.NewTicker(200 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			return
+		}
+		origin := p.thumbOriginLocked()
+		idx := -1
+		for d := 0; d < len(p.cat.Shots) && idx < 0; d++ {
+			for _, i := range []int{origin + d, origin - d} {
+				if i < 0 || i >= len(p.cat.Shots) || (d == 0 && i != origin) {
+					continue
+				}
+				s := p.cat.Shots[i]
+				if s.Kind == "photo" && p.thumbs[s.ID] != thumbHave && p.thumbStalls[s.ID] < 2 {
+					idx = i
+					break
+				}
+			}
+		}
+		p.mu.Unlock()
+		if idx < 0 {
+			<-tick.C // swept clean; idle until the cursor moves or shots change
+			continue
+		}
+		s := p.cat.Shots[idx]
+		src, ok := p.backend.LocalPath(s, s.DisplayExt())
+		if !ok {
+			p.mu.Lock()
+			p.thumbs[s.ID] = thumbFailed
+			p.thumbStalls[s.ID] = 2
+			p.mu.Unlock()
+			continue
+		}
+		if err := p.generateThumbFrom(s, src); err != nil {
+			log.Printf("localthumb: %s: %v", s.ID, err)
+			p.mu.Lock()
+			p.thumbStalls[s.ID]++
+			if p.thumbStalls[s.ID] >= 2 {
+				p.thumbs[s.ID] = thumbFailed
+			}
+			p.mu.Unlock()
+		}
+	}
+}
+
 // generateThumb decodes the buffered full image and writes a 240px-wide
 // thumbnail to the standard thumb cache path.
 func (p *Prefetcher) generateThumb(s *photo.Shot) error {
-	f, err := os.Open(p.displayPath(s))
+	return p.generateThumbFrom(s, p.displayPath(s))
+}
+
+// generateThumbFrom decodes srcPath and writes a 240px-wide thumbnail to the
+// shot's standard thumb cache path.
+func (p *Prefetcher) generateThumbFrom(s *photo.Shot, srcPath string) error {
+	f, err := os.Open(srcPath)
 	if err != nil {
 		return err
 	}

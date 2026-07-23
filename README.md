@@ -30,6 +30,63 @@ you left off. Use `--listen 0.0.0.0:8787` to cull from another device.
 `NNN_FUJI` folders (handy for testing); `--camera-root` overrides the
 `/SLOT 1/DCIM,/SLOT 2/DCIM` default if the camera exposes storage differently.
 
+## fuji-cull for iPad (iOS app)
+
+<img src="assets/fuji-cull.png" width="96" align="right">
+
+The same engine as a native iPad app: plug the camera into the iPad's USB-C
+port (camera in USB card-reader mode), get the full timeline in ~3 minutes,
+cull with taps or a keyboard, play videos (4:2:0 hardware / 4:2:2 software
+via mpv), and import keepers to Immich. Uses Apple's ImageCaptureCore for
+camera access — no jailbreak, no special cables.
+
+### Installing (no App Store)
+
+There's no paid Apple developer account behind this app, so it ships as an
+**unsigned `.ipa`** that you sign onto your own device with your own free
+Apple ID via [SideStore](https://sidestore.io) (recommended) or
+[AltStore](https://altstore.io).
+
+One-time setup with SideStore:
+
+1. Follow the [SideStore install guide](https://docs.sidestore.io/docs/intro)
+   — you'll need a Mac or PC once, to install SideStore itself and to
+   generate the device **pairing file**.
+2. Install a loopback VPN for on-device refresh — **StikDebug** or
+   **LocalDevVPN** (StosVPN also works if you already have it; it left the
+   App Store).
+3. In SideStore, sign in with your (free) Apple ID, then add this source:
+
+   ```
+   https://raw.githubusercontent.com/zackpollard/fuji-cull/master/ios/sidestore-source.json
+   ```
+
+4. Install **fuji-cull** from the source. Updates appear in SideStore.
+
+Or skip the source and grab `FujiCull.ipa` from the
+[latest release](https://github.com/zackpollard/fuji-cull/releases) and open
+it with SideStore/AltStore directly.
+
+Free-Apple-ID limits apply (Apple's, not ours): app signatures last 7 days
+(SideStore auto-refreshes on-device with the VPN enabled), and a device can
+hold at most 3 sideloaded apps.
+
+First launch: iOS may ask you to trust your certificate under
+Settings ▸ General ▸ VPN & Device Management, and to allow the camera
+accessory when you first plug it in.
+
+### Building it yourself
+
+With a Mac + Xcode and a free Apple ID (7-day signing, no tools needed):
+
+```sh
+cd ios && ./run-device.sh --bind    # build engine + app, install to your iPad
+./make-ipa.sh --bind                # or: produce dist/FujiCull.ipa
+```
+
+Video playback uses [MPVKit](https://github.com/mpvkit/MPVKit) (mpv/FFmpeg,
+LGPL build).
+
 ## fuji-import
 
 Headless bulk importer (the original tool): pull everything via `aft-mtp-cli`,

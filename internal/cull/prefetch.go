@@ -67,7 +67,9 @@ type Prefetcher struct {
 	thumbRank     map[string]int // shot ID -> 1-based file index within its camera folder
 	photoSeq      []photoRank    // photos in catalog order with ranks, for density scans
 	partBin       string         // patched aft-mtp-cli with get-part; "" = partial reads off
+	camera        cameraReader   // iOS: partial reads ride the camera Transport instead of aft
 	noFfmpeg      bool           // ffmpeg missing: posters off, heads unaffected
+	localThumbs   bool           // dir backend: thumbnails come from source files (sim path)
 	partSick      bool           // partial reads returned stale-buffer garbage
 	partSickAt    time.Time      // drives the recovery probe
 	bulkSick      bool           // bulk reads (get-id) returned stale-buffer garbage
@@ -171,13 +173,32 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 			p.noFfmpeg = true
 		}
 	}
-	if p.thumbFetcher != nil || p.partBin != "" {
+	if ib, ok := backend.(*iccBackend); ok {
+		// iOS: partial reads ride the PTP transport, so the head sweep,
+		// orientation and chunked pulls all work with no subprocess. Posters
+		// are the host's job here (no exec to run ffmpeg) — the app pulls
+		// each clip's head via /api/videohead and decodes frame 0 itself,
+		// exactly as the Android build does. Note that leaves videos '0' in
+		// ThumbStates forever, so a client counting only engine thumbs
+		// undercounts by the video count.
+		p.camera = ib
+		p.noFfmpeg = true
+	}
+	if _, ok := backend.(*dirBackend); ok {
+		p.localThumbs = true // every file is directly readable; thumbnail from source
+		if _, err := exec.LookPath(ffmpegBin()); err != nil {
+			// no exec on mobile: posters are the host's job there too, and
+			// reporting them "available" would leave every video thumb-less
+			p.noFfmpeg = true
+		}
+	}
+	if p.thumbFetcher != nil || p.partsOK() || p.localThumbs {
 		if err := os.MkdirAll(p.thumbDir, 0o755); err != nil {
 			return nil, err
 		}
 		have := 0
 		for _, s := range cat.Shots {
-			if s.Kind != "photo" && p.partBin == "" {
+			if s.Kind != "photo" && !p.partsOK() {
 				continue
 			}
 			if st, err := os.Stat(p.ThumbPath(s)); err == nil && st.Size() > 0 {
@@ -436,11 +457,47 @@ func (p *Prefetcher) interruptImagesLocked(id string) {
 	p.imgCancel()
 }
 
+// cameraReader reads byte ranges straight off the camera without a subprocess
+// (the iOS camera Transport). Implemented by iccBackend.
+type cameraReader interface {
+	readAt(objectID string, offset, size int64) ([]byte, error)
+}
+
+// partsOK reports whether partial reads are available at all — either the
+// patched aft binary (desktop/Android) or an injected Transport (iOS). It gates
+// the head sweep, orientation sweep, posters and chunked pulls.
+func (p *Prefetcher) partsOK() bool { return p.partBin != "" || p.camera != nil }
+
 // partsReadAt reads via the shared persistent partial-read session, opening
 // it on demand. A watchdog closes the session if the camera wedges mid-read
 // (Close EOFs the blocked read), so a stale-buffer wedge costs seconds, not
 // a hang.
 func (p *Prefetcher) partsReadAt(ctx context.Context, objID string, off, size int64) ([]byte, error) {
+	// iOS: ImageCaptureCore owns the session, so there is no process to spawn,
+	// claim or close — just call through. Cancellation is honored by returning
+	// early; the transport enforces its own timeout (kept above the engine's)
+	// so a wedged camera cannot block us forever.
+	if p.camera != nil {
+		type res struct {
+			data []byte
+			err  error
+		}
+		ch := make(chan res, 1)
+		go func() {
+			d, err := p.camera.readAt(objID, off, size)
+			ch <- res{d, err}
+		}()
+		timeout := 30*time.Second + time.Duration(size>>20)*2*time.Second
+		select {
+		case r := <-ch:
+			return r.data, r.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(timeout):
+			return nil, fmt.Errorf("camera partial read timed out — camera wedged?")
+		}
+	}
+
 	p.partsMu.Lock()
 	srv := p.partsSrv
 	if srv == nil {
@@ -522,7 +579,25 @@ func (p *Prefetcher) closePartsServer() {
 // extraction needs. Refuses (rather than queues) while streaming, import or
 // a tripped breaker owns the link: the caller treats that as transient.
 func (p *Prefetcher) VideoHead(s *photo.Shot, ext string) ([]byte, error) {
-	if p.partBin == "" || s == nil || s.ObjectIDs[ext] == "" {
+	if s == nil {
+		return nil, fmt.Errorf("video head unavailable")
+	}
+	// directly-readable video (dir backend, or an already-pulled cache copy):
+	// serve the head off the file — no camera, no link gating
+	if path, ok := p.backend.LocalPath(s, ext); ok {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		buf := make([]byte, 8<<20)
+		n, err := io.ReadFull(f, buf)
+		if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+			return nil, err
+		}
+		return buf[:n], nil
+	}
+	if !p.partsOK() || s.ObjectIDs[ext] == "" {
 		return nil, fmt.Errorf("video head unavailable")
 	}
 	p.streamMu.Lock()
@@ -700,7 +775,7 @@ func (p *Prefetcher) Run() {
 				// otherwise starve the grid of thumbnails for the entire
 				// window fill (minutes of full-size pulls on phone-class
 				// links). Demands are user-blocking and always win.
-				if p.imageTurn && len(p.demand) == 0 && p.partBin != "" && !p.partSick {
+				if p.imageTurn && len(p.demand) == 0 && p.partsOK() && !p.partSick {
 					if healBatch = p.pickHealBatchLocked(orientBatchSize); len(healBatch) > 0 {
 						p.imageTurn = false
 						thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
@@ -716,12 +791,12 @@ func (p *Prefetcher) Run() {
 				// Tripped partial-read breaker: probe recovery every 3
 				// minutes (a power cycle or reconnect cures the camera and
 				// streaming/posters/heal should come back on their own).
-				if p.partBin != "" && p.partSick && time.Since(p.partSickAt) > sickProbeInterval {
+				if p.partsOK() && p.partSick && time.Since(p.partSickAt) > sickProbeInterval {
 					p.partSickAt = time.Now()
 					probePart = true
 					break
 				}
-				if p.thumbFetcher != nil || p.partBin != "" {
+				if p.thumbFetcher != nil || p.partsOK() {
 					// Idle-work priority: the head sweep first — one 128 KB
 					// read per shot yields thumbnail AND orientation together
 					// (~150 shots/s), so it precedes the orientation-only
@@ -729,7 +804,7 @@ func (p *Prefetcher) Run() {
 					// thumbs) and leaves the gphoto2 sweep as fallback for
 					// shots whose heads carry no embedded thumbnail or when
 					// partial reads are unavailable. Posters last.
-					if p.partBin != "" && !p.partSick {
+					if p.partsOK() && !p.partSick {
 						if healBatch = p.pickHealBatchLocked(orientBatchSize); len(healBatch) > 0 {
 							thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
 							break
@@ -739,14 +814,14 @@ func (p *Prefetcher) Run() {
 							break
 						}
 					}
-					if p.thumbFetcher != nil && (p.partBin == "" || !p.partSick) && len(thumbBatch) == 0 {
+					if p.thumbFetcher != nil && (!p.partsOK() || !p.partSick) && len(thumbBatch) == 0 {
 						thumbBatch = p.pickThumbsLocked(150)
 					}
 					if len(thumbBatch) > 0 {
 						thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
 						break
 					}
-					if p.partBin != "" && !p.partSick && !p.noFfmpeg {
+					if p.partsOK() && !p.partSick && !p.noFfmpeg {
 						if posterBatch = p.pickVideoPosterBatchLocked(posterBatchSize); len(posterBatch) > 0 {
 							thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
 							break
@@ -768,7 +843,7 @@ func (p *Prefetcher) Run() {
 			p.fetching = len(targets)
 			p.mu.Unlock()
 
-			if p.partBin == "" {
+			if !p.partsOK() {
 				p.closePartsServer() // one-shot pulls need the device claim
 			}
 			p.fetchBatch(targets)
@@ -1224,7 +1299,7 @@ func ffmpegBin() string {
 
 // PostersAvailable reports whether engine-side poster extraction runs here.
 func (p *Prefetcher) PostersAvailable() bool {
-	return p.partBin != "" && !p.noFfmpeg
+	return p.partsOK() && !p.noFfmpeg
 }
 
 // mediaValid reports whether a file starts like the media it claims to be
@@ -1305,7 +1380,7 @@ func (p *Prefetcher) probePartialReads() {
 // The head sweep re-serves the lot in seconds, so failure is never permanent
 // while partial reads exist (call with p.mu held).
 func (p *Prefetcher) forgiveThumbFailuresLocked() {
-	if p.partBin == "" {
+	if !p.partsOK() {
 		return
 	}
 	forgiven := 0
@@ -1348,7 +1423,7 @@ func (p *Prefetcher) ThumbStates() (string, int) {
 	buf := make([]byte, len(p.cat.Shots))
 	have := 0
 	for i, s := range p.cat.Shots {
-		if (p.thumbFetcher == nil && p.partBin == "") || (s.Kind != "photo" && p.partBin == "") {
+		if (p.thumbFetcher == nil && !p.partsOK() && !p.localThumbs) || (s.Kind != "photo" && !p.partsOK()) {
 			buf[i] = '-'
 			continue
 		}
@@ -1631,7 +1706,7 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 	// aft processes get SIGKILLed mid-URB when preempted faster than they can
 	// exit — the kill that wedges the camera off the bus while swiping through
 	// full-screen photos, tripping it into stale-buffer mode.
-	useParts := p.partBin != ""
+	useParts := p.partsOK()
 	fetchDone := make(chan error, 1)
 	go func() {
 		if useParts {

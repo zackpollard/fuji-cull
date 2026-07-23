@@ -32,6 +32,10 @@ type Options struct {
 	EvictMargin int
 	Batch       int
 
+	// Transport, when set, drives the camera through an injected link instead
+	// of exec'ing aft — the iOS ImageCaptureCore path (BackendName ignored).
+	Transport Transport
+
 	Dest        string
 	ImmichURL   string
 	ImmichKey   string
@@ -55,30 +59,15 @@ func Start(o Options) (*App, http.Handler, error) {
 	}
 
 	var backend Backend
-	switch o.BackendName {
-	case "cli":
-		if err := mtpcli.Ensure(); err != nil {
+	switch {
+	case o.Transport != nil:
+		backend = &iccBackend{t: o.Transport}
+	default:
+		var err error
+		backend, err = pickBackend(o)
+		if err != nil {
 			return nil, nil, err
 		}
-		backend = &cliBackend{roots: strings.Split(o.CameraRoot, ",")}
-	case "dir":
-		if o.Root == "" {
-			return nil, nil, fmt.Errorf("--root is required with --backend dir")
-		}
-		var dcimRoots []string
-		if o.CameraRoot != "" && !strings.Contains(o.CameraRoot, "SLOT") {
-			dcimRoots = strings.Split(o.CameraRoot, ",")
-		} else {
-			var err error
-			dcimRoots, err = findDCIMRoots(o.Root)
-			if err != nil {
-				return nil, nil, err
-			}
-		}
-		log.Printf("DCIM roots under %s: %v", o.Root, dcimRoots)
-		backend = &dirBackend{root: o.Root, dcimRoots: dcimRoots}
-	default:
-		return nil, nil, fmt.Errorf("unknown backend %q (want cli or dir)", o.BackendName)
 	}
 
 	home, _ := os.UserHomeDir()
@@ -94,7 +83,41 @@ func Start(o Options) (*App, http.Handler, error) {
 	if cb, ok := backend.(*cliBackend); ok {
 		cb.cacheDir = cache // catalog cache lives with the image buffer
 	}
+	return startWith(o, backend, session, cache)
+}
 
+// pickBackend builds the exec-based backends (desktop/Android).
+func pickBackend(o Options) (Backend, error) {
+	switch o.BackendName {
+	case "cli":
+		if err := mtpcli.Ensure(); err != nil {
+			return nil, err
+		}
+		return &cliBackend{roots: strings.Split(o.CameraRoot, ",")}, nil
+	case "dir":
+		if o.Root == "" {
+			return nil, fmt.Errorf("--root is required with --backend dir")
+		}
+		var dcimRoots []string
+		if o.CameraRoot != "" && !strings.Contains(o.CameraRoot, "SLOT") {
+			dcimRoots = strings.Split(o.CameraRoot, ",")
+		} else {
+			var err error
+			dcimRoots, err = findDCIMRoots(o.Root)
+			if err != nil {
+				return nil, err
+			}
+		}
+		log.Printf("DCIM roots under %s: %v", o.Root, dcimRoots)
+		return &dirBackend{root: o.Root, dcimRoots: dcimRoots}, nil
+	default:
+		return nil, fmt.Errorf("unknown backend %q (want cli, dir, or an injected Transport)", o.BackendName)
+	}
+}
+
+// startWith builds the app around an already-chosen backend and kicks off
+// background discovery.
+func startWith(o Options, backend Backend, session *Session, cache string) (*App, http.Handler, error) {
 	// Flags win; otherwise prefill from whatever the last import ran with.
 	remembered := loadImportDefaults()
 	if o.Dest == "" {
@@ -162,8 +185,11 @@ func Start(o Options) (*App, http.Handler, error) {
 			prefetch.onReady = app.imcheck.Enqueue
 		}
 		go prefetch.Run()
-		if prefetch.thumbFetcher != nil || prefetch.partBin != "" {
+		if prefetch.thumbFetcher != nil || prefetch.partsOK() {
 			go prefetch.localThumbGen()
+		}
+		if prefetch.localThumbs {
+			go prefetch.localThumbSweep()
 		}
 		app.finishInit(catalog, prefetch)
 		if app.imcheck != nil {

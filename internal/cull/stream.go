@@ -47,8 +47,25 @@ func (p *Prefetcher) StreamLimited(s *photo.Shot, ext string) bool {
 	return s != nil && s.Sizes[ext] > streamPartialLimit
 }
 
+// streamSource is the byte source a video stream reads from: the aft
+// serve-parts subprocess on desktop/Android, the camera transport on iOS
+// (which has no exec). *mtppart.Server satisfies it as-is.
+type streamSource interface {
+	ReadAt(objectID string, offset, size int64) ([]byte, error)
+	Close()
+}
+
+// cameraStreamSource streams through the injected Transport. There is no
+// session to tear down — the host owns the link — so Close is a no-op.
+type cameraStreamSource struct{ c cameraReader }
+
+func (s cameraStreamSource) ReadAt(objectID string, offset, size int64) ([]byte, error) {
+	return s.c.readAt(objectID, offset, size)
+}
+func (s cameraStreamSource) Close() {}
+
 type streamState struct {
-	srv       *mtppart.Server
+	srv       streamSource
 	shotID    string
 	objID     string
 	size      int64
@@ -63,7 +80,7 @@ type streamState struct {
 // StreamingAvailable reports whether camera streaming works at all right now
 // (partial-read binary present and not tripped).
 func (p *Prefetcher) StreamingAvailable() bool {
-	if p.partBin == "" {
+	if !p.partsOK() {
 		return false
 	}
 	p.mu.Lock()
@@ -73,7 +90,7 @@ func (p *Prefetcher) StreamingAvailable() bool {
 
 // CanStream reports whether a shot's video could be streamed right now.
 func (p *Prefetcher) CanStream(s *photo.Shot, ext string) bool {
-	if s == nil || s.Kind != "video" || p.partBin == "" {
+	if s == nil || s.Kind != "video" || !p.partsOK() {
 		return false
 	}
 	p.mu.Lock()
@@ -105,13 +122,21 @@ func (p *Prefetcher) ensureStreamLocked(s *photo.Shot, ext string) error {
 		return fmt.Errorf("camera streaming unavailable")
 	}
 	p.PauseAndDrain()
-	srv, err := mtppart.StartServer()
-	if err != nil {
-		p.Resume()
-		return err
+	// desktop/Android open a serve-parts subprocess; iOS reads through the
+	// camera transport it already holds
+	var src streamSource
+	if p.partBin != "" {
+		srv, err := mtppart.StartServer()
+		if err != nil {
+			p.Resume()
+			return err
+		}
+		src = srv
+	} else {
+		src = cameraStreamSource{p.camera}
 	}
 	st := &streamState{
-		srv: srv, shotID: s.ID, objID: s.ObjectIDs[ext],
+		srv: src, shotID: s.ID, objID: s.ObjectIDs[ext],
 		size: streamSize(s, ext), last: time.Now(),
 		chunks: map[int64][]byte{}, inflight: map[int64]chan struct{}{},
 	}
@@ -159,7 +184,15 @@ func (p *Prefetcher) streamFetch(st *streamState, idx int64) ([]byte, error) {
 			want = st.size - off
 		}
 		p.streamMu.Unlock()
+		t0 := time.Now()
 		data, err := st.srv.ReadAt(st.objID, off, want)
+		if d := time.Since(t0); err == nil {
+			// throughput is THE camera-streaming viability number (aft runs
+			// ~55 MB/s; a slow transport shows up here as a playback stall)
+			log.Printf("stream: chunk %d — %.1f MB in %s (%.1f MB/s)",
+				idx, float64(len(data))/(1<<20), d.Round(time.Millisecond),
+				float64(len(data))/(1<<20)/d.Seconds())
+		}
 		p.streamMu.Lock()
 		delete(st.inflight, idx)
 		close(ch)
