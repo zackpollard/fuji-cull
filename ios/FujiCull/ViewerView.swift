@@ -9,6 +9,9 @@ struct ViewerView: View {
     @Binding var index: Int
     @Environment(\.dismiss) private var dismiss
     @State private var showKeymap = false
+    // Off by default: photos cut instantly between frames so a burst can be
+    // blink-compared in place. The slide made spotting what moved harder.
+    @AppStorage("viewerAnimations") private var animate = false
 
     private var shot: Shot? { model.shots.indices.contains(index) ? model.shots[index] : nil }
     private var decision: String { shot.flatMap { model.decisions[$0.id] } ?? "" }
@@ -44,7 +47,7 @@ struct ViewerView: View {
             case "x", "s": decide("reject"); return true
             case "c", "e": decide("clear"); return true
             case "right", "enter", " ": advance(); return true
-            case "left": if index > 0 { withAnimation { index -= 1 } }; return true
+            case "left": if index > 0 { step { index -= 1 } }; return true
             case "?", "/": showKeymap.toggle(); return true
             case "esc":
                 if showKeymap { showKeymap = false } else { dismiss() }
@@ -151,9 +154,14 @@ struct ViewerView: View {
     }
 
     private func advance() {
-        if index < model.shots.count - 1 {
-            withAnimation { index += 1 }
-        }
+        if index < model.shots.count - 1 { step { index += 1 } }
+    }
+
+    /// Apply an index move, animating the surrounding chrome only when the
+    /// viewer-animation preference is on. The page transition itself is driven
+    /// by PagerView, which reads the same preference.
+    private func step(_ change: () -> Void) {
+        if animate { withAnimation { change() } } else { change() }
     }
 }
 

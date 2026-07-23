@@ -12,6 +12,9 @@ struct SettingsView: View {
     @State private var loaded = false
     @State private var showLog = false
     @State private var confirmRescan = false
+    // UI-only preference: applies immediately, no engine restart (unlike the
+    // draft fields, which are saved and restart the camera link).
+    @AppStorage("viewerAnimations") private var viewerAnimations = false
 
     var body: some View {
         NavigationStack {
@@ -34,6 +37,14 @@ struct SettingsView: View {
                         .font(.system(.footnote, design: .monospaced))
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
+                }
+
+                Section {
+                    Toggle("Animate photo transitions", isOn: $viewerAnimations)
+                } header: {
+                    Text("Viewer")
+                } footer: {
+                    Text("Off cuts instantly between photos so you can compare frames in a burst. On slides each page in. Applies immediately.")
                 }
 
                 Section {
