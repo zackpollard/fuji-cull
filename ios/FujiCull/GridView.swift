@@ -43,6 +43,7 @@ final class GridModel: ObservableObject {
     @Published var fetchStates: [String: String] = [:]
     @Published var showViewer = false
     @Published var viewerIndex = 0
+    @Published private(set) var cameraID = ""
 
     @Published private(set) var states: [Character] = []
     @Published private(set) var orientChars: [Character] = []
@@ -71,6 +72,7 @@ final class GridModel: ObservableObject {
                 decisions = st.decisions
                 counts = st.counts
                 cursor = st.cursor
+                cameraID = st.camera ?? ""
                 break
             }
             try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -380,33 +382,61 @@ struct HeaderBar: View {
     var onSettings: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DS.s3) {
+            // connected-device identity chip (design: green dot + model/serial)
+            if !model.cameraID.isEmpty {
+                HStack(spacing: 6) {
+                    Circle().fill(DS.keep).frame(width: 6, height: 6)
+                    Text(model.cameraID)
+                        .font(DS.label(12))
+                        .foregroundStyle(DS.text2)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, DS.s2).padding(.vertical, 5)
+                .background(DS.tile, in: RoundedRectangle(cornerRadius: DS.rControl))
+            }
+
             Button(action: onLog) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("K \(model.counts["keep"] ?? 0)  X \(model.counts["reject"] ?? 0)  · \(model.counts["undecided"] ?? 0)")
-                        .foregroundStyle(.white)
-                    Text("th \(min(model.haveThumbs + model.posterCount, model.shots.count))/\(model.shots.count) · ex \(model.exifKnown)/\(model.exifTotal)"
-                         + (model.sick ? " · CAMERA SICK" : ""))
-                        .foregroundStyle(model.sick ? Color.rejectRed : .secondary)
-                        .font(.system(size: 10, design: .monospaced))
+                    HStack(spacing: DS.s2) {
+                        Text("K \(model.counts["keep"] ?? 0)").foregroundStyle(DS.keep)
+                        Text("R \(model.counts["reject"] ?? 0)").foregroundStyle(DS.reject)
+                        Text("U \(model.counts["undecided"] ?? 0)").foregroundStyle(DS.text2)
+                    }
+                    .font(DS.label(13))
+                    Text("th \(min(model.haveThumbs + model.posterCount, model.shots.count))/\(model.shots.count) · ex \(model.exifKnown)/\(model.exifTotal)")
+                        .font(DS.micro(10))
+                        .foregroundStyle(DS.text3)
                 }
             }
             .buttonStyle(.plain)
 
+            if model.sick {
+                Text("CAMERA SICK")
+                    .font(DS.micro(10))
+                    .foregroundStyle(DS.bg)
+                    .padding(.horizontal, DS.s2).padding(.vertical, 3)
+                    .background(DS.amber, in: RoundedRectangle(cornerRadius: DS.rTile))
+            }
+
             Spacer()
+
             if !model.importing.isEmpty {
-                Text(model.importing).foregroundStyle(Color.amber)
+                Text(model.importing).font(DS.micro()).foregroundStyle(DS.amber)
             }
             Button(action: onSettings) { Image(systemName: "gearshape") }
-                .foregroundStyle(.secondary)
-            Button(action: onImport) { Text("IMPORT").bold() }
-                .buttonStyle(.borderedProminent)
-                .tint(Color.amber)
+                .foregroundStyle(DS.text2)
+            Button(action: onImport) {
+                Text("IMPORT · I").font(DS.label(13)).foregroundStyle(DS.bg)
+                    .padding(.horizontal, DS.s3).padding(.vertical, 7)
+                    .background(DS.amber, in: RoundedRectangle(cornerRadius: DS.rControl))
+            }
+            .buttonStyle(.plain)
         }
-        .font(.system(.caption, design: .monospaced))
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color.black.opacity(0.55))
+        .padding(.horizontal, DS.s3)
+        .padding(.vertical, DS.s2)
+        .background(DS.bg)
+        .overlay(alignment: .bottom) { DS.line.frame(height: 1) }
     }
 }
 

@@ -7,6 +7,9 @@ struct Shot: Identifiable, Decodable, Equatable {
     let base: String
     let kind: String        // "photo" | "video"
     let date: String?
+    let files: [String: String]?  // ext -> filename; drives the RAF chip
+
+    var hasRAF: Bool { files?.keys.contains("RAF") ?? false }
 }
 
 struct ImportStatus: Decodable, Equatable {
@@ -21,6 +24,7 @@ struct ImportStatus: Decodable, Equatable {
 
 struct AppState: Decodable {
     let backend: String
+    let camera: String?     // "X-H2S 21AQ00123" — the top-bar device chip
     let cursor: Int
     let shots: [Shot]
     let decisions: [String: String]
@@ -28,7 +32,7 @@ struct AppState: Decodable {
     let importStatus: ImportStatus?
 
     enum CodingKeys: String, CodingKey {
-        case backend, cursor, shots, decisions, counts
+        case backend, camera, cursor, shots, decisions, counts
         case importStatus = "import"
     }
 }

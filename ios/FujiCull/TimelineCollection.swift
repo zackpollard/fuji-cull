@@ -134,7 +134,8 @@ struct TimelineCollection: UIViewRepresentable {
                         inImmich: m.inImmich(index),
                         buffered: m.buffered(shot.id),
                         isVideo: shot.kind == "video",
-                        isCursor: m.cursor == index)
+                        isCursor: m.cursor == index,
+                        hasRAF: shot.hasRAF)
                 }
                 .margins(.all, 0)
                 // the thumb scales-to-fill; without this it bleeds past the
@@ -444,9 +445,10 @@ struct TimelineScrubber: View {
     }
 }
 
-// TileContent is one grid thumbnail, driven entirely by values — no model
-// reference, so a model change can only reach it through an explicit cell
-// reconfigure.
+// TileContent is one grid thumbnail — the design system's core grammar
+// (docs/design/Tile.dc.html), driven entirely by values so a model change
+// can only reach it through an explicit cell reconfigure. Nothing here
+// animates on data change: a keep is an instant color swap on one bar.
 struct TileContent: View {
     let url: URL?
     let cacheKey: String
@@ -457,45 +459,92 @@ struct TileContent: View {
     let buffered: Bool
     let isVideo: Bool
     let isCursor: Bool
+    var hasRAF: Bool = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            if let url {
+            if let url, ready {
                 ThumbView(url: url, cacheKey: cacheKey, ready: ready, exifOrient: exifOrient)
             } else {
-                Rectangle().fill(Color.white.opacity(0.04))
+                // pending: diagonal stripe skeleton (static — 25k virtualized
+                // cells; the design's shimmer is dropped for scroll smoothness)
+                PendingStripes()
             }
-            if decision == "keep" || decision == "reject" {
-                Rectangle()
-                    .fill(decision == "keep" ? Color.keepGreen : Color.rejectRed)
-                    .frame(height: 5)
-            }
+            // decision bar: the glanceable edge. 6px decided; 3px faint
+            // hairline for undecided so the slot reads "not yet", not empty.
+            Rectangle()
+                .fill(decision == "keep" ? DS.keep
+                      : decision == "reject" ? DS.reject
+                      : DS.undecidedHairline)
+                .frame(height: decision.isEmpty ? 3 : 6)
         }
-        // fill the fixed-size cell the layout hands us, never dictate size
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .clipped()
         .overlay(alignment: .topLeading) {
-            if inImmich {
-                Image(systemName: "cloud.fill")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .padding(4)
-                    .shadow(radius: 2)
+            if hasRAF {
+                Text("RAF")
+                    .font(DS.micro(8))
+                    .foregroundStyle(DS.text)
+                    .padding(.horizontal, 4).padding(.vertical, 2)
+                    .background(DS.bg.opacity(0.72))
+                    .clipShape(RoundedRectangle(cornerRadius: DS.rTile))
+                    .padding(DS.s1)
             }
         }
         .overlay(alignment: .topTrailing) {
-            HStack(spacing: 3) {
-                if buffered {
-                    Circle().fill(Color(red: 0.18, green: 0.5, blue: 0.88)).frame(width: 6, height: 6)
+            // shape-distinct marks: buffered = solid dot, Immich = hollow ring
+            HStack(spacing: DS.s1) {
+                if inImmich {
+                    Circle().strokeBorder(DS.immich, lineWidth: 2)
+                        .frame(width: 9, height: 9)
                 }
-                if isVideo {
-                    Image(systemName: "play.circle.fill").foregroundStyle(.white).shadow(radius: 2)
+                if buffered {
+                    Circle().fill(DS.buffered)
+                        .frame(width: 9, height: 9)
+                        .overlay(Circle().stroke(DS.bg, lineWidth: 1))
                 }
             }
-            .padding(4)
+            .padding(DS.s1)
         }
-        .overlay(
-            Rectangle().stroke(isCursor ? Color.amber : .clear, lineWidth: 2)
-        )
+        .overlay {
+            if isVideo {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(DS.text)
+                    .padding(9)
+                    .background(DS.bg.opacity(0.5), in: Circle())
+            }
+        }
+        .overlay {
+            if isCursor {
+                Rectangle()
+                    .strokeBorder(DS.amber, lineWidth: 2)
+                    .shadow(color: DS.amber.opacity(0.28), radius: 7)
+            }
+        }
+    }
+}
+
+// PendingStripes is the thumb-loading skeleton: diagonal stripes on tile
+// darks (design token: repeating 135° #141613 / #191C17).
+struct PendingStripes: View {
+    var body: some View {
+        GeometryReader { geo in
+            let stripe: CGFloat = 12
+            let n = Int((geo.size.width + geo.size.height) / stripe) + 2
+            Canvas { ctx, size in
+                ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(hex: 0x141613)))
+                for i in stride(from: 0, to: n, by: 2) {
+                    var p = Path()
+                    let x = CGFloat(i) * stripe
+                    p.move(to: CGPoint(x: x, y: 0))
+                    p.addLine(to: CGPoint(x: x + stripe, y: 0))
+                    p.addLine(to: CGPoint(x: x + stripe - size.height, y: size.height))
+                    p.addLine(to: CGPoint(x: x - size.height, y: size.height))
+                    p.closeSubpath()
+                    ctx.fill(p, with: .color(Color(hex: 0x191C17)))
+                }
+            }
+        }
     }
 }
