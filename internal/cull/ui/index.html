@@ -7,20 +7,30 @@
 <link rel="icon" type="image/png" href="favicon.png">
 <style>
   :root {
-    --bg: #0b0c0b;
-    --panel: #121412;
-    --line: #232623;
-    --fg: #e8e6df;
-    --dim: #7d817b;
-    --keep: #37d67a;
+    --bg: #0B0C0B;
+    --tile: #161815;
+    --panel: #1C1F1A;      /* design: surface */
+    --panel-hi: #242821;
+    --line: #30352C;
+    --fg: #ECE9E0;
+    --dim: #9DA093;
+    --dim2: #6B6E62;
+    --keep: #38D67A;
     --keep-dim: #1d5c38;
-    --reject: #ff5a3c;
+    --reject: #FF5A3D;
     --reject-dim: #6b2417;
-    --amber: #ffb42e;
-    --buffered: #2f7fe0; /* downloaded to NVMe buffer */
-    --decoded: #2de0c8;  /* decoded in browser, instant to show */
-    --mono: "Iosevka", "JetBrainsMono Nerd Font", "JetBrains Mono", "Cascadia Code", ui-monospace, "SF Mono", monospace;
+    --amber: #FFB32E;
+    --buffered: #4EA6FF;   /* full-res cached locally */
+    --immich: #57C9C1;     /* already on the server */
+    --decoded: #2de0c8;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+    --sans: "IBM Plex Sans", system-ui, sans-serif;
   }
+  @font-face { font-family: "IBM Plex Mono"; src: url(fonts/IBMPlexMono-Regular.ttf); font-weight: 400; }
+  @font-face { font-family: "IBM Plex Mono"; src: url(fonts/IBMPlexMono-Medium.ttf); font-weight: 500; }
+  @font-face { font-family: "IBM Plex Mono"; src: url(fonts/IBMPlexMono-SemiBold.ttf); font-weight: 600; }
+  @font-face { font-family: "IBM Plex Sans"; src: url(fonts/IBMPlexSans-Regular.ttf); font-weight: 400; }
+  @font-face { font-family: "IBM Plex Sans"; src: url(fonts/IBMPlexSans-SemiBold.ttf); font-weight: 600; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; }
   body {
@@ -46,6 +56,12 @@
   }
   header .brand { letter-spacing: .18em; color: var(--dim); }
   header .brand b { color: var(--fg); font-weight: 600; }
+  .devchip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--tile); border-radius: 4px; padding: 3px 9px;
+    color: var(--dim); font-size: 12px;
+  }
+  .devchip i { width: 6px; height: 6px; border-radius: 999px; background: var(--keep); }
   header .file { flex: 1; text-align: center; color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
   header .file .folder { color: var(--dim); }
   .counter { color: var(--dim); }
@@ -153,7 +169,11 @@
     background: var(--keep); z-index: 3; pointer-events: none;
     box-shadow: 0 0 0 1px rgba(0, 0, 0, .6);
   }
-  .cell i.up { top: 5px; right: 5px; width: 8px; height: 8px; }
+  .cell i.up {
+    top: 5px; right: 5px; width: 9px; height: 9px;
+    background: transparent; border: 2px solid var(--immich); border-radius: 999px;
+    box-shadow: none;
+  }
 
   #stripCursor {
     position: absolute; top: 6px; height: 38px; width: 24px; left: 14px;
@@ -232,7 +252,8 @@
   }
   .cell {
     position: relative; aspect-ratio: 3/2;
-    background: #161816; cursor: pointer;
+    background: repeating-linear-gradient(135deg, #141613 0 12px, #191C17 12px 24px);
+    cursor: pointer;
     content-visibility: auto; contain-intrinsic-size: 110px 74px;
     overflow: hidden;
   }
@@ -241,16 +262,24 @@
     object-fit: cover; pointer-events: none;
   }
   .cell.reject img { opacity: .3; filter: grayscale(.7); }
-  .cell.keep::after, .cell.reject::after {
-    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 4px; z-index: 2;
+  .cell::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; z-index: 2;
+    background: rgba(255,255,255,0.08); /* undecided: "not yet", not empty */
   }
+  .cell.keep::after, .cell.reject::after { height: 6px; }
   .cell.keep::after   { background: var(--keep); }
   .cell.reject::after { background: var(--reject); }
   .cell.video::before {
-    content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px;
-    background: var(--amber); z-index: 2;
+    content: "\25B6"; position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 26px; height: 26px; line-height: 26px; border-radius: 999px;
+    background: rgba(11,12,11,0.5); color: var(--fg);
+    font-size: 10px; text-align: center; z-index: 2;
   }
-  .cell.current { outline: 2px solid var(--fg); outline-offset: -2px; }
+  .cell.current {
+    outline: 2px solid var(--amber); outline-offset: -2px;
+    box-shadow: 0 0 14px rgba(255,179,46,0.28);
+  }
   /* date group headers span the whole row */
   .mhdr, .dhdr { grid-column: 1 / -1; }
   .mhdr {
@@ -317,12 +346,13 @@
 <body>
   <header>
     <span class="brand"><b>FUJI</b> CULL</span>
+    <span class="devchip" id="devChip" style="display:none"><i></i><span id="devName"></span></span>
     <span class="counter" id="counter">—</span>
     <span class="file" id="filename">loading…</span>
     <span class="tally">
       <span class="k" id="cKeep">K 0</span>
-      <span class="r" id="cReject">X 0</span>
-      <span class="u" id="cUndecided">· 0</span>
+      <span class="r" id="cReject">R 0</span>
+      <span class="u" id="cUndecided">U 0</span>
     </span>
     <span class="camsick" id="camSick" title="the camera is replaying stale buffers instead of file data; a power cycle is the only fix"></span>
     <span class="counter" id="metaProg" title="metadata (orientation) coverage"></span>
@@ -850,6 +880,7 @@ async function boot() {
   $("ovErr").style.color = "";
   shots = st.shots; decisions = st.decisions || {}; cursor = st.cursor || 0;
   importStatus = st.import || {}; videoDirect = !!st.videoDirect;
+  if (st.camera) { $("devName").textContent = st.camera; $("devChip").style.display = "inline-flex"; }
   shots.forEach((s, i) => idIndex.set(s.id, i));
   $("impDest").value = st.dest || "";
   $("impAlbum").value = st.album || "";
@@ -1187,8 +1218,8 @@ function decorate() {
   let keep = 0, rej = 0;
   for (const id in decisions) decisions[id] === "keep" ? keep++ : rej++;
   $("cKeep").textContent = "K " + keep;
-  $("cReject").textContent = "X " + rej;
-  $("cUndecided").textContent = "· " + (shots.length - keep - rej);
+  $("cReject").textContent = "R " + rej;
+  $("cUndecided").textContent = "U " + (shots.length - keep - rej);
 
   // Incremental class updates: rewriting 19k classNames per keystroke costs
   // ~60 ms of style recalc and was the residual per-navigation lag.
