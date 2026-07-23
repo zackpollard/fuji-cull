@@ -91,11 +91,15 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-internal val Keep = Color(0xFF37D67A)
-internal val Reject = Color(0xFFFF5A3C)
-internal val Amber = Color(0xFFFFB42E)
-internal val Panel = Color(0xFF121412)
-internal val Dim = Color(0xFF7D817B)
+internal val Keep = Color(0xFF38D67A)
+internal val Reject = Color(0xFFFF5A3D)
+internal val Amber = Color(0xFFFFB32E)
+internal val Panel = Color(0xFF1C1F1A)   // design: surface
+internal val Tile = Color(0xFF161815)
+internal val Line = Color(0xFF30352C)
+internal val Buffered = Color(0xFF4EA6FF)
+internal val Immich = Color(0xFF57C9C1)
+internal val Dim = Color(0xFF9DA093)
 
 @Composable
 fun CullApp(
@@ -319,7 +323,6 @@ private fun SettingsScreen(
     BackHandler { onClose() }
     var url by remember { mutableStateOf(initial.url) }
     var apiKey by remember { mutableStateOf(initial.key) }
-    var session by remember { mutableStateOf(initial.session) }
     var stack by remember { mutableStateOf(initial.stack) }
 
     Column(
@@ -343,11 +346,6 @@ private fun SettingsScreen(
             label = { Text("immich api key") },
             singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
-        OutlinedTextField(
-            value = session, onValueChange = { session = it },
-            label = { Text("session name (empty = default)") },
-            singleLine = true, modifier = Modifier.fillMaxWidth(),
-        )
         Row(verticalAlignment = Alignment.CenterVertically) {
             Switch(checked = stack, onCheckedChange = { stack = it })
             Text(
@@ -361,7 +359,7 @@ private fun SettingsScreen(
             }
             TextButton(onClick = onClose) { Text("CANCEL", color = Dim) }
             Button(onClick = {
-                onSave(initial.copy(url = url, key = apiKey, session = session, stack = stack))
+                onSave(initial.copy(url = url, key = apiKey, session = "", stack = stack))
             }) { Text("SAVE") }
         }
         if (onRescan != null) {
@@ -749,7 +747,7 @@ private fun GridCell(
     uploaded: Boolean, decision: String, tick: Int, onClick: () -> Unit,
 ) {
     Box(
-        Modifier.padding(1.dp).aspectRatio(1.48f).background(Color(0xFF1D201D)).clickable(onClick = onClick),
+        Modifier.padding(1.dp).aspectRatio(1.48f).background(Tile).clickable(onClick = onClick),
     ) {
         val ctx = LocalContext.current
         // build the Coil request once per cell and keep it stable while thumb
@@ -787,7 +785,11 @@ private fun GridCell(
                     )
                 }
             }
-            Box(Modifier.fillMaxWidth().height(3.dp).background(Amber).align(Alignment.TopStart))
+            Box(
+                Modifier.size(26.dp).align(Alignment.Center)
+                    .background(Color(0x800B0C0B), androidx.compose.foundation.shape.CircleShape),
+                contentAlignment = Alignment.Center,
+            ) { Text("\u25B6", color = Color(0xFFECE9E0), fontSize = 10.sp) }
         } else if (hasThumb) {
             AsyncImage(
                 model = thumbReq,
@@ -797,12 +799,23 @@ private fun GridCell(
             )
         }
         if (uploaded) {
-            Box(Modifier.padding(4.dp).size(8.dp).background(Keep).align(Alignment.TopEnd))
+            Box(
+                Modifier.padding(4.dp).size(9.dp)
+                    .border(2.dp, Immich, androidx.compose.foundation.shape.CircleShape)
+                    .align(Alignment.TopEnd),
+            )
         }
         if (decision.isNotEmpty()) {
             Box(
-                Modifier.fillMaxWidth().height(4.dp)
+                Modifier.fillMaxWidth().height(6.dp)
                     .background(if (decision == "keep") Keep else Reject)
+                    .align(Alignment.BottomStart),
+            )
+        } else {
+            // undecided hairline: the slot reads "not yet", not empty
+            Box(
+                Modifier.fillMaxWidth().height(3.dp)
+                    .background(Color(0x14FFFFFF))
                     .align(Alignment.BottomStart),
             )
         }
