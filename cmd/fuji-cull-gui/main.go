@@ -36,16 +36,18 @@ import (
 
 /* ── palette (mirrors the web UI) ─────────────────────────── */
 var (
-	colBG       = sdl.Color{R: 0x0b, G: 0x0c, B: 0x0b, A: 255}
-	colPanel    = sdl.Color{R: 0x12, G: 0x14, B: 0x12, A: 255}
-	colFG       = sdl.Color{R: 0xe8, G: 0xe6, B: 0xdf, A: 255}
-	colDim      = sdl.Color{R: 0x7d, G: 0x81, B: 0x7b, A: 255}
-	colKeep     = sdl.Color{R: 0x37, G: 0xd6, B: 0x7a, A: 255}
-	colReject   = sdl.Color{R: 0xff, G: 0x5a, B: 0x3c, A: 255}
-	colAmber    = sdl.Color{R: 0xff, G: 0xb4, B: 0x2e, A: 255}
-	colBuffered = sdl.Color{R: 0x2f, G: 0x7f, B: 0xe0, A: 255}
+	// design-system tokens (docs/design): single dark theme
+	colBG       = sdl.Color{R: 0x0B, G: 0x0C, B: 0x0B, A: 255}
+	colPanel    = sdl.Color{R: 0x1C, G: 0x1F, B: 0x1A, A: 255} // surface
+	colFG       = sdl.Color{R: 0xEC, G: 0xE9, B: 0xE0, A: 255}
+	colDim      = sdl.Color{R: 0x9D, G: 0xA0, B: 0x93, A: 255}
+	colKeep     = sdl.Color{R: 0x38, G: 0xD6, B: 0x7A, A: 255}
+	colReject   = sdl.Color{R: 0xFF, G: 0x5A, B: 0x3D, A: 255}
+	colAmber    = sdl.Color{R: 0xFF, G: 0xB3, B: 0x2E, A: 255}
+	colBuffered = sdl.Color{R: 0x4E, G: 0xA6, B: 0xFF, A: 255}
+	colImmich   = sdl.Color{R: 0x57, G: 0xC9, B: 0xC1, A: 255}
 	colDecoded  = sdl.Color{R: 0x2d, G: 0xe0, B: 0xc8, A: 255}
-	colTickBG   = sdl.Color{R: 0x1d, G: 0x20, B: 0x1d, A: 255}
+	colTickBG   = sdl.Color{R: 0x16, G: 0x18, B: 0x15, A: 255} // tile
 )
 
 /* ── decode pool: libjpeg-turbo across cores ──────────────── */
@@ -1332,6 +1334,10 @@ func (u *ui) nextUndecided() {
 /* ── drawing helpers ──────────────────────────────────────── */
 
 func (u *ui) fillRect(r sdl.Rect, c sdl.Color) {
+	if c.A < 255 {
+		u.ren.SetDrawBlendMode(sdl.BLENDMODE_BLEND)
+		defer u.ren.SetDrawBlendMode(sdl.BLENDMODE_NONE)
+	}
 	u.ren.SetDrawColor(c.R, c.G, c.B, c.A)
 	u.ren.FillRect(&r)
 }

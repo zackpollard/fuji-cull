@@ -115,17 +115,25 @@ func (u *ui) drawGrid() {
 					u.fillRect(sdl.Rect{X: x, Y: sy, W: cw, H: sc(3)}, colAmber)
 				}
 				if idx < len(u.immich) && u.immich[idx] == '1' {
-					u.fillRect(sdl.Rect{X: x + cw - sc(12), Y: sy + sc(6), W: sc(8), H: sc(8)}, colKeep)
+					// hollow teal ring: already on the server
+					u.ren.SetDrawColor(colImmich.R, colImmich.G, colImmich.B, 255)
+					r := sdl.Rect{X: x + cw - sc(14), Y: sy + sc(5), W: sc(9), H: sc(9)}
+					u.ren.DrawRect(&r)
+					r2 := sdl.Rect{X: r.X + 1, Y: r.Y + 1, W: r.W - 2, H: r.H - 2}
+					u.ren.DrawRect(&r2)
 				}
 				if d := u.decisions[s.ID]; d != "" {
 					col := colKeep
 					if d == "reject" {
 						col = colReject
 					}
-					u.fillRect(sdl.Rect{X: x, Y: sy + ch - sc(4), W: cw, H: sc(4)}, col)
+					u.fillRect(sdl.Rect{X: x, Y: sy + ch - sc(6), W: cw, H: sc(6)}, col)
+				} else {
+					// undecided hairline: the slot reads "not yet", not empty
+					u.fillRect(sdl.Rect{X: x, Y: sy + ch - sc(3), W: cw, H: sc(3)}, sdl.Color{R: 255, G: 255, B: 255, A: 20})
 				}
 				if idx == u.cursor {
-					u.ren.SetDrawColor(colFG.R, colFG.G, colFG.B, 255)
+					u.ren.SetDrawColor(colAmber.R, colAmber.G, colAmber.B, 255)
 					u.ren.DrawRect(&sdl.Rect{X: x - sc(2), Y: sy - sc(2), W: cw + sc(4), H: ch + sc(4)})
 					u.ren.DrawRect(&sdl.Rect{X: x - sc(1), Y: sy - sc(1), W: cw + sc(2), H: ch + sc(2)})
 				}
