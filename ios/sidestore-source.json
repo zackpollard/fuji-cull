@@ -1,0 +1,26 @@
+{
+  "name": "fuji-cull",
+  "identifier": "pro.zackpollard.fujicull.source",
+  "subtitle": "Cull Fuji cards straight off the camera",
+  "apps": [
+    {
+      "name": "fuji-cull",
+      "bundleIdentifier": "pro.zackpollard.fujicull",
+      "developerName": "Zack Pollard",
+      "subtitle": "Cull Fuji cards straight off the camera",
+      "localizedDescription": "Connect a Fuji camera in USB card-reader mode and cull the card without importing: instant timeline of every shot, full-resolution viewing on demand, video playback (4:2:0 and 4:2:2), keep/reject decisions, and Immich-aware import of the keepers.",
+      "iconURL": "https://REPLACE-ME.example/fuji-cull-icon.png",
+      "tintColor": "#FFB32E",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "date": "2026-07-23",
+          "localizedDescription": "First sideload release: PTP indexing, virtualized 24k-shot timeline, mpv video playback, client-side posters, date scrubber.",
+          "downloadURL": "https://REPLACE-ME.example/FujiCull.ipa",
+          "size": 16024234,
+          "minOSVersion": "16.0"
+        }
+      ]
+    }
+  ]
+}
