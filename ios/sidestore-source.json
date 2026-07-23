@@ -13,6 +13,14 @@
       "tintColor": "#FFB32E",
       "versions": [
         {
+          "version": "1.6.0",
+          "date": "2026-07-23",
+          "localizedDescription": "See https://github.com/zackpollard/fuji-cull/releases/tag/v1.6.0",
+          "downloadURL": "https://github.com/zackpollard/fuji-cull/releases/download/v1.6.0/FujiCull.ipa",
+          "size": 16030151,
+          "minOSVersion": "16.0"
+        },
+        {
           "version": "0.1.0",
           "date": "2026-07-23",
           "localizedDescription": "First sideload release: PTP indexing, virtualized 24k-shot timeline, mpv video playback, client-side posters, date scrubber.",
