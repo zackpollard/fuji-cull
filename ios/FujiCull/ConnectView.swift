@@ -9,57 +9,82 @@ struct ConnectView: View {
     @State private var showLog = false
     @State private var showSettings = false
 
+    /// The bring-up phases, derived from live status strings — real
+    /// telemetry, no fake spinners (design: "make the waits feel engineered").
+    private var phase: Int {
+        let s = (engine.status + " " + engine.cameraStatus).lowercased()
+        if engine.ready { return 4 }
+        if s.contains("card index") || s.contains("reading camera index") { return 3 }
+        if s.contains("indexing") || s.contains("catalog") { return 2 }
+        if s.contains("opening") || s.contains("connecting") || s.contains("session") { return 1 }
+        return 0
+    }
+
+    private let phaseNames = ["find camera", "open session", "index card", "read card index"]
+
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: DS.s4) {
             Spacer()
 
             Text("fuji-cull")
-                .font(.system(size: 34, weight: .bold, design: .monospaced))
-                .foregroundStyle(Color.amber)
+                .font(DS.counter(34))
+                .foregroundStyle(DS.amber)
 
             if let err = engine.startError {
                 Label(err, systemImage: "xmark.octagon.fill")
-                    .foregroundStyle(.red)
+                    .font(DS.body())
+                    .foregroundStyle(DS.reject)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
             } else {
-                ProgressView().tint(Color.amber)
-                Text(engine.status)
-                    .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                // numbered phase telemetry
+                VStack(alignment: .leading, spacing: DS.s2) {
+                    ForEach(Array(phaseNames.enumerated()), id: \.offset) { i, name in
+                        HStack(spacing: DS.s2) {
+                            if i < phase {
+                                Image(systemName: "checkmark").font(.system(size: 12, weight: .bold))
+                                    .foregroundStyle(DS.keep)
+                            } else if i == phase {
+                                ProgressView().controlSize(.small).tint(DS.amber)
+                            } else {
+                                Text("\(i + 1)").font(DS.micro())
+                                    .foregroundStyle(DS.text3)
+                                    .frame(width: 14)
+                            }
+                            Text(name.uppercased())
+                                .font(DS.label(13))
+                                .foregroundStyle(i <= phase ? DS.text : DS.text3)
+                        }
+                    }
+                }
+                .padding(DS.s4)
+                .background(DS.tile, in: RoundedRectangle(cornerRadius: DS.rSheet))
+
+                Text(engine.cameraStatus.isEmpty ? engine.status : engine.cameraStatus)
+                    .font(DS.mono(14))
+                    .foregroundStyle(DS.amber)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
-                if engine.shotCount > 0 {
-                    Text("\(engine.shotCount) shots")
-                        .font(.system(.title3, design: .monospaced))
-                }
             }
 
             Text("set the camera to USB card-reader mode and connect it to the iPad")
-                .font(.system(.footnote, design: .monospaced))
-                .foregroundStyle(.secondary)
+                .font(DS.body(13))
+                .foregroundStyle(DS.text2)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
 
-            if !engine.cameraStatus.isEmpty {
-                Text(engine.cameraStatus)
-                    .font(.system(.footnote, design: .monospaced))
-                    .foregroundStyle(Color.amber)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-            }
             if engine.mode == .fake {
                 Label("FAKE CORPUS — not your card", systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(Color.rejectRed)
+                    .font(DS.label(12))
+                    .foregroundStyle(DS.reject)
             }
 
-            HStack(spacing: 18) {
-                Button("settings") { showSettings = true }
-                Button("log") { showLog = true }
+            HStack(spacing: DS.s4) {
+                Button("SETTINGS") { showSettings = true }
+                Button("LOG") { showLog = true }
             }
-            .font(.system(.footnote, design: .monospaced))
-            .foregroundStyle(.secondary)
+            .font(DS.label(12))
+            .foregroundStyle(DS.text2)
 
             LogTailView(text: engine.log)
                 .frame(maxHeight: 200)
@@ -68,7 +93,7 @@ struct ConnectView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.appBG.ignoresSafeArea())
+        .background(DS.bg.ignoresSafeArea())
         .sheet(isPresented: $showLog) { LogSheet(engine: engine) }
         .sheet(isPresented: $showSettings) { SettingsView() }
     }

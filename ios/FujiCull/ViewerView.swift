@@ -8,6 +8,7 @@ struct ViewerView: View {
     @ObservedObject var model: GridModel
     @Binding var index: Int
     @Environment(\.dismiss) private var dismiss
+    @State private var showKeymap = false
 
     private var shot: Shot? { model.shots.indices.contains(index) ? model.shots[index] : nil }
     private var decision: String { shot.flatMap { model.decisions[$0.id] } ?? "" }
@@ -24,9 +25,15 @@ struct ViewerView: View {
 
             VStack(spacing: 0) {
                 topBar
+                decisionChip.padding(.top, DS.s2)
                 Spacer()
                 Filmstrip(model: model, index: $index)
                 bottomBar
+            }
+
+            if showKeymap {
+                keymapHUD
+                    .onTapGesture { showKeymap = false }
             }
         }
         .statusBarHidden()
@@ -35,10 +42,13 @@ struct ViewerView: View {
             switch key {
             case "k", "w": decide("keep"); return true
             case "x", "s": decide("reject"); return true
-            case "c": decide("clear"); return true
+            case "c", "e": decide("clear"); return true
             case "right", "enter", " ": advance(); return true
             case "left": if index > 0 { withAnimation { index -= 1 } }; return true
-            case "esc": dismiss(); return true
+            case "?", "/": showKeymap.toggle(); return true
+            case "esc":
+                if showKeymap { showKeymap = false } else { dismiss() }
+                return true
             default: return false
             }
         }
@@ -66,33 +76,72 @@ struct ViewerView: View {
     }
 
     private var bottomBar: some View {
-        HStack(spacing: 36) {
+        // design: three-up full-width thumb targets, ≥54pt
+        HStack(spacing: DS.s3) {
             decisionButton(title: "REJECT", system: "xmark.circle.fill",
-                           tint: Color(red: 1.0, green: 0.35, blue: 0.24),
-                           active: decision == "reject") { decide("reject") }
+                           tint: DS.reject, active: decision == "reject") { decide("reject") }
             decisionButton(title: "CLEAR", system: "circle.slash",
-                           tint: .white.opacity(0.7),
-                           active: decision == "") { decide("clear") }
+                           tint: DS.text2, active: decision == "") { decide("clear") }
             decisionButton(title: "KEEP", system: "checkmark.circle.fill",
-                           tint: Color(red: 0.22, green: 0.84, blue: 0.48),
-                           active: decision == "keep") { decide("keep") }
+                           tint: DS.keep, active: decision == "keep") { decide("keep") }
         }
-        .padding(.vertical, 18)
+        .padding(.horizontal, DS.s4)
+        .padding(.vertical, DS.s3)
         .frame(maxWidth: .infinity)
-        .background(LinearGradient(colors: [.clear, .black.opacity(0.65)], startPoint: .top, endPoint: .bottom))
+        .background(LinearGradient(colors: [.clear, DS.bg.opacity(0.85)], startPoint: .top, endPoint: .bottom))
     }
 
     private func decisionButton(title: String, system: String, tint: Color, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: system).font(.system(size: 30))
-                Text(title).font(.system(size: 11, weight: .semibold, design: .monospaced))
+            HStack(spacing: DS.s2) {
+                Image(systemName: system).font(.system(size: 20))
+                Text(title).font(DS.label(13))
             }
-            .foregroundStyle(active ? tint : .white.opacity(0.85))
-            .frame(width: 92, height: 64)
-            .background(active ? tint.opacity(0.18) : .white.opacity(0.06))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .foregroundStyle(active ? DS.bg : tint)
+            .frame(maxWidth: .infinity, minHeight: 54)
+            .background(active ? tint : DS.surface, in: RoundedRectangle(cornerRadius: DS.rControl))
+            .overlay(RoundedRectangle(cornerRadius: DS.rControl).strokeBorder(active ? .clear : DS.line))
         }
+        .buttonStyle(.plain)
+    }
+
+    /// Decision chip on the stage, top-center — color AND text, never
+    /// color-only.
+    private var decisionChip: some View {
+        let (label, tint): (String, Color) =
+            decision == "keep" ? ("KEEP", DS.keep)
+            : decision == "reject" ? ("REJECT", DS.reject)
+            : ("UNDECIDED", DS.text3)
+        return Text(label)
+            .font(DS.label(12))
+            .foregroundStyle(decision.isEmpty ? DS.text2 : DS.bg)
+            .padding(.horizontal, DS.s3).padding(.vertical, 5)
+            .background(decision.isEmpty ? DS.surface : tint,
+                        in: RoundedRectangle(cornerRadius: DS.rControl))
+    }
+
+    /// The keymap HUD (design: `?` toggles; one look at the whole model).
+    private var keymapHUD: some View {
+        let rows: [(String, String)] = [
+            ("← → ↑ ↓", "navigate"), ("W / K", "keep (advances)"),
+            ("S / X", "reject (advances)"), ("E / C", "clear"),
+            ("G", "next undecided"), ("Z", "zoom 1:1"),
+            ("L", "pull full video"), ("Enter", "open viewer"),
+            ("Esc", "back"), ("?", "this keymap"),
+        ]
+        return VStack(alignment: .leading, spacing: DS.s2) {
+            Text("KEYMAP").font(DS.title(14)).foregroundStyle(DS.amber)
+            ForEach(rows, id: \.0) { r in
+                HStack {
+                    Text(r.0).font(DS.label(13)).foregroundStyle(DS.text)
+                        .frame(width: 110, alignment: .leading)
+                    Text(r.1).font(DS.body(13)).foregroundStyle(DS.text2)
+                }
+            }
+        }
+        .padding(DS.s5)
+        .background(DS.surface, in: RoundedRectangle(cornerRadius: DS.rSheet))
+        .overlay(RoundedRectangle(cornerRadius: DS.rSheet).strokeBorder(DS.line))
     }
 
     private func decide(_ d: String) {
@@ -118,6 +167,8 @@ struct VideoFrame: View {
     let shot: Shot
     let active: Bool
 
+    @State private var decoderToast = false
+
     var body: some View {
         ZStack {
             Color.black
@@ -125,6 +176,22 @@ struct VideoFrame: View {
                 MpvPlayerView(model: model, shot: shot)
             } else {
                 ProgressView().tint(.white)
+            }
+            if decoderToast {
+                Text("SWITCHING DECODER · SOFTWARE")
+                    .font(DS.label(12))
+                    .foregroundStyle(DS.bg)
+                    .padding(.horizontal, DS.s3).padding(.vertical, 6)
+                    .background(DS.amber, in: RoundedRectangle(cornerRadius: DS.rControl))
+                    .transition(.opacity)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: MpvPlayerView.decoderSwitched)) { _ in
+            guard active else { return }
+            withAnimation(DS.easing) { decoderToast = true }
+            Task {
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                withAnimation(DS.easing) { decoderToast = false }
             }
         }
     }
@@ -184,7 +251,7 @@ struct Filmstrip: View {
                 .padding(.vertical, 6)
             }
             .frame(height: 56)
-            .background(Color.black.opacity(0.45))
+            .background(DS.surface.opacity(0.92))
             .onChange(of: index) { i in withAnimation { proxy.scrollTo(i, anchor: .center) } }
             .onAppear { proxy.scrollTo(index, anchor: .center) }
         }

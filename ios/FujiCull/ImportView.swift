@@ -44,17 +44,41 @@ struct ImportView: View {
                 }
 
                 if let s = status, s.running || s.phase == "done" || s.phase == "error" {
+                    // design: the four phases as explicit rows — done ✓ green,
+                    // active amber with progress, todo muted
                     Section("Progress") {
-                        LabeledContent("Phase", value: s.phase)
-                        if s.total > 0 {
-                            ProgressView(value: Double(s.done), total: Double(s.total))
-                            Text("\(s.done)/\(s.total)").font(.system(.caption, design: .monospaced))
+                        let phases = ["copy", "hash", "upload", "validate"]
+                        let activeIdx = phases.firstIndex(of: s.phase) ?? (s.phase == "done" ? phases.count : 0)
+                        ForEach(Array(phases.enumerated()), id: \.offset) { i, p in
+                            HStack {
+                                if i < activeIdx || s.phase == "done" {
+                                    Image(systemName: "checkmark").foregroundStyle(DS.keep)
+                                } else if i == activeIdx && s.running {
+                                    ProgressView().controlSize(.small).tint(DS.amber)
+                                } else {
+                                    Image(systemName: "circle").foregroundStyle(DS.text3)
+                                }
+                                Text(p.uppercased()).font(DS.label(13))
+                                    .foregroundStyle(i <= activeIdx ? DS.text : DS.text3)
+                                Spacer()
+                                if i == activeIdx && s.running && s.total > 0 {
+                                    Text("\(s.done)/\(s.total)").font(DS.micro())
+                                        .foregroundStyle(DS.text2)
+                                }
+                            }
+                        }
+                        if s.total > 0 && s.running {
+                            ProgressView(value: Double(s.done), total: Double(s.total)).tint(DS.amber)
                         }
                         if !s.message.isEmpty {
-                            Text(s.message).font(.caption).foregroundStyle(.secondary)
+                            Text(s.message).font(DS.body(13)).foregroundStyle(DS.text2)
                         }
                         if !s.error.isEmpty {
-                            Text(s.error).font(.caption).foregroundStyle(.red)
+                            Text(s.error).font(DS.body(13)).foregroundStyle(DS.reject)
+                        }
+                        if s.phase == "done" {
+                            Label("import complete", systemImage: "checkmark.circle.fill")
+                                .font(DS.emphasis(14)).foregroundStyle(DS.keep)
                         }
                     }
                 }

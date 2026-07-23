@@ -16,6 +16,8 @@ struct MpvPlayerView: UIViewControllerRepresentable {
     @ObservedObject var model: GridModel
     let shot: Shot
 
+    static let decoderSwitched = Notification.Name("mpvDecoderSwitched")
+
     func makeUIViewController(context: Context) -> MpvViewController {
         let vc = MpvViewController()
         vc.model = model
@@ -194,6 +196,9 @@ final class MpvViewController: UIViewController {
                         self.softwareForced = true
                         self.model?.logEvent("mpv: hardware decode wedged (\(self.shot?.base ?? "?")) — flipping to software")
                         mpv_set_property_string(mpv, "hwdec", "no")
+                        // surface it: the design's "switching decoder" toast
+                        // makes the one-off stutter read as known, not broken
+                        NotificationCenter.default.post(name: MpvPlayerView.decoderSwitched, object: nil)
                     }
                 } else {
                     self.wedgePolls = 0

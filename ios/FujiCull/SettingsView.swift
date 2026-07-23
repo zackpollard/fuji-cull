@@ -40,11 +40,22 @@ struct SettingsView: View {
                     LabeledContent("Link", value: engine.mode == .camera ? "camera (ImageCaptureCore)" : "fake corpus")
                     LabeledContent("Loopback", value: ":\(engine.port)")
                     LabeledContent("Shots", value: "\(engine.shotCount)")
-                    Toggle("Force fake corpus", isOn: $draft.forceFake)
+                    Toggle(isOn: $draft.forceFake) {
+                        Label {
+                            Text("Force fake corpus").foregroundStyle(DS.reject)
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(DS.reject)
+                        }
+                    }
+                    .tint(DS.reject)
                 } header: {
-                    Text("Engine")
+                    Text("Developer")
                 } footer: {
-                    Text("Force fake corpus ignores an attached camera — handy for UI work on-device.")
+                    // design: quarantined — it hides the real camera and fills
+                    // the grid with synthetic shots
+                    Text("Hides the real camera and fills the grid with synthetic shots. Turn OFF before a real shoot.")
+                        .foregroundStyle(DS.reject.opacity(0.85))
                 }
 
                 Section {
