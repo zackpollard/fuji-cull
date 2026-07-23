@@ -40,8 +40,13 @@ if [ "${1:-}" = "--bind" ]; then
 fi
 
 echo "== xcodegen =="
-# xcodegen fails transiently every so often; a retry beats a dead script
-xcodegen generate --quiet || { sleep 2; echo "(xcodegen retry)"; xcodegen generate --quiet; }
+# xcodegen crashes transiently (SIGABRT); retry loudly
+for i in 1 2 3; do
+  xcodegen generate && break
+  echo "xcodegen attempt $i failed"
+  [ "$i" = 3 ] && exit 1
+  sleep 3
+done
 # Xcode <16 can't read xcodegen's default project format (objectVersion 77).
 XCODE_MAJOR=$(xcodebuild -version 2>/dev/null | head -1 | sed -E 's/Xcode ([0-9]+).*/\1/')
 if [ "${XCODE_MAJOR:-0}" -lt 16 ]; then
