@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{margin:0; background:#0B0C0B; color:#ECE9E0; font-family:'IBM Plex Sans',system-ui,sans-serif; -webkit-font-smoothing:antialiased;}
+  a{color:#FFB32E; text-decoration:none;} a:hover{color:#FFC968;}
+  ::selection{background:rgba(255,179,46,0.28);}
+</style>
+</helmet>
+
+<div style="min-height:100vh; background:radial-gradient(1100px 600px at 50% -8%,#12140f 0%,#0B0C0B 60%); padding:0 32px 120px;">
+  <div style="max-width:1080px; margin:0 auto;">
+
+    <div style="padding:80px 0 20px; text-align:center;">
+      <div style="position:relative; width:88px; height:88px; margin:0 auto 26px; background:#161815; border-radius:8px; overflow:hidden; box-shadow:0 16px 50px rgba(0,0,0,0.55);">
+        <svg viewBox="0 0 88 79" style="position:absolute; left:0; top:0; width:100%; height:calc(100% - 9px);"><polygon points="44,16 75,70 13,70" fill="#FFB32E"></polygon><polygon points="44,16 55,34 33,34" fill="#ECE9E0"></polygon></svg>
+        <div style="position:absolute; left:0; right:0; bottom:0; height:9px; background:#38D67A;"></div>
+      </div>
+      <div style="font:400 12px/1 'IBM Plex Mono',monospace; color:#FFB32E; letter-spacing:0.2em; margin-bottom:16px;">CROSS-PLATFORM DESIGN SYSTEM</div>
+      <h1 style="margin:0 0 20px; font:600 52px/1 'IBM Plex Mono',monospace; letter-spacing:-0.02em;">fuji-cull</h1>
+      <p style="max-width:600px; margin:0 auto; font:400 18px/1.6 'IBM Plex Sans',sans-serif; color:#c9cabf;">Review 5,000&ndash;25,000 photos straight off a Fujifilm card, mark keep or reject in a keystroke, import only the winners. One tile grammar, one dark theme, four surfaces &mdash; built for <span style="color:#ECE9E0; font-weight:600;">speed with confidence</span>.</p>
+      <div style="display:flex; gap:9px; justify-content:center; flex-wrap:wrap; margin-top:26px;">
+        <div style="border:1px solid #2a2f26; border-radius:99px; padding:8px 15px; font:500 11.5px/1 'IBM Plex Mono',monospace; color:#9DA093;">25,000+ items &middot; virtualized</div>
+        <div style="border:1px solid #2a2f26; border-radius:99px; padding:8px 15px; font:500 11.5px/1 'IBM Plex Mono',monospace; color:#9DA093;">dark, always</div>
+        <div style="border:1px solid #2a2f26; border-radius:99px; padding:8px 15px; font:500 11.5px/1 'IBM Plex Mono',monospace; color:#9DA093;">honest progress</div>
+      </div>
+    </div>
+
+    <div style="display:flex; align-items:center; gap:14px; margin:56px 0 20px;">
+      <div style="font:500 11px/1 'IBM Plex Mono',monospace; color:#6B6E62; letter-spacing:0.14em;">START HERE</div>
+      <div style="flex:1; height:1px; background:#1c1f19;"></div>
+    </div>
+
+    <div style="display:grid; grid-template-columns:1.15fr 1fr; gap:18px;">
+      <a href="fuji-cull%20Web%20UI.dc.html" style="display:block; border:1px solid #2a2f26; border-radius:14px; overflow:hidden; background:#101210; transition:border-color 160ms, transform 160ms;" style-hover="border-color:rgba(255,179,46,0.5); transform:translateY(-3px);">
+        <div style="height:186px; background:#0B0C0B; padding:14px; position:relative; border-bottom:1px solid #1c1f19;">
+          <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;"><div style="display:flex; align-items:baseline; gap:3px;"><span style="font:500 8px/1 'IBM Plex Mono',monospace; color:#6B6E62;">K</span><span style="font:600 12px/1 'IBM Plex Mono',monospace; color:#38D67A;">8,204</span></div><div style="display:flex; align-items:baseline; gap:3px;"><span style="font:500 8px/1 'IBM Plex Mono',monospace; color:#6B6E62;">R</span><span style="font:600 12px/1 'IBM Plex Mono',monospace; color:#FF5A3D;">3,910</span></div><div style="display:flex; align-items:baseline; gap:3px;"><span style="font:500 8px/1 'IBM Plex Mono',monospace; color:#6B6E62;">U</span><span style="font:600 12px/1 'IBM Plex Mono',monospace; color:#9DA093;">12,146</span></div></div>
+          <div style="display:grid; grid-template-columns:repeat(10,1fr); gap:3px;">
+            <sc-for list="{{ webTiles }}" as="t" hint-placeholder-count="30"><div style="aspect-ratio:1/1;"><dc-import name="Tile" bg="{{ t.bg }}" decision="{{ t.decision }}" buffered="{{ t.buffered }}" video="{{ t.video }}" cursor="{{ t.cursor }}" hint-size="100%,100%"></dc-import></div></sc-for>
+          </div>
+          <div style="position:absolute; top:14px; right:14px; display:flex; align-items:center; gap:6px; background:rgba(56,214,122,0.14); border:1px solid rgba(56,214,122,0.4); border-radius:99px; padding:5px 11px;"><div style="width:6px; height:6px; border-radius:50%; background:#38D67A;"></div><span style="font:600 9px/1 'IBM Plex Mono',monospace; color:#38D67A; letter-spacing:0.06em;">INTERACTIVE</span></div>
+        </div>
+        <div style="padding:18px 20px 20px;">
+          <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:8px;"><span style="font:600 12px/1 'IBM Plex Mono',monospace; color:#FFB32E;">01</span><span style="font:500 17px/1 'IBM Plex Mono',monospace; letter-spacing:0.02em;">Web UI &mdash; the flagship</span></div>
+          <p style="margin:0 0 12px; font:400 13.5px/1.55 'IBM Plex Sans',sans-serif; color:#9DA093;">The keyboard-first cull loop, fully playable. Arrow-key nav, W/S to keep-reject with live counters, viewer, video wall, and every connect/import/settings/log state via the prototype dock.</p>
+          <span style="font:600 12px/1 'IBM Plex Mono',monospace; color:#FFB32E;">Open the prototype &rarr;</span>
+        </div>
+      </a>
+
+      <a href="fuji-cull%20Design%20System.dc.html" style="display:block; border:1px solid #2a2f26; border-radius:14px; overflow:hidden; background:#101210; transition:border-color 160ms, transform 160ms;" style-hover="border-color:rgba(255,179,46,0.5); transform:translateY(-3px);">
+        <div style="height:186px; background:#0B0C0B; padding:18px; border-bottom:1px solid #1c1f19; display:flex; flex-direction:column; justify-content:space-between;">
+          <div style="display:flex; gap:6px;">
+            <sc-for list="{{ swatches }}" as="s" hint-placeholder-count="6"><div style="flex:1; height:38px; border-radius:5px; background:{{ s }};"></div></sc-for>
+          </div>
+          <div>
+            <div style="font:600 28px/1 'IBM Plex Mono',monospace; color:#ECE9E0; margin-bottom:6px;">Aa 8,204</div>
+            <div style="font:400 12px/1.4 'IBM Plex Sans',sans-serif; color:#9DA093;">Mono for data, Sans for prose.</div>
+          </div>
+        </div>
+        <div style="padding:18px 20px 20px;">
+          <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:8px;"><span style="font:600 12px/1 'IBM Plex Mono',monospace; color:#FFB32E;">00</span><span style="font:500 17px/1 'IBM Plex Mono',monospace; letter-spacing:0.02em;">Design system</span></div>
+          <p style="margin:0 0 12px; font:400 13.5px/1.55 'IBM Plex Sans',sans-serif; color:#9DA093;">Tokens, the tile with every overlay state, the mono-vs-hybrid decision, motion, and accessibility &mdash; the shared language for all four surfaces.</p>
+          <span style="font:600 12px/1 'IBM Plex Mono',monospace; color:#FFB32E;">Open the reference &rarr;</span>
+        </div>
+      </a>
+    </div>
+
+    <div style="display:flex; align-items:center; gap:14px; margin:44px 0 20px;">
+      <div style="font:500 11px/1 'IBM Plex Mono',monospace; color:#6B6E62; letter-spacing:0.14em;">THE FOUR SURFACES</div>
+      <div style="flex:1; height:1px; background:#1c1f19;"></div>
+    </div>
+
+    <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:18px;">
+      <sc-for list="{{ surfaces }}" as="s" hint-placeholder-count="3">
+        <a href="{{ s.href }}" style="display:block; border:1px solid #2a2f26; border-radius:14px; overflow:hidden; background:#101210; transition:border-color 160ms, transform 160ms;" style-hover="border-color:rgba(255,179,46,0.5); transform:translateY(-3px);">
+          <div style="height:130px; background:#0B0C0B; border-bottom:1px solid #1c1f19; display:flex; align-items:center; justify-content:center; position:relative; overflow:hidden;">
+            <div style="{{ s.frameStyle }}">
+              <div style="display:flex; flex-wrap:wrap; gap:2px; padding:4px; align-content:flex-start; height:100%; overflow:hidden;">
+                <sc-for list="{{ s.miniTiles }}" as="mt" hint-placeholder-count="30">
+                  <div style="width:13px; height:13px; flex:none;"><dc-import name="Tile" bg="{{ mt.bg }}" decision="{{ mt.decision }}" hint-size="13px,13px"></dc-import></div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+          <div style="padding:16px 18px 18px;">
+            <div style="display:flex; align-items:baseline; gap:9px; margin-bottom:7px;"><span style="font:600 11px/1 'IBM Plex Mono',monospace; color:#FFB32E;">{{ s.n }}</span><span style="font:500 15px/1 'IBM Plex Mono',monospace;">{{ s.name }}</span></div>
+            <p style="margin:0 0 10px; font:400 12.5px/1.5 'IBM Plex Sans',sans-serif; color:#9DA093;">{{ s.desc }}</p>
+            <div style="font:400 10px/1.5 'IBM Plex Mono',monospace; color:#6B6E62;">{{ s.states }}</div>
+          </div>
+        </a>
+      </sc-for>
+    </div>
+
+    <div style="display:flex; align-items:center; gap:14px; margin:56px 0 22px;">
+      <div style="font:500 11px/1 'IBM Plex Mono',monospace; color:#6B6E62; letter-spacing:0.14em;">DESIGN DECISIONS</div>
+      <div style="flex:1; height:1px; background:#1c1f19;"></div>
+    </div>
+
+    <div style="display:grid; grid-template-columns:repeat(2,1fr); gap:16px;">
+      <sc-for list="{{ decisions }}" as="d" hint-placeholder-count="4">
+        <div style="border:1px solid #22261F; border-radius:12px; background:#0f110e; padding:18px 20px;">
+          <div style="display:flex; align-items:center; gap:10px; margin-bottom:9px;"><div style="width:9px; height:9px; border-radius:2px; background:{{ d.color }};"></div><div style="font:600 12px/1 'IBM Plex Mono',monospace; color:{{ d.color }}; letter-spacing:0.04em;">{{ d.tag }}</div></div>
+          <div style="font:600 15px/1.3 'IBM Plex Sans',sans-serif; color:#ECE9E0; margin-bottom:6px;">{{ d.title }}</div>
+          <p style="margin:0; font:400 13px/1.55 'IBM Plex Sans',sans-serif; color:#9DA093;">{{ d.body }}</p>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="margin-top:44px; border:1px solid #22261F; border-radius:12px; background:linear-gradient(180deg,#12140f,#0f110e); padding:24px 26px; display:flex; align-items:center; gap:22px; flex-wrap:wrap;">
+      <div style="flex:1; min-width:280px;">
+        <div style="font:600 11px/1 'IBM Plex Mono',monospace; color:#FFB32E; letter-spacing:0.1em; margin-bottom:9px;">HANDOFF</div>
+        <p style="margin:0; font:400 14px/1.6 'IBM Plex Sans',sans-serif; color:#c2c3b8;">You review these designs; <strong style="color:#ECE9E0; font-weight:600;">Claude Fable</strong> implements. Every surface reuses one shared <span style="font-family:'IBM Plex Mono',monospace; color:#FFB32E;">Tile</span> component and the tokens in the design system &mdash; the same nouns and states the Go engine already exposes over its API.</p>
+      </div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <a href="fuji-cull%20Web%20UI.dc.html" style="font:600 12px/1 'IBM Plex Mono',monospace; background:#FFB32E; color:#0B0C0B; padding:12px 18px; border-radius:8px;">Play the prototype</a>
+        <a href="fuji-cull%20Design%20System.dc.html" style="font:600 12px/1 'IBM Plex Mono',monospace; background:#1C1F1A; color:#c9cabf; border:1px solid #30352C; padding:12px 18px; border-radius:8px;">Read the system</a>
+      </div>
+    </div>
+
+    <div style="margin-top:40px; text-align:center; font:400 11px/1.6 'IBM Plex Mono',monospace; color:#4a4d43;">fuji-cull &middot; cross-platform design system &middot; the tile grammar is the identity</div>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1160,&quot;height&quot;:900}}">
+class Component extends DCLogic {
+  GRADS = [
+    'linear-gradient(150deg,#3a3324,#14130d)','linear-gradient(155deg,#26343a,#0f1417)',
+    'linear-gradient(160deg,#3a2630,#161014)','linear-gradient(200deg,#2b3a2a,#101510)',
+    'linear-gradient(135deg,#33302a,#141311)','linear-gradient(165deg,#2a2f3a,#101216)',
+    'linear-gradient(145deg,#3a3528,#15130e)','linear-gradient(175deg,#243a35,#0e1513)',
+    'linear-gradient(190deg,#38283a,#140f16)','linear-gradient(140deg,#3a2f26,#161210)',
+  ];
+  renderVals() {
+    const decs = ['', 'keep', '', 'reject', 'keep', '', 'keep', '', 'reject', 'keep', 'keep', '', 'keep', 'reject', '', 'keep', '', 'keep', 'reject', '',
+      '', 'keep', '', 'keep', 'reject', '', 'keep', '', 'keep', 'reject'];
+    const webTiles = decs.map((d, i) => ({
+      bg: this.GRADS[(i * 7) % this.GRADS.length], decision: d,
+      buffered: i % 3 !== 0 && i < 12, video: i % 14 === 6, cursor: i === 13,
+    }));
+    const swatches = ['#0B0C0B', '#161815', '#FFB32E', '#38D67A', '#FF5A3D', '#57C9C1'];
+    const mini = (n, off) => { const out = []; for (let i = 0; i < n; i++) { const j = i + off; out.push({ bg: this.GRADS[(j * 7) % this.GRADS.length], decision: [ '', 'keep', '', 'reject', 'keep', '', 'keep', '', 'reject', 'keep', 'keep', '' ][(j * 3) % 12] }); } return out; };
+    const surfaces = [
+      { n: '02', name: 'Desktop', href: 'fuji-cull%20Desktop.dc.html', desc: 'Native SDL, GPU stage, zero-mouse. Deliberately minimal chrome for the fastest sweep.', states: 'grid \u00b7 stage \u00b7 import',
+        frameStyle: 'width:158px; height:98px; border-radius:6px; overflow:hidden; border:1px solid #2a2f26; background:#0B0C0B;', miniTiles: mini(45, 0) },
+      { n: '03', name: 'Android', href: 'fuji-cull%20Android.dc.html', desc: 'Jetpack Compose, touch-first. Decisions on big bottom buttons; mpv with decoder fallback.', states: 'connect \u00b7 cull \u00b7 viewer \u00b7 import \u00b7 settings \u00b7 log',
+        frameStyle: 'width:60px; height:106px; border-radius:11px; overflow:hidden; border:2px solid #2a2f26; background:#0B0C0B;', miniTiles: mini(24, 5) },
+      { n: '04', name: 'iPad', href: 'fuji-cull%20iPad.dc.html', desc: 'SwiftUI split-view, form sheets, hardware-keyboard parity, connect-as-telemetry.', states: 'telemetry \u00b7 split cull \u00b7 viewer \u00b7 sheets',
+        frameStyle: 'width:140px; height:100px; border-radius:9px; overflow:hidden; border:2px solid #2a2f26; background:#0B0C0B;', miniTiles: mini(40, 2) },
+    ];
+    const decisions = [
+      { tag: 'IDENTITY', color: '#FFB32E', title: 'Hybrid type, not all-mono', body: 'Keep monospace for data, keys and logs \u2014 it aligns and signals \u201cengineered.\u201d Move prose to IBM Plex Sans so guidance reads fast. The tile grammar stays the identity.' },
+      { tag: 'GLANCEABILITY', color: '#38D67A', title: 'Fate lives on the edge', body: 'A full-width decision bar on the tile\u2019s bottom edge reads a whole row of keeps and rejects in one sweep at 56px \u2014 no per-cell animation, so 25k virtualized cells stay smooth.' },
+      { tag: 'HONESTY', color: '#57C9C1', title: 'The waits feel engineered', body: 'Every connect and import shows real percentages, counts and MB/s with a log tail one tap away. CAMERA SICK is amber \u2014 notice, don\u2019t panic. No fake spinners, ever.' },
+      { tag: 'CONTINUITY', color: '#4EA6FF', title: 'One grammar, four idioms', body: 'Keyboard-first on web/desktop/iPad; thumb-first on Android/iPad. Every keyboard action has a touch twin and vice-versa, drawn from the same tokens and the same Tile.' },
+    ];
+    return { webTiles, swatches, surfaces, decisions };
+  }
+}
+</script>
+</body>
+</html>

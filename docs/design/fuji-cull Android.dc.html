@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  *{box-sizing:border-box;}
+  body{margin:0; background:#080908; color:#ECE9E0; font-family:'IBM Plex Sans',system-ui,sans-serif; -webkit-font-smoothing:antialiased;}
+  a{color:#FFB32E; text-decoration:none;} a:hover{color:#FFC968;}
+  ::selection{background:rgba(255,179,46,0.28);}
+  @keyframes scanEdge{0%{transform:translateX(-100%);}100%{transform:translateX(100%);}}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  @keyframes sickBlink{0%,100%{opacity:1;}50%{opacity:0.4;}}
+</style>
+</helmet>
+
+<div style="padding:60px 70px 120px; min-width:1600px;">
+
+  <div style="max-width:820px; margin-bottom:50px;">
+    <div style="display:flex; align-items:center; gap:16px; margin-bottom:22px;">
+      <div style="position:relative; width:54px; height:54px; background:#161815; border-radius:5px; overflow:hidden; flex:none;">
+        <svg viewBox="0 0 54 48" style="position:absolute; left:0; top:0; width:100%; height:calc(100% - 6px);"><polygon points="27,10 46,42 8,42" fill="#FFB32E"></polygon><polygon points="27,10 33,21 21,21" fill="#ECE9E0"></polygon></svg>
+        <div style="position:absolute; left:0; right:0; bottom:0; height:6px; background:#38D67A;"></div>
+      </div>
+      <div>
+        <div style="font:400 12px/1 'IBM Plex Mono',monospace; color:#FFB32E; letter-spacing:0.16em; margin-bottom:9px;">SURFACE 03 &middot; ANDROID</div>
+        <h1 style="margin:0; font:600 34px/1 'IBM Plex Mono',monospace; letter-spacing:-0.01em;">Android &mdash; Jetpack Compose</h1>
+      </div>
+    </div>
+    <p style="margin:0 0 18px; font:400 16px/1.6 'IBM Plex Sans',sans-serif; color:#c9cabf;">Phones and tablets, thumb-first. Same nouns and states as every other client &mdash; but decisions move to big bottom buttons, the grid opens to a paged viewer on tap, and the date scrubber is an Immich-style handle you drag. Video runs on mpv with hardware 4:2:0 decode and automatic software 4:2:2 fallback.</p>
+    <div style="display:flex; flex-wrap:wrap; gap:9px;">
+      <div style="border:1px solid #2a2f26; border-radius:5px; padding:8px 12px; font:500 11.5px/1.3 'IBM Plex Mono',monospace; color:#9DA093;">touch-first &middot; 48dp targets</div>
+      <div style="border:1px solid #2a2f26; border-radius:5px; padding:8px 12px; font:500 11.5px/1.3 'IBM Plex Mono',monospace; color:#9DA093;">Material 3 shell, fuji-cull dark inside</div>
+      <div style="border:1px solid #2a2f26; border-radius:5px; padding:8px 12px; font:500 11.5px/1.3 'IBM Plex Mono',monospace; color:#9DA093;">mpv &middot; hw 4:2:0 &rarr; sw 4:2:2</div>
+    </div>
+  </div>
+
+  <div style="display:flex; gap:56px; align-items:flex-start; flex-wrap:wrap;">
+
+    <!-- CONNECT -->
+    <div style="flex:none;">
+      <div style="font:500 13px/1 'IBM Plex Mono',monospace; color:#c9cabf; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:14px;"><span style="color:#FFB32E;">01</span> &nbsp;Connect</div>
+      <x-import component-from-global-scope="AndroidDevice" from="./android-frame.jsx" dark="{{ true }}" hint-size="412px,892px">
+        <div style="height:100%; background:#0B0C0B; display:flex; flex-direction:column; padding:22px 18px; font-family:'IBM Plex Sans',sans-serif;">
+          <div style="display:flex; align-items:center; gap:12px; margin-bottom:26px;">
+            <div style="position:relative; width:38px; height:38px; background:#161815; border-radius:5px; overflow:hidden; flex:none;"><svg viewBox="0 0 38 34" style="position:absolute; left:0; top:0; width:100%; height:calc(100% - 4px);"><polygon points="19,7 32,29 6,29" fill="#FFB32E"></polygon><polygon points="19,7 23,15 15,15" fill="#ECE9E0"></polygon></svg><div style="position:absolute; left:0; right:0; bottom:0; height:4px; background:#38D67A;"></div></div>
+            <div><div style="font:600 16px/1 'IBM Plex Mono',monospace;">fuji-cull</div><div style="font:400 11px/1.4 'IBM Plex Mono',monospace; color:#6B6E62; margin-top:4px;">X-T5 &middot; USB card-reader</div></div>
+          </div>
+          <div style="border:1px solid #22261F; background:#0f110e; border-radius:12px; padding:18px;">
+            <div style="display:flex; align-items:center; gap:9px; margin-bottom:8px;"><div style="width:8px; height:8px; border-radius:50%; background:#FFB32E; animation:sickBlink 1.4s infinite;"></div><span style="font:600 12px/1 'IBM Plex Mono',monospace; color:#FFB32E; letter-spacing:0.04em;">INDEXING CARD</span><span style="margin-left:auto; font:600 15px/1 'IBM Plex Mono',monospace; color:#FFB32E;">62%</span></div>
+            <p style="margin:0 0 14px; font:400 12.5px/1.5 'IBM Plex Sans',sans-serif; color:#c9cabf;">Building a timeline of the whole card. Happens every connection &mdash; about three minutes.</p>
+            <div style="position:relative; height:8px; background:#1C1F1A; border-radius:99px; overflow:hidden;"><div style="position:absolute; left:0; top:0; bottom:0; width:62%; background:#FFB32E; border-radius:99px;"></div><div style="position:absolute; left:0; top:0; bottom:0; width:62%; overflow:hidden;"><div style="position:absolute; inset:0; background:linear-gradient(90deg,transparent,rgba(255,255,255,0.5),transparent); animation:scanEdge 1.6s ease-in-out infinite;"></div></div></div>
+            <div style="display:flex; justify-content:space-between; margin-top:9px; font:400 10.5px/1.3 'IBM Plex Mono',monospace; color:#8a8d81;"><span>15,040 / 24,260</span><span>42 MB/s &middot; ~70s</span></div>
+          </div>
+          <div style="margin-top:16px; border:1px solid #22261F; background:#0f110e; border-radius:12px; padding:14px 16px;">
+            <div style="font:500 9px/1 'IBM Plex Mono',monospace; color:#6B6E62; letter-spacing:0.1em; margin-bottom:9px;">LOG TAIL</div>
+            <div style="font:400 10px/1.8 'IBM Plex Mono',monospace; color:#8a8d81;"><div>12:04:42 index: 24260 objects</div><div>12:05:58 thumb: 4210 decoded</div><div style="color:#c9cabf;">12:06:03 exif: 15040/24260</div></div>
+          </div>
+          <div style="margin-top:auto; padding-top:18px;">
+            <div style="border:1px solid rgba(255,179,46,0.25); background:rgba(255,179,46,0.06); border-radius:10px; padding:12px 14px; margin-bottom:12px;"><p style="margin:0; font:400 12px/1.5 'IBM Plex Sans',sans-serif; color:#e8c98a;">Set the camera to <strong>USB card-reader mode</strong> if nothing appears.</p></div>
+            <div style="display:flex; gap:10px;"><button style="flex:1; height:48px; background:#1C1F1A; color:#c9cabf; border:1px solid #30352C; border-radius:10px; font:500 12px/1 'IBM Plex Mono',monospace; cursor:pointer;">Settings</button><button style="flex:1; height:48px; background:#1C1F1A; color:#c9cabf; border:1px solid #30352C; border-radius:10px; font:500 12px/1 'IBM Plex Mono',monospace; cursor:pointer;">View log</button></div>
+          </div>
+        </div>
+      </x-import>
+    </div>
+
+    <!-- CULL -->
+    <div style="flex:none;">
+      <div style="font:500 13px/1 'IBM Plex Mono',monospace; color:#c9cabf; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:14px;"><span style="color:#FFB32E;">02</span> &nbsp;Cull &mdash; timeline</div>
+      <x-import component-from-global-scope="AndroidDevice" from="./android-frame.jsx" dark="{{ true }}" hint-size="412px,892px">
+        <div style="height:100%; background:#0B0C0B; display:flex; flex-direction:column; font-family:'IBM Plex Sans',sans-serif; position:relative;">
+          <div style="flex:none; padding:12px 16px 10px; border-bottom:1px solid #17190f;">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <div style="width:6px; height:6px; border-radius:50%; background:#38D67A;"></div>
+              <span style="font:600 13px/1 'IBM Plex Mono',monospace;">iceland-day3</span>
+              <button style="margin-left:auto; width:38px; height:38px; border-radius:9px; background:#FFB32E; color:#0B0C0B; border:none; font:600 11px/1 'IBM Plex Mono',monospace; cursor:pointer;">&darr;</button>
+            </div>
+            <div style="display:flex; align-items:baseline; gap:14px; margin-top:10px;">
+              <div style="display:flex; align-items:baseline; gap:4px;"><span style="font:500 9px/1 'IBM Plex Mono',monospace; color:#6B6E62;">K</span><span style="font:600 14px/1 'IBM Plex Mono',monospace; color:#38D67A;">8,204</span></div>
+              <div style="display:flex; align-items:baseline; gap:4px;"><span style="font:500 9px/1 'IBM Plex Mono',monospace; color:#6B6E62;">R</span><span style="font:600 14px/1 'IBM Plex Mono',monospace; color:#FF5A3D;">3,910</span></div>
+              <div style="display:flex; align-items:baseline; gap:4px;"><span style="font:500 9px/1 'IBM Plex Mono',monospace; color:#6B6E62;">U</span><span style="font:600 14px/1 'IBM Plex Mono',monospace; color:#9DA093;">12,146</span></div>
+            </div>
+          </div>
+          <div style="flex:1; overflow:hidden; padding:12px 14px 0; position:relative;">
+            <div style="font:600 10px/1 'IBM Plex Mono',monospace; color:#FFB32E; letter-spacing:0.12em; margin-bottom:8px;">JULY 2026</div>
+            <div style="display:flex; align-items:baseline; gap:8px; margin-bottom:8px;"><span style="font:600 11px/1 'IBM Plex Mono',monospace; color:#c9cabf;">WED 15 JUL</span><span style="font:400 9px/1 'IBM Plex Mono',monospace; color:#6B6E62;">96 shots</span></div>
+            <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:5px;">
+              <sc-for list="{{ phoneGrid }}" as="t" hint-placeholder-count="20">
+                <div style="aspect-ratio:1/1;"><dc-import name="Tile" bg="{{ t.bg }}" decision="{{ t.decision }}" buffered="{{ t.buffered }}" immich="{{ t.immich }}" video="{{ t.video }}" raw="{{ t.raw }}" cursor="{{ t.cursor }}" hint-size="100%,100%"></dc-import></div>
+              </sc-for>
+            </div>
+            <div style="position:absolute; right:8px; top:60px; bottom:8px; width:36px; display:flex; align-items:center; justify-content:flex-end;">
+              <div style="position:absolute; right:14px; top:6px; bottom:6px; width:3px; background:#1C1F1A; border-radius:3px;"></div>
+              <div style="position:absolute; right:8px; top:12%; font:600 8px/1 'IBM Plex Mono',monospace; color:#c9cabf;">JUL</div>
+              <div style="position:absolute; right:8px; top:64%; font:600 8px/1 'IBM Plex Mono',monospace; color:#6B6E62;">JUN</div>
+              <div style="position:absolute; right:2px; top:30%; display:flex; align-items:center; gap:7px;"><div style="background:#FFB32E; color:#0B0C0B; font:600 9px/1 'IBM Plex Mono',monospace; padding:5px 7px; border-radius:5px; white-space:nowrap; box-shadow:0 4px 12px rgba(0,0,0,0.5);">Jul 14</div><div style="width:12px; height:12px; border-radius:50%; background:#FFB32E; box-shadow:0 0 0 3px rgba(255,179,46,0.2);"></div></div>
+            </div>
+          </div>
+        </div>
+      </x-import>
+    </div>
+
+    <!-- VIEWER -->
+    <div style="flex:none;">
+      <div style="font:500 13px/1 'IBM Plex Mono',monospace; color:#c9cabf; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:14px;"><span style="color:#FFB32E;">03</span> &nbsp;Viewer &mdash; video</div>
+      <x-import component-from-global-scope="AndroidDevice" from="./android-frame.jsx" dark="{{ true }}" hint-size="412px,892px">
+        <div style="height:100%; background:#08120f; display:flex; flex-direction:column; font-family:'IBM Plex Sans',sans-serif;">
+          <div style="flex:none; display:flex; align-items:center; gap:10px; padding:12px 14px;">
+            <button style="width:38px; height:38px; border-radius:9px; background:rgba(28,31,26,0.8); color:#c9cabf; border:1px solid #30352C; font:400 15px/1 'IBM Plex Mono',monospace;">&larr;</button>
+            <div><div style="font:600 12px/1 'IBM Plex Mono',monospace; color:#ECE9E0;">DSCF4907.MOV</div><div style="font:400 10px/1 'IBM Plex Mono',monospace; color:#6B6E62; margin-top:3px;">2,214 / 24,260</div></div>
+          </div>
+          <div style="flex:1; position:relative; display:flex; align-items:center; justify-content:center; background:linear-gradient(160deg,#26343a,#0f1417); overflow:hidden;">
+            <div style="position:absolute; inset:0; background:repeating-linear-gradient(115deg,transparent 0 24px,rgba(255,255,255,0.02) 24px 48px);"></div>
+            <div style="width:64px; height:64px; border-radius:50%; background:rgba(11,12,11,0.5); backdrop-filter:blur(3px); display:flex; align-items:center; justify-content:center;"><div style="width:0; height:0; border-style:solid; border-width:10px 0 10px 16px; border-color:transparent transparent transparent #ECE9E0; margin-left:3px;"></div></div>
+            <div style="position:absolute; top:14px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:8px; background:rgba(11,12,11,0.7); border:1px solid #30352C; border-radius:6px; padding:7px 11px;"><div style="width:11px; height:11px; border:2px solid rgba(255,179,46,0.3); border-top-color:#FFB32E; border-radius:50%; animation:spin 0.8s linear infinite;"></div><span style="font:500 10px/1 'IBM Plex Mono',monospace; color:#c9cabf;">4:2:2 &mdash; software decoder</span></div>
+            <div style="position:absolute; left:0; right:0; bottom:0; padding:14px;"><div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;"><span style="font:500 10px/1 'IBM Plex Mono',monospace; color:#c9cabf;">0:42</span><div style="flex:1; height:4px; background:rgba(255,255,255,0.18); border-radius:99px; position:relative;"><div style="position:absolute; left:0; top:0; bottom:0; width:34%; background:#FFB32E; border-radius:99px;"></div><div style="position:absolute; left:34%; top:50%; transform:translate(-50%,-50%); width:12px; height:12px; border-radius:50%; background:#FFB32E;"></div></div><span style="font:500 10px/1 'IBM Plex Mono',monospace; color:#c9cabf;">2:07</span></div><div style="display:inline-flex; align-items:center; gap:6px; background:rgba(11,12,11,0.6); border:1px solid rgba(255,179,46,0.3); border-radius:5px; padding:5px 9px; white-space:nowrap;"><span style="font:600 9px/1 'IBM Plex Mono',monospace; color:#FFB32E; letter-spacing:0.04em;">PREVIEW &middot; 4 GiB &mdash; PULL FULL</span></div></div>
+          </div>
+          <div style="flex:none; padding:8px 12px 4px; display:flex; gap:3px; overflow:hidden; background:#0B0C0B;">
+            <sc-for list="{{ phoneStrip }}" as="s" hint-placeholder-count="8">
+              <div style="width:52px; height:52px; flex:none;"><dc-import name="Tile" bg="{{ s.bg }}" decision="{{ s.decision }}" video="{{ s.video }}" buffered="{{ s.buffered }}" cursor="{{ s.cursor }}" hint-size="100%,100%"></dc-import></div>
+            </sc-for>
+          </div>
+          <div style="flex:none; display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; padding:8px 12px 14px; background:#0B0C0B;">
+            <button style="height:56px; background:rgba(255,90,61,0.12); color:#FF5A3D; border:1px solid rgba(255,90,61,0.5); border-radius:10px; font:600 12px/1 'IBM Plex Mono',monospace; letter-spacing:0.04em;">REJECT</button>
+            <button style="height:56px; background:#1C1F1A; color:#9DA093; border:1px solid #30352C; border-radius:10px; font:600 12px/1 'IBM Plex Mono',monospace; letter-spacing:0.04em;">CLEAR</button>
+            <button style="height:56px; background:rgba(56,214,122,0.12); color:#38D67A; border:1px solid rgba(56,214,122,0.5); border-radius:10px; font:600 12px/1 'IBM Plex Mono',monospace; letter-spacing:0.04em;">KEEP</button>
+          </div>
+        </div>
+      </x-import>
+    </div>
+
+  </div>
+
+  <div style="display:flex; gap:14px; margin-top:30px; margin-bottom:60px; max-width:1180px;">
+    <div style="flex:1; border-left:2px solid #FFB32E; background:rgba(255,179,46,0.05); padding:13px 16px; border-radius:0 6px 6px 0;">
+      <div style="font:600 10px/1 'IBM Plex Mono',monospace; color:#FFB32E; letter-spacing:0.1em; margin-bottom:7px;">WHY &mdash; DECISIONS ON THE THUMBS</div>
+      <p style="margin:0; font:400 12.5px/1.55 'IBM Plex Sans',sans-serif; color:#c2c3b8;">The keyboard&rsquo;s W/S becomes a three-up REJECT / CLEAR / KEEP bar pinned to the bottom, each a 56dp target within thumb reach. Tap a tile to open the paged viewer; swipe left/right pages shots.</p>
+    </div>
+    <div style="flex:1; border-left:2px solid #4EA6FF; background:rgba(78,166,255,0.05); padding:13px 16px; border-radius:0 6px 6px 0;">
+      <div style="font:600 10px/1 'IBM Plex Mono',monospace; color:#4EA6FF; letter-spacing:0.1em; margin-bottom:7px;">WHY &mdash; DECODER HONESTY</div>
+      <p style="margin:0; font:400 12.5px/1.55 'IBM Plex Sans',sans-serif; color:#c2c3b8;">A 4:2:2 clip that hardware can&rsquo;t decode may freeze for a beat; the chip says &ldquo;software decoder&rdquo; so a stutter reads as a known fallback, not a bug. Same 4&nbsp;GiB preview wall as everywhere.</p>
+    </div>
+    <div style="flex:1; border-left:2px solid #57C9C1; background:rgba(87,201,193,0.05); padding:13px 16px; border-radius:0 6px 6px 0;">
+      <div style="font:600 10px/1 'IBM Plex Mono',monospace; color:#57C9C1; letter-spacing:0.1em; margin-bottom:7px;">WHY &mdash; DRAG SCRUBBER</div>
+      <p style="margin:0; font:400 12.5px/1.55 'IBM Plex Sans',sans-serif; color:#c2c3b8;">The right-edge scrubber fades in on scroll and shows a month bubble under the thumb &mdash; the only fast way to cross 25k shots on a phone. Labels thin as the card grows.</p>
+    </div>
+  </div>
+
+  <div style="display:flex; gap:56px; align-items:flex-start; flex-wrap:wrap;">
+
+    <!-- IMPORT -->
+    <div style="flex:none;">
+      <div style="font:500 13px/1 'IBM Plex Mono',monospace; color:#c9cabf; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:14px;"><span style="color:#FFB32E;">04</span> &nbsp;Import dialog</div>
+      <x-import component-from-global-scope="AndroidDevice" from="./android-frame.jsx" dark="{{ true }}" hint-size="412px,892px">
+        <div style="height:100%; background:#0B0C0B; position:relative; font-family:'IBM Plex Sans',sans-serif;">
+          <div style="position:absolute; inset:0; padding:12px 14px; opacity:0.32;">
+            <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:5px;"><sc-for list="{{ phoneGrid }}" as="t" hint-placeholder-count="12"><div style="aspect-ratio:1/1;"><dc-import name="Tile" bg="{{ t.bg }}" decision="{{ t.decision }}" hint-size="100%,100%"></dc-import></div></sc-for></div>
+          </div>
+          <div style="position:absolute; inset:0; background:rgba(11,12,11,0.72);"></div>
+          <div style="position:absolute; left:0; right:0; bottom:0; background:#1C1F1A; border-radius:20px 20px 0 0; border-top:1px solid #2a2f26; padding:20px 18px 26px;">
+            <div style="width:34px; height:4px; border-radius:99px; background:#30352C; margin:0 auto 16px;"></div>
+            <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:18px;"><span style="font:500 15px/1 'IBM Plex Mono',monospace; text-transform:uppercase; letter-spacing:0.04em;">Import keepers</span><span style="font:400 11px/1 'IBM Plex Mono',monospace; color:#6B6E62;">8,204 &middot; 214.6 GB</span></div>
+            <div style="display:flex; flex-direction:column; gap:12px; margin-bottom:18px;">
+              <div><div style="font:600 11px/1 'IBM Plex Sans',sans-serif; color:#ECE9E0; margin-bottom:6px;">Destination</div><div style="font:400 12px/1 'IBM Plex Mono',monospace; color:#c9cabf; background:#161815; border:1px solid #30352C; border-radius:8px; padding:12px;">/photos/iceland-2026/</div></div>
+              <div><div style="font:600 11px/1 'IBM Plex Sans',sans-serif; color:#ECE9E0; margin-bottom:6px;">Immich album</div><div style="font:400 12px/1 'IBM Plex Mono',monospace; color:#c9cabf; background:#161815; border:1px solid #30352C; border-radius:8px; padding:12px;">Iceland &mdash; Day 3</div></div>
+            </div>
+            <div style="display:flex; gap:6px; margin-bottom:18px;">
+              <div style="flex:1;"><div style="height:6px; background:#38D67A; border-radius:99px;"></div><div style="font:500 9px/1 'IBM Plex Mono',monospace; color:#38D67A; margin-top:6px;">copy &#10003;</div></div>
+              <div style="flex:1;"><div style="position:relative; height:6px; background:#161815; border-radius:99px; overflow:hidden;"><div style="position:absolute; inset:0 40% 0 0; background:#FFB32E;"></div></div><div style="font:500 9px/1 'IBM Plex Mono',monospace; color:#FFB32E; margin-top:6px;">hash</div></div>
+              <div style="flex:1;"><div style="height:6px; background:#161815; border-radius:99px;"></div><div style="font:500 9px/1 'IBM Plex Mono',monospace; color:#6B6E62; margin-top:6px;">upload</div></div>
+              <div style="flex:1;"><div style="height:6px; background:#161815; border-radius:99px;"></div><div style="font:500 9px/1 'IBM Plex Mono',monospace; color:#6B6E62; margin-top:6px;">validate</div></div>
+            </div>
+            <button style="width:100%; height:52px; background:#FFB32E; color:#0B0C0B; border:none; border-radius:12px; font:600 13px/1 'IBM Plex Mono',monospace; letter-spacing:0.04em; cursor:pointer;">START IMPORT</button>
+          </div>
+        </div>
+      </x-import>
+    </div>
+
+    <!-- SETTINGS -->
+    <div style="flex:none;">
+      <div style="font:500 13px/1 'IBM Plex Mono',monospace; color:#c9cabf; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:14px;"><span style="color:#FFB32E;">05</span> &nbsp;Settings</div>
+      <x-import component-from-global-scope="AndroidDevice" from="./android-frame.jsx" dark="{{ true }}" hint-size="412px,892px">
+        <div style="height:100%; background:#0B0C0B; display:flex; flex-direction:column; font-family:'IBM Plex Sans',sans-serif;">
+          <div style="flex:none; padding:16px; border-bottom:1px solid #17190f;"><span style="font:500 16px/1 'IBM Plex Mono',monospace; text-transform:uppercase; letter-spacing:0.04em;">Settings</span></div>
+          <div style="flex:1; overflow:hidden; padding:18px 16px; display:flex; flex-direction:column; gap:18px;">
+            <div><div style="font:600 10px/1 'IBM Plex Mono',monospace; color:#6B6E62; letter-spacing:0.1em; margin-bottom:10px;">IMMICH</div>
+              <div style="display:flex; flex-direction:column; gap:10px;"><div><div style="font:600 11px/1 'IBM Plex Sans',sans-serif; color:#ECE9E0; margin-bottom:5px;">Server URL</div><div style="font:400 11.5px/1 'IBM Plex Mono',monospace; color:#c9cabf; background:#161815; border:1px solid #30352C; border-radius:8px; padding:11px;">https://immich.home.lan</div></div><div><div style="font:600 11px/1 'IBM Plex Sans',sans-serif; color:#ECE9E0; margin-bottom:5px;">API key</div><div style="font:400 11.5px/1 'IBM Plex Mono',monospace; color:#6B6E62; background:#161815; border:1px solid #30352C; border-radius:8px; padding:11px;">&bull;&bull;&bull;&bull;&bull;&bull; 4f2a</div></div></div>
+            </div>
+            <div style="height:1px; background:#17190f;"></div>
+            <div><div style="font:600 10px/1 'IBM Plex Mono',monospace; color:#6B6E62; letter-spacing:0.1em; margin-bottom:10px;">CAPTURE</div>
+              <div style="display:flex; justify-content:space-between; align-items:center;"><div><div style="font:600 12.5px/1.2 'IBM Plex Sans',sans-serif; color:#ECE9E0;">Stack RAF + JPG</div><div style="font:400 10.5px/1.3 'IBM Plex Sans',sans-serif; color:#6B6E62; margin-top:2px;">One tile per capture</div></div><div style="width:44px; height:26px; border-radius:99px; background:#38D67A; position:relative; flex:none;"><div style="position:absolute; top:3px; right:3px; width:20px; height:20px; border-radius:50%; background:#0B0C0B;"></div></div></div>
+            </div>
+            <div style="height:1px; background:#17190f;"></div>
+            <div><div style="font:600 10px/1 'IBM Plex Mono',monospace; color:#6B6E62; letter-spacing:0.1em; margin-bottom:10px;">IMPORT</div>
+              <div><div style="font:600 11px/1 'IBM Plex Sans',sans-serif; color:#ECE9E0; margin-bottom:5px;">Destination folder</div><div style="font:400 11.5px/1 'IBM Plex Mono',monospace; color:#c9cabf; background:#161815; border:1px solid #30352C; border-radius:8px; padding:11px;">/photos/iceland-2026/</div></div>
+            </div>
+          </div>
+        </div>
+      </x-import>
+    </div>
+
+    <!-- LOG -->
+    <div style="flex:none;">
+      <div style="font:500 13px/1 'IBM Plex Mono',monospace; color:#c9cabf; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:14px;"><span style="color:#FFB32E;">06</span> &nbsp;Log / diagnostics</div>
+      <x-import component-from-global-scope="AndroidDevice" from="./android-frame.jsx" dark="{{ true }}" hint-size="412px,892px">
+        <div style="height:100%; background:#0B0C0B; display:flex; flex-direction:column; font-family:'IBM Plex Sans',sans-serif;">
+          <div style="flex:none; padding:16px; border-bottom:1px solid #17190f; display:flex; align-items:center;"><span style="font:500 16px/1 'IBM Plex Mono',monospace; text-transform:uppercase; letter-spacing:0.04em;">Diagnostics</span><button style="margin-left:auto; height:38px; padding:0 14px; background:#1C1F1A; color:#c9cabf; border:1px solid #30352C; border-radius:9px; font:500 11px/1 'IBM Plex Mono',monospace; cursor:pointer;">Share</button></div>
+          <div style="flex:1; overflow:hidden; padding:14px 16px; font:400 10.5px/1.9 'IBM Plex Mono',monospace; color:#8a8d81;">
+            <sc-for list="{{ log }}" as="l" hint-placeholder-count="14"><div style="color:{{ l.color }};">{{ l.t }}</div></sc-for>
+          </div>
+        </div>
+      </x-import>
+    </div>
+
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1600,&quot;height&quot;:1100}}">
+class Component extends DCLogic {
+  GRADS = [
+    'linear-gradient(150deg,#3a3324,#14130d)','linear-gradient(155deg,#26343a,#0f1417)',
+    'linear-gradient(160deg,#3a2630,#161014)','linear-gradient(200deg,#2b3a2a,#101510)',
+    'linear-gradient(135deg,#33302a,#141311)','linear-gradient(165deg,#2a2f3a,#101216)',
+    'linear-gradient(145deg,#3a3528,#15130e)','linear-gradient(175deg,#243a35,#0e1513)',
+    'linear-gradient(190deg,#38283a,#140f16)','linear-gradient(140deg,#3a2f26,#161210)',
+  ];
+  renderVals() {
+    const decs = ['', 'keep', '', 'reject', 'keep', '', 'keep', '', 'reject', 'keep', '', 'keep', 'reject', '', 'keep', '',
+      'keep', 'reject', '', 'keep', '', 'keep', '', 'reject', 'keep', '', 'keep', 'reject', '', 'keep', '', 'keep'];
+    const phoneGrid = decs.map((d, i) => ({
+      bg: this.GRADS[(i * 7) % this.GRADS.length], decision: d,
+      buffered: i % 3 !== 0 && i < 16, immich: i % 11 === 4, video: i % 13 === 6, raw: i % 4 !== 0, cursor: i === 9,
+    }));
+    const phoneStrip = [];
+    for (let i = 0; i < 8; i++) phoneStrip.push({ bg: this.GRADS[(i * 5 + 2) % this.GRADS.length], decision: ['', 'keep', 'reject', 'keep', '', 'keep', 'reject', ''][i], video: i === 3, buffered: i % 2 === 0, cursor: i === 3 });
+    const log = [
+      { t: '12:04:41 ptp: session opened (0x0102)', color: '#8a8d81' }, { t: '12:04:41 dev: FUJIFILM X-T5 fw 3.10', color: '#8a8d81' },
+      { t: '12:04:42 index: 24260 objects on card', color: '#8a8d81' }, { t: '12:05:10 thumb: decode, 8 workers', color: '#8a8d81' },
+      { t: '12:06:03 exif: 15040/24260', color: '#c9cabf' }, { t: '12:07:20 mpv: hw decode h264 4:2:0 ok', color: '#8a8d81' },
+      { t: '12:08:02 mpv: 4:2:2 clip \u2192 sw fallback', color: '#FFB32E' }, { t: '12:09:40 usb: bulk stall \u2192 link reset', color: '#FFB32E' },
+      { t: '12:09:42 usb: recovered, resuming', color: '#38D67A' }, { t: '12:11:20 session: autosave ok', color: '#8a8d81' },
+    ];
+    return { phoneGrid, phoneStrip, log };
+  }
+}
+</script>
+</body>
+</html>
