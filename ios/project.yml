@@ -43,3 +43,28 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # gomobile framework is a static archive of Go + its ObjC shim
         OTHER_LDFLAGS: "-lresolv -framework CoreFoundation -framework Security"
+
+  # UI test target: injects real swipe gestures to verify the viewer pager
+  # settles on whole pages (the "lands halfway between images" regression).
+  FujiCullUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: FujiCullUITests
+    dependencies:
+      - target: FujiCull
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: pro.zackpollard.FujiCullUITests
+
+schemes:
+  FujiCull:
+    build:
+      targets:
+        FujiCull: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - FujiCullUITests
