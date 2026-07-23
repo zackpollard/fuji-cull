@@ -253,6 +253,16 @@ func (a *App) handler() http.Handler {
 		// Thumb files stay in sensor orientation; rotate at delivery once the
 		// shot's orientation is known. Clients re-request with an &o= cache
 		// buster when orientation data arrives after the first fetch.
+		//
+		// raw=1 opts out: iOS applies EXIF orientation at display time for
+		// free (UIImage.Orientation), so it takes the file as stored — one
+		// stable, HTTP-cacheable URL and no per-request decode-rotate-encode,
+		// which is what made photo tiles visibly "load in" while local video
+		// posters appeared instantly.
+		if r.URL.Query().Get("raw") == "1" {
+			http.ServeFile(w, r, a.prefetch.ThumbPath(s))
+			return
+		}
 		if or := a.prefetch.OrientOf(id); or > 1 {
 			if data, err := rotatedThumbJPEG(a.prefetch.ThumbPath(s), or); err == nil {
 				w.Write(data)

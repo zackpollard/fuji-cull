@@ -129,6 +129,7 @@ struct TimelineCollection: UIViewRepresentable {
                         url: poster ?? m.thumbURL(shot.id, index),
                         cacheKey: poster != nil ? "\(shot.id):poster" : "\(shot.id):\(m.orientOf(index))",
                         ready: poster != nil || m.thumbReady(index),
+                        exifOrient: poster != nil ? 0 : m.orientOf(index),
                         decision: m.decisions[shot.id] ?? "",
                         inImmich: m.inImmich(index),
                         buffered: m.buffered(shot.id),
@@ -450,6 +451,7 @@ struct TileContent: View {
     let url: URL?
     let cacheKey: String
     let ready: Bool
+    var exifOrient: Int = 0
     let decision: String
     let inImmich: Bool
     let buffered: Bool
@@ -459,7 +461,7 @@ struct TileContent: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             if let url {
-                ThumbView(url: url, cacheKey: cacheKey, ready: ready)
+                ThumbView(url: url, cacheKey: cacheKey, ready: ready, exifOrient: exifOrient)
             } else {
                 Rectangle().fill(Color.white.opacity(0.04))
             }

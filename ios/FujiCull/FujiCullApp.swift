@@ -11,6 +11,7 @@ struct FujiCullApp: App {
                 .environmentObject(engine)
                 .environmentObject(settings)
                 .onAppear {
+                    ThumbCache.bumpURLCache()
                     engine.start(settings.settings)
                     DebugProbe.armIfConfigured { [weak engine] msg in
                         NSLog("%@", msg)

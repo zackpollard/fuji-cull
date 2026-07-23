@@ -82,8 +82,10 @@ final class API {
 
     func thumbURL(_ id: String, orient: Int, tick: Int = 0) -> URL {
         var c = URLComponents(url: base.appendingPathComponent("api/thumb"), resolvingAgainstBaseURL: false)!
-        var q: [URLQueryItem] = [.init(name: "id", value: id)]
-        if orient > 1 { q.append(.init(name: "o", value: String(orient))) }
+        // raw: orientation is applied client-side (free, via
+        // UIImage.Orientation), so the URL never varies with EXIF state and
+        // URLCache serves repeats without touching the engine
+        var q: [URLQueryItem] = [.init(name: "id", value: id), .init(name: "raw", value: "1")]
         if tick > 0 { q.append(.init(name: "rt", value: String(tick))) }
         c.queryItems = q
         return c.url!

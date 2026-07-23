@@ -162,7 +162,8 @@ struct Filmstrip: View {
                             if let poster {
                                 ThumbView(url: poster, cacheKey: "\(s.id):poster", ready: true)
                             } else if let url = model.thumbURL(s.id, i) {
-                                ThumbView(url: url, cacheKey: "\(s.id):\(model.orientOf(i))", ready: model.thumbReady(i))
+                                ThumbView(url: url, cacheKey: "\(s.id):\(model.orientOf(i))", ready: model.thumbReady(i),
+                                          exifOrient: model.orientOf(i))
                             } else {
                                 Color.white.opacity(0.05)
                             }
