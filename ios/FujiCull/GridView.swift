@@ -156,6 +156,19 @@ final class GridModel: ObservableObject {
     }
     func hint(_ i: Int) { Task { await api?.setThumbHint(i) } }
 
+    /// Warm the decoded-image cache around the viewer cursor so an instant
+    /// flick lands on a ready bitmap instead of a black frame. Photos only —
+    /// videos stream through mpv, not /api/image.
+    func prefetchViewer(around i: Int, radius: Int = 2) {
+        guard let api else { return }
+        for d in 1...radius {
+            for j in [i + d, i - d] where shots.indices.contains(j) {
+                guard shots[j].kind != "video" else { continue }
+                FullImageStore.shared.prefetch(api.imageURL(shots[j].id))
+            }
+        }
+    }
+
     func openViewer(_ i: Int) {
         select(i)
         viewerIndex = i

@@ -40,7 +40,11 @@ struct ViewerView: View {
             }
         }
         .statusBarHidden()
-        .onChange(of: index) { i in model.select(i) }
+        .onChange(of: index) { i in
+            model.select(i)
+            model.prefetchViewer(around: i) // warm neighbours so the next flick is instant
+        }
+        .onAppear { model.prefetchViewer(around: index) }
         .keyCommands { key in
             switch key {
             case "k", "w": decide("keep"); return true
@@ -287,6 +291,15 @@ struct ZoomableImage: View {
     @GestureState private var pinch: CGFloat = 1
     @GestureState private var drag: CGSize = .zero
 
+    init(url: URL?, model: GridModel? = nil) {
+        self.url = url
+        self.model = model
+        // Seed the image synchronously from the decoded cache so a page the
+        // pager just created renders it on frame ONE — no black flash while an
+        // async load runs. Misses (first view of a shot) fall back to load().
+        _image = State(initialValue: url.flatMap { FullImageStore.shared.image(for: $0) })
+    }
+
     var body: some View {
         GeometryReader { geo in
             let imgSize = image?.size ?? .zero
@@ -386,14 +399,22 @@ struct ZoomableImage: View {
     private func load() async {
         // inherit the shared zoom + pan instead of resetting: paging to the
         // next shot keeps the crop you were comparing at
-        image = nil; loadFailed = false
         scale = model?.viewerZoom ?? 1
         offset = model?.viewerPan ?? .zero
         model?.setViewerZoomed(scale > 1.01)
+        // already have it (seeded from cache at init, or a prior load) — don't
+        // clear to nil first, which would reintroduce the black flash
+        if image == nil, let url, let cached = FullImageStore.shared.image(for: url) {
+            image = cached
+        }
+        if image != nil { return }
+        loadFailed = false
         guard let url,
               let (data, resp) = try? await URLSession.shared.data(from: url),
               (resp as? HTTPURLResponse)?.statusCode == 200,
-              let img = UIImage(data: data) else { loadFailed = true; return }
-        image = img
+              let raw = UIImage(data: data) else { loadFailed = true; return }
+        let ready = (await raw.byPreparingForDisplay()) ?? raw
+        FullImageStore.shared.remember(ready, for: url)
+        image = ready
     }
 }

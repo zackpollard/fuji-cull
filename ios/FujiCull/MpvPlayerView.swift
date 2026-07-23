@@ -86,9 +86,24 @@ final class MpvViewController: UIViewController {
 
     deinit {
         pollTimer?.invalidate()
-        if let mpv {
-            mpv_terminate_destroy(mpv)
-        }
+        guard let mpv else { return }
+        // Order matters when a video page is torn down instantly (no paging
+        // animation to space it out):
+        // 1. Drop the wakeup callback first — it holds an unretained `self`, so
+        //    a late event firing mid-teardown would call into a dying object.
+        mpv_set_wakeup_callback(mpv, nil, nil)
+        // 2. Switch the video output to null BEFORE destroying the core. This
+        //    tears the MoltenVK/Metal vo down synchronously while the layer is
+        //    still alive; otherwise a Metal command buffer could complete after
+        //    the core (and its MVK objects) were freed and fault — the crash
+        //    seen flicking off a video.
+        mpv_set_property_string(mpv, "vo", "null")
+        mpv_terminate_destroy(mpv)
+        self.mpv = nil
+        // 3. Keep the Metal layer alive a moment past our lifetime so any
+        //    already-scheduled GPU completion lands on live memory.
+        let layer = metalLayer
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { _ = layer }
     }
 
     private func setupMpv() {

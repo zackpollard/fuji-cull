@@ -61,4 +61,29 @@ final class ViewerSwipeUITests: XCTestCase {
         XCTAssertEqual(frameLabel(app), opened,
                        "swiping back should land on the original frame")
     }
+
+    // Regression guard: rapid flicking that tears video pages down instantly
+    // (no paging animation to space it out) used to crash in MoltenVK/Metal
+    // when an mpv player was destroyed with GPU work still in flight. If that
+    // regresses the app dies mid-test and XCUITest reports "not running". The
+    // burst also doubles as the drive for an external screen recording scanned
+    // for the photo-transition black flash.
+    func testRapidFlickOverVideoStaysAlive() {
+        let app = XCUIApplication()
+        app.launch()
+        Thread.sleep(forTimeInterval: 8)
+
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.16, dy: 0.16)).tap()
+        Thread.sleep(forTimeInterval: 3)
+
+        // Flick backward through the catalog: from the near-end opening shot
+        // that runs into a long stretch of photos. ~0.4s cadence gives prefetch
+        // room, matching a real reviewer stepping through a burst.
+        Thread.sleep(forTimeInterval: 1) // calm marker before the burst
+        for _ in 0..<12 {
+            app.swipeRight()
+            Thread.sleep(forTimeInterval: 0.4)
+        }
+        Thread.sleep(forTimeInterval: 1) // calm marker after
+    }
 }
