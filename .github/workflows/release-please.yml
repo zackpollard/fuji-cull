@@ -178,3 +178,60 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ needs.release-please.outputs.tag_name || inputs.tag }}" fuji-cull-android-arm64.apk --clobber
+
+  release-assets-ios:
+    needs: release-please
+    if: always() && (needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch')
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: install build deps
+        run: brew install xcodegen
+      - name: gomobile bind (engine xcframework)
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          gomobile bind -target=ios -o ios/Mobile.xcframework ./mobile
+      - name: build unsigned ipa (sideload distribution)
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
+        run: |
+          export VERSION="${TAG#v}"
+          chmod +x ios/make-ipa.sh && ./ios/make-ipa.sh
+      - name: upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.release-please.outputs.tag_name || inputs.tag }}" dist/FujiCull.ipa --clobber
+      - name: update sidestore source feed
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
+        run: |
+          python3 - <<PY
+          import json, os, datetime
+          p = 'ios/sidestore-source.json'
+          d = json.load(open(p))
+          v = d['apps'][0]['versions']
+          entry = {
+            'version': os.environ['TAG'].lstrip('v'),
+            'date': datetime.date.today().isoformat(),
+            'localizedDescription': 'See https://github.com/zackpollard/fuji-cull/releases/tag/' + os.environ['TAG'],
+            'downloadURL': 'https://github.com/zackpollard/fuji-cull/releases/download/' + os.environ['TAG'] + '/FujiCull.ipa',
+            'size': os.path.getsize('dist/FujiCull.ipa'),
+            'minOSVersion': '16.0',
+          }
+          v[:] = [entry] + [e for e in v if e['version'] != entry['version']]
+          json.dump(d, open(p, 'w'), indent=2)
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ios/sidestore-source.json
+          git commit -m "chore(ios): point sidestore source at ${TAG}" || exit 0
+          git push origin HEAD:master

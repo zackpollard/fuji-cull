@@ -16,7 +16,7 @@
           "version": "0.1.0",
           "date": "2026-07-23",
           "localizedDescription": "First sideload release: PTP indexing, virtualized 24k-shot timeline, mpv video playback, client-side posters, date scrubber.",
-          "downloadURL": "https://github.com/zackpollard/fuji-cull/releases/download/ios-v0.1.0/FujiCull.ipa",
+          "downloadURL": "https://github.com/zackpollard/fuji-cull/releases/latest/download/FujiCull.ipa",
           "size": 16046086,
           "minOSVersion": "16.0"
         }

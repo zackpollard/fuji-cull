@@ -18,12 +18,20 @@ fi
 echo "== xcodegen =="
 xcodegen generate --quiet || { sleep 2; xcodegen generate --quiet; }
 
-echo "== release build (unsigned) =="
+# Xcode <16 can't read xcodegen's default project format (objectVersion 77).
+XCODE_MAJOR=$(xcodebuild -version 2>/dev/null | head -1 | sed -E 's/Xcode ([0-9]+).*/\1/')
+if [ "${XCODE_MAJOR:-0}" -lt 16 ]; then
+  sed -i '' -e 's/objectVersion = 77;/objectVersion = 56;/' \
+            -e '/preferredProjectObjectVersion = 77;/d' FujiCull.xcodeproj/project.pbxproj
+fi
+
+echo "== release build (unsigned, version ${VERSION:-0.1.0}) =="
 xcodebuild -project FujiCull.xcodeproj -scheme FujiCull \
   -configuration Release \
   -destination "generic/platform=iOS" \
   -derivedDataPath /tmp/fc-dd-release \
   CODE_SIGNING_ALLOWED=NO \
+  MARKETING_VERSION="${VERSION:-0.1.0}" \
   build 2>&1 | grep -E "error:|BUILD SUCCEEDED|BUILD FAILED" || { echo "build failed"; exit 1; }
 
 APP=/tmp/fc-dd-release/Build/Products/Release-iphoneos/FujiCull.app
