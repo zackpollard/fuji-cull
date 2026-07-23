@@ -43,9 +43,17 @@ final class GridModel: ObservableObject {
     @Published var fetchStates: [String: String] = [:]
     @Published var showViewer = false
     @Published var viewerIndex = 0
-    // shared viewer zoom: paging keeps the magnification (not @Published —
-    // pages read it on load; publishing it would re-render per pinch)
+    // shared viewer zoom/pan: paging keeps the magnification and crop (not
+    // @Published — pages read them on load; publishing per pinch/pan frame
+    // would re-render the whole viewer tree every touch move)
     var viewerZoom: CGFloat = 1
+    var viewerPan: CGSize = .zero
+    // coarse "is a page zoomed in" flag — flips only on the 1x↔>1x boundary,
+    // so it's cheap to publish. The pager watches it to disable its own
+    // horizontal scroll while zoomed: a drag then pans the frame instead of
+    // paging, and only a timeline tap / KEEP / REJECT moves to the next shot.
+    @Published var viewerZoomed = false
+    func setViewerZoomed(_ v: Bool) { if viewerZoomed != v { viewerZoomed = v } }
     @Published private(set) var cameraID = ""
 
     @Published private(set) var states: [Character] = []
@@ -152,6 +160,8 @@ final class GridModel: ObservableObject {
         select(i)
         viewerIndex = i
         viewerZoom = 1 // fresh viewing session starts unzoomed
+        viewerPan = .zero
+        setViewerZoomed(false)
         showViewer = true
     }
 

@@ -26,6 +26,10 @@ struct PagerView: UIViewControllerRepresentable {
 
     func updateUIViewController(_ pvc: UIPageViewController, context: Context) {
         context.coordinator.sync(pvc, to: index)
+        // Zoomed in, the frame owns drags: lock the pager's own scroll so a
+        // pan can't page. Keyboard/filmstrip/decide navigation still works —
+        // those call setViewControllers directly, not the scroll view.
+        context.coordinator.pagerScroll(pvc)?.isScrollEnabled = !model.viewerZoomed
     }
 
     @MainActor
@@ -48,6 +52,16 @@ struct PagerView: UIViewControllerRepresentable {
         }
 
         private var transitioning = false
+        private weak var cachedScroll: UIScrollView?
+
+        /// UIPageViewController drives paging through a private UIScrollView;
+        /// we toggle its `isScrollEnabled` to lock paging while a page is
+        /// zoomed. Found once by walking the subviews, then cached.
+        func pagerScroll(_ pvc: UIPageViewController) -> UIScrollView? {
+            if let s = cachedScroll { return s }
+            cachedScroll = pvc.view.subviews.compactMap { $0 as? UIScrollView }.first
+            return cachedScroll
+        }
 
         /// External index changes (filmstrip tap, keyboard, decide-advance):
         /// animate to the new page unless the pager is already there. Never
