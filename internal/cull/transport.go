@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"strconv"
 	"sync"
 	"time"
@@ -85,9 +86,19 @@ type transportEntry struct {
 type iccBackend struct {
 	t Transport
 
-	mu     sync.Mutex
-	txn    uint32
-	objIDs bool // last Discover used object-path IDs, not PTP handles
+	mu       sync.Mutex
+	txn      uint32
+	objIDs   bool   // last Discover used object-path IDs, not PTP handles
+	identity string // "X-H2S 21AQ00123" once DeviceInfo has been parsed
+}
+
+// CameraIdentity returns "<model> <serial>" once discovery has parsed
+// DeviceInfo ("" before that). Sessions key off it so decisions never bleed
+// between cameras.
+func (b *iccBackend) CameraIdentity() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.identity
 }
 
 func (b *iccBackend) Name() string { return "icc" }
@@ -175,6 +186,12 @@ func (b *iccBackend) discoverPTP(ctx context.Context, progress func(stage string
 	}
 	log.Printf("camera: PTP link OK — GetDeviceInfo %d bytes in %s",
 		len(info), time.Since(t0).Round(time.Millisecond))
+	if di, err := ptp.ParseDeviceInfo(info); err == nil && di.Model != "" {
+		b.mu.Lock()
+		b.identity = strings.TrimSpace(di.Model + " " + di.Serial)
+		b.mu.Unlock()
+		log.Printf("camera: %s (serial %s)", di.Model, di.Serial)
+	}
 
 	sweep := func(label string, prop uint16) ([]ptp.PropEntry, error) {
 		progress("reading card index: "+label, 0)

@@ -239,3 +239,64 @@ func (r *reader) str() (string, bool) {
 	r.i += int(n) * 2
 	return string(utf16.Decode(units)), true
 }
+
+// DeviceInfo is the identity subset of the PTP DeviceInfo dataset.
+type DeviceInfo struct {
+	Manufacturer string
+	Model        string
+	Serial       string
+}
+
+// ParseDeviceInfo walks a DeviceInfo dataset (with or without a leading
+// data-phase container header) to its trailing identity strings.
+func ParseDeviceInfo(b []byte) (DeviceInfo, error) {
+	r := &reader{b: b}
+	if len(b) >= 12 {
+		if l := binary.LittleEndian.Uint32(b); int(l) <= len(b) && l >= 12 &&
+			binary.LittleEndian.Uint16(b[4:]) == 2 {
+			r.i = 12
+		}
+	}
+	var di DeviceInfo
+	fail := func() (DeviceInfo, error) { return di, fmt.Errorf("deviceInfo: truncated") }
+
+	// StandardVersion u16, VendorExtensionID u32, VendorExtensionVersion u16
+	if _, ok := r.u16(); !ok {
+		return fail()
+	}
+	if _, ok := r.u32(); !ok {
+		return fail()
+	}
+	if _, ok := r.u16(); !ok {
+		return fail()
+	}
+	if _, ok := r.str(); !ok { // VendorExtensionDesc
+		return fail()
+	}
+	if _, ok := r.u16(); !ok { // FunctionalMode
+		return fail()
+	}
+	// four u16 arrays: operations, events, device props, capture formats —
+	// plus image formats
+	for k := 0; k < 5; k++ {
+		n, ok := r.u32()
+		if !ok || int(n)*2 > len(r.b)-r.i {
+			return fail()
+		}
+		r.i += int(n) * 2
+	}
+	var ok bool
+	if di.Manufacturer, ok = r.str(); !ok {
+		return fail()
+	}
+	if di.Model, ok = r.str(); !ok {
+		return fail()
+	}
+	if _, ok = r.str(); !ok { // DeviceVersion
+		return fail()
+	}
+	if di.Serial, ok = r.str(); !ok {
+		return fail()
+	}
+	return di, nil
+}

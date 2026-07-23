@@ -6,7 +6,8 @@ import Foundation
 struct AppSettings: Codable, Equatable {
     var immichURL: String = ""
     var immichKey: String = ""
-    var session: String = ""
+    // sessions are engine-internal, keyed per camera (design decision: no
+    // user-named sessions — decisions follow the camera automatically)
     var stack: Bool = false
     var album: String = ""
     var importDest: String = ""

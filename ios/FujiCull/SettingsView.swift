@@ -29,12 +29,6 @@ struct SettingsView: View {
                     Text("Leave the URL or key empty to import without uploading.")
                 }
 
-                Section("Session") {
-                    TextField("default", text: $draft.session)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                }
-
                 Section("Import destination") {
                     TextField("path", text: $draft.importDest)
                         .font(.system(.footnote, design: .monospaced))

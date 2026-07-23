@@ -120,7 +120,7 @@ final class Engine: ObservableObject {
                 status = "starting engine (camera)…"
                 e = MobileStartICC(dataDir, cacheDir, ICCTransport.shared,
                                    settings.immichURL, settings.immichKey,
-                                   settings.session, settings.stack, &nsErr)
+                                   "", settings.stack, &nsErr)
                 mode = .camera
             } else if fakeAllowed {
                 guard let fake = startFake(dataDir: dataDir, cacheDir: cacheDir, err: &nsErr) else { return }
@@ -156,7 +156,7 @@ final class Engine: ObservableObject {
             status = "corpus seed failed"
             return nil
         }
-        return MobileStartLocal(dataDir, cacheDir, corpus, settings.session, &err)
+        return MobileStartLocal(dataDir, cacheDir, corpus, "", &err)
     }
 
     // MARK: - polling

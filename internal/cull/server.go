@@ -37,6 +37,7 @@ type App struct {
 	discStage string
 	discFiles int
 	discErr   string
+	camera    string // "X-H2S 21AQ00123" once discovery identified it
 }
 
 func (a *App) setDiscovery(stage string, files int) {
@@ -129,8 +130,12 @@ func (a *App) handler() http.Handler {
 				Files: s.Files, Size: s.TotalSize(), Date: s.Date,
 			}
 		}
+		a.mu.RLock()
+		cam := a.camera
+		a.mu.RUnlock()
 		writeJSON(w, map[string]any{
 			"session":     a.sessionName,
+			"camera":      cam,
 			"backend":     a.backend.Name(),
 			"videoDirect": a.videoDirect(),
 			"dest":        a.dest,

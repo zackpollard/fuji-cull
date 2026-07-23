@@ -136,3 +136,39 @@ func TestCaptureDay(t *testing.T) {
 		}
 	}
 }
+
+func TestParseDeviceInfo(t *testing.T) {
+	// build a synthetic DeviceInfo dataset
+	var b []byte
+	u16 := func(v uint16) { b = append(b, byte(v), byte(v>>8)) }
+	u32 := func(v uint32) { b = append(b, byte(v), byte(v>>8), byte(v>>16), byte(v>>24)) }
+	str := func(s string) {
+		b = append(b, byte(len(s)+1))
+		for _, r := range s {
+			u16(uint16(r))
+		}
+		u16(0)
+	}
+	u16(100)        // standard version
+	u32(0x6)        // vendor ext id
+	u16(110)        // vendor ext version
+	str("fuji ext") // vendor ext desc
+	u16(0)          // functional mode
+	for k := 0; k < 5; k++ { // five u16 arrays with two entries each
+		u32(2)
+		u16(0x1001)
+		u16(0x1002)
+	}
+	str("FUJIFILM")
+	str("X-H2S")
+	str("1.10")
+	str("21AQ00123")
+
+	di, err := ParseDeviceInfo(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if di.Manufacturer != "FUJIFILM" || di.Model != "X-H2S" || di.Serial != "21AQ00123" {
+		t.Fatalf("bad parse: %+v", di)
+	}
+}

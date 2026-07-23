@@ -166,6 +166,35 @@ func startWith(o Options, backend Backend, session *Session, cache string) (*App
 			time.Sleep(5 * time.Second)
 		}
 		log.Printf("catalog: %d shots", len(catalog.Shots))
+		// Re-key the session to the camera's identity once discovery has it:
+		// name-only sessions let two cards with overlapping DSCF numbering
+		// bleed decisions into each other. An explicit --session still wins
+		// (desktop power use); mobile passes none and gets per-camera keying.
+		if o.SessionName == "" || o.SessionName == "default" {
+			if ib, ok := backend.(interface{ CameraIdentity() string }); ok {
+				if id := ib.CameraIdentity(); id != "" {
+					slug := strings.Map(func(r rune) rune {
+						switch {
+						case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-':
+							return r
+						default:
+							return '-'
+						}
+					}, id)
+					keyed, err := loadSession(filepath.Join(filepath.Dir(session.path), slug+".json"))
+					if err != nil {
+						log.Printf("session: per-camera load failed (%v) — staying on %q", err, o.SessionName)
+					} else {
+						app.mu.Lock()
+						app.session = keyed
+						app.camera = id
+						app.mu.Unlock()
+						session = keyed
+						log.Printf("session: keyed to camera %q", id)
+					}
+				}
+			}
+		}
 		cursor := session.Cursor()
 		if cursor < 0 || cursor >= len(catalog.Shots) {
 			cursor = 0
