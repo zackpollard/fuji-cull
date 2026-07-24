@@ -100,6 +100,19 @@ func slotFingerprint(cameraDir string) string {
 	return hex.EncodeToString(sum[:])[:6]
 }
 
+// slugify sanitizes a camera identity into a filesystem/URL-safe slug: only
+// [A-Za-z0-9-] survive, everything else becomes '-'.
+func slugify(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-':
+			return r
+		default:
+			return '-'
+		}
+	}, s)
+}
+
 // canonicalizeLegacyKey converts a stored v1 decision key (backend-local Shot.ID)
 // into its canonical form by string parsing alone — no catalog, so it is immune
 // to which discovery path a run took and works before discovery completes. It

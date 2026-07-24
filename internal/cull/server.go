@@ -32,12 +32,23 @@ type App struct {
 	dest         string
 	album        string
 
-	mu        sync.RWMutex
-	ready     bool
-	discStage string
-	discFiles int
-	discErr   string
-	camera    string // "X-H2S 21AQ00123" once discovery identified it
+	mu         sync.RWMutex
+	ready      bool
+	discStage  string
+	discFiles  int
+	discErr    string
+	camera     string // "X-H2S 21AQ00123" once discovery identified it
+	cameraSlug string // sanitized identity used as the sync namespace
+	sync       *syncer
+}
+
+// syncTarget returns the current session + sync slug under the lock. The session
+// pointer is swapped live at re-key, so the syncer must call this every cycle
+// rather than caching either value.
+func (a *App) syncTarget() (*Session, string) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.session, a.cameraSlug
 }
 
 func (a *App) setDiscovery(stage string, files int) {

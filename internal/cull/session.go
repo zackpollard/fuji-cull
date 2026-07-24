@@ -269,9 +269,20 @@ func (s *Session) SetDecision(id, decision string) error {
 	s.data.Records[ck] = r
 	s.projectLocked(ck, r, id)
 	err := s.saveLocked()
+	cb := s.onDirty
 	s.mu.Unlock()
-	s.nudge()
+	if cb != nil {
+		cb() // woken outside the lock; onDirty read under it, so no race
+	}
 	return err
+}
+
+// SetOnDirty installs the callback woken after a local mutation leaves an unacked
+// record (the syncer's Nudge). Safe against concurrent SetDecision.
+func (s *Session) SetOnDirty(f func()) {
+	s.mu.Lock()
+	s.onDirty = f
+	s.mu.Unlock()
 }
 
 // projectLocked writes a record's effect into the legacy Decisions map for every
@@ -298,12 +309,6 @@ func (s *Session) nextHLCLocked() hlc {
 	stamp, next := tickHLC(s.data.NodeHLC, s.data.DeviceID, nowMs(), ceil)
 	s.data.NodeHLC = next
 	return stamp
-}
-
-func (s *Session) nudge() {
-	if s.onDirty != nil {
-		s.onDirty()
-	}
 }
 
 func (s *Session) SetCursor(i int) error {
