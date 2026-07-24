@@ -30,6 +30,32 @@ you left off. Use `--listen 0.0.0.0:8787` to cull from another device.
 `NNN_FUJI` folders (handy for testing); `--camera-root` overrides the
 `/SLOT 1/DCIM,/SLOT 2/DCIM` default if the camera exposes storage differently.
 
+### Remote camera host (browse from any device)
+
+Plugging the camera into the iPad or phone can be awkward. Instead, plug it
+into one machine (your desktop, or an always-on box) and browse/cull/import
+from anywhere on the LAN — the camera host does all the work, every other
+device is just a viewport.
+
+On the host, run the engine bound to the network **with a key** (required to
+expose it safely — leave it off and it stays loopback-only as before):
+
+```sh
+fuji-cull --listen 0.0.0.0:8787 --engine-key "$(openssl rand -hex 24)"
+# or env FUJI_ENGINE_KEY=…
+```
+
+Then connect from each device:
+
+- **Browser (any device):** open `http://<host>:8787` and enter the key once.
+- **iPad / Android:** Settings → *Camera source* → the host URL + key.
+
+The key authenticates every request; media is fetched with it too. This is a
+**LAN** feature — for access beyond a trusted network, front it with a TLS
+reverse proxy or a private network (Tailscale/WireGuard). It composes with
+cross-device sync but doesn't need it: thin clients share the one host engine,
+so they always see the same state.
+
 ## fuji-cull for iPad (iOS app)
 
 <img src="assets/fuji-cull.png" width="96" align="right">
