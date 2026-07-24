@@ -12,6 +12,29 @@ struct AppSettings: Codable, Equatable {
     var album: String = ""
     var importDest: String = ""
     var forceFake: Bool = false
+    // Remote camera host: when set, the app is a thin client of an engine
+    // running elsewhere (the machine the camera is plugged into) instead of
+    // starting its own. Empty = use this device's camera (the default).
+    var remoteURL: String = ""
+    var remoteKey: String = ""
+
+    init() {}
+
+    // Tolerant decoder: Swift's synthesized Decodable throws on any missing key,
+    // so simply adding a field would make an OLDER saved blob fail to decode and
+    // silently reset every setting. decodeIfPresent keeps old data intact and
+    // fills new fields with their defaults.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        immichURL = try c.decodeIfPresent(String.self, forKey: .immichURL) ?? ""
+        immichKey = try c.decodeIfPresent(String.self, forKey: .immichKey) ?? ""
+        stack = try c.decodeIfPresent(Bool.self, forKey: .stack) ?? false
+        album = try c.decodeIfPresent(String.self, forKey: .album) ?? ""
+        importDest = try c.decodeIfPresent(String.self, forKey: .importDest) ?? ""
+        forceFake = try c.decodeIfPresent(Bool.self, forKey: .forceFake) ?? false
+        remoteURL = try c.decodeIfPresent(String.self, forKey: .remoteURL) ?? ""
+        remoteKey = try c.decodeIfPresent(String.self, forKey: .remoteKey) ?? ""
+    }
 }
 
 @MainActor

@@ -66,7 +66,18 @@ struct ThumbInfo: Decodable {
 // endpoints the Android app and web UI drive.
 final class API {
     let base: URL
-    init(base: URL) { self.base = base }
+    // Engine key for remote (LAN) hosts. Empty for a local loopback engine
+    // (no auth). JSON calls send it as the x-api-key header; media URLs carry it
+    // as ?key= so mpv / <video> / image loaders authenticate without headers.
+    private let key: String
+    init(base: URL, key: String = "") { self.base = base; self.key = key }
+
+    /// Appends the engine key to a media URL when talking to a remote host.
+    private func keyed(_ url: URL) -> URL {
+        guard !key.isEmpty, var c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        c.queryItems = (c.queryItems ?? []) + [.init(name: "key", value: key)]
+        return c.url ?? url
+    }
 
     func fetchState() async throws -> AppState { try await get("api/state") }
     func fetchThumbs() async throws -> ThumbInfo { try await get("api/thumbs") }
@@ -92,7 +103,7 @@ final class API {
         var q: [URLQueryItem] = [.init(name: "id", value: id), .init(name: "raw", value: "1")]
         if tick > 0 { q.append(.init(name: "rt", value: String(tick))) }
         c.queryItems = q
-        return c.url!
+        return keyed(c.url!)
     }
     func imageURL(_ id: String) -> URL { single("api/image", id) }
     func videoURL(_ id: String) -> URL { single("api/video", id) }
@@ -101,17 +112,20 @@ final class API {
     private func single(_ path: String, _ id: String) -> URL {
         var c = URLComponents(url: base.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
         c.queryItems = [.init(name: "id", value: id)]
-        return c.url!
+        return keyed(c.url!)
     }
 
     private func get<T: Decodable>(_ path: String) async throws -> T {
-        let (data, _) = try await URLSession.shared.data(from: base.appendingPathComponent(path))
+        var req = URLRequest(url: base.appendingPathComponent(path))
+        if !key.isEmpty { req.setValue(key, forHTTPHeaderField: "x-api-key") }
+        let (data, _) = try await URLSession.shared.data(for: req)
         return try JSONDecoder().decode(T.self, from: data)
     }
     private func post(_ path: String, _ body: [String: Any]) async {
         var req = URLRequest(url: base.appendingPathComponent(path))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !key.isEmpty { req.setValue(key, forHTTPHeaderField: "x-api-key") }
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         _ = try? await URLSession.shared.data(for: req)
     }

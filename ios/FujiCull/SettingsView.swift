@@ -32,6 +32,19 @@ struct SettingsView: View {
                     Text("Leave the URL or key empty to import without uploading.")
                 }
 
+                Section {
+                    TextField("http://192.168.1.50:8787", text: $draft.remoteURL)
+                        .textContentType(.URL)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                    SecureField("engine key", text: $draft.remoteKey)
+                } header: {
+                    Text("Camera source")
+                } footer: {
+                    Text("Leave empty to use this device's camera. Set a URL to browse a camera plugged into another machine (that engine must be started with --engine-key). Saving reconnects.")
+                }
+
                 Section("Import destination") {
                     TextField("path", text: $draft.importDest)
                         .font(.system(.footnote, design: .monospaced))
@@ -48,7 +61,14 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    LabeledContent("Link", value: engine.mode == .camera ? "camera (ImageCaptureCore)" : "fake corpus")
+                    LabeledContent("Link", value: {
+                        switch engine.mode {
+                        case .camera: return "camera (ImageCaptureCore)"
+                        case .remote: return "remote host"
+                        case .fake: return "fake corpus"
+                        case .none: return "—"
+                        }
+                    }())
                     LabeledContent("Loopback", value: ":\(engine.port)")
                     LabeledContent("Shots", value: "\(engine.shotCount)")
                     Toggle(isOn: $draft.forceFake) {
@@ -94,7 +114,7 @@ struct SettingsView: View {
             .alert("Full rescan?", isPresented: $confirmRescan) {
                 Button("Rescan", role: .destructive) {
                     Task {
-                        if let base = engine.baseURL { await API(base: base).rescan() }
+                        if let base = engine.baseURL { await API(base: base, key: engine.apiKey).rescan() }
                         store.settings = draft
                         engine.restart(draft)
                         dismiss()

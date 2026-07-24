@@ -63,9 +63,9 @@ final class GridModel: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var posterTask: Task<Void, Never>?
 
-    func attach(base: URL?) {
+    func attach(base: URL?, key: String = "") {
         guard api == nil, let base else { return }
-        api = API(base: base)
+        api = API(base: base, key: key)
     }
 
     func load() async {
@@ -318,7 +318,7 @@ struct GridView: View {
         }
         .background(Color.appBG.ignoresSafeArea())
         .task {
-            model.attach(base: engine.baseURL)
+            model.attach(base: engine.baseURL, key: engine.apiKey)
             await model.load()
             model.startPolling()
             let av = UserDefaults.standard.integer(forKey: "autoViewer")
