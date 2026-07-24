@@ -34,7 +34,7 @@ type Session struct {
 	legacy    map[string][]string // canonicalKey -> []legacyID (inbound projection)
 
 	serverRef int64  // last server clock seen (ms); clamps locally-minted walls forward. 0 = none
-	onDirty    func() // woken after a local mutation leaves an unacked record
+	onDirty   func() // woken after a local mutation leaves an unacked record
 }
 
 type sessionData struct {
