@@ -220,6 +220,21 @@ func startWith(o Options, backend Backend, session *Session, cache string) (*App
 			// namespace so they can never pollute a camera's
 			cache = filepath.Join(cache, "local")
 		}
+		// Explicit sync-namespace override: pin the sync slug without disturbing
+		// session/cache keying. Lets a --backend dir tree (a NAS folder, the fake
+		// corpus) sync, and is the escape hatch when a body reports no serial.
+		app.mu.RLock()
+		haveSlug := app.cameraSlug != ""
+		app.mu.RUnlock()
+		if !haveSlug {
+			if v := strings.TrimSpace(os.Getenv("FUJI_SYNC_CAMERA")); v != "" {
+				slug := slugify(v)
+				app.mu.Lock()
+				app.cameraSlug = slug
+				app.mu.Unlock()
+				session.SetCameraSlug(slug)
+			}
+		}
 		cursor := session.Cursor()
 		if cursor < 0 || cursor >= len(catalog.Shots) {
 			cursor = 0

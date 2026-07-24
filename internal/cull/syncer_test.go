@@ -23,7 +23,14 @@ type fakeSyncServer struct {
 	rows    map[string]synccore.DecisionRow // ckey -> stored (with Version)
 }
 
-func newFakeSyncServer() *httptest.Server {
+func (f *fakeSyncServer) has(ckey string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.rows[ckey]
+	return ok
+}
+
+func newFakeSyncServer() (*httptest.Server, *fakeSyncServer) {
 	f := &fakeSyncServer{epoch: "e1", rows: map[string]synccore.DecisionRow{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/sync/push", func(w http.ResponseWriter, r *http.Request) {
@@ -61,7 +68,7 @@ func newFakeSyncServer() *httptest.Server {
 		}
 		json.NewEncoder(w).Encode(resp)
 	})
-	return httptest.NewServer(mux)
+	return httptest.NewServer(mux), f
 }
 
 // testKeys mirrors a single card whose shots' canonical keys equal their legacy
@@ -91,7 +98,7 @@ func newSyncedSession(t *testing.T, name string) *Session {
 // The headline test: a decision made on device A appears on device B after each
 // runs a sync cycle against a shared server — proving the goal end to end.
 func TestTwoDevicesConverge(t *testing.T) {
-	srv := newFakeSyncServer()
+	srv, _ := newFakeSyncServer()
 	defer srv.Close()
 	client := newSyncClient(srv.URL, "k")
 
@@ -130,7 +137,7 @@ func TestTwoDevicesConverge(t *testing.T) {
 
 // Offline divergence: both edit different shots offline, then both sync — no loss.
 func TestOfflineDivergenceMerges(t *testing.T) {
-	srv := newFakeSyncServer()
+	srv, _ := newFakeSyncServer()
 	defer srv.Close()
 	client := newSyncClient(srv.URL, "k")
 	a := newSyncedSession(t, "A")
@@ -157,7 +164,7 @@ func TestOfflineDivergenceMerges(t *testing.T) {
 // A migrated decision (from a v1 upgrade) seeds the server, but a genuine remote
 // edit still wins — the migration can't bulldoze real cross-device work.
 func TestMigratedSeedLosesToGenuine(t *testing.T) {
-	srv := newFakeSyncServer()
+	srv, _ := newFakeSyncServer()
 	defer srv.Close()
 	client := newSyncClient(srv.URL, "k")
 
@@ -176,5 +183,37 @@ func TestMigratedSeedLosesToGenuine(t *testing.T) {
 	syncOnce(client, a, "cam")
 	if got := a.Decisions()["151_FUJI/DSCF0001"]; got != "reject" {
 		t.Fatalf("migrated seed should lose to genuine edit, A has %q", got)
+	}
+}
+
+// The runtime wiring: a decision nudges the running syncer loop, which pushes it
+// to the server without any manual syncOnce call.
+func TestSyncerLoopPushesOnNudge(t *testing.T) {
+	srv, fake := newFakeSyncServer()
+	defer srv.Close()
+	client := newSyncClient(srv.URL, "k")
+	a := newSyncedSession(t, "A")
+
+	sy := newSyncer(client, func() (*Session, string) { return a, "cam" })
+	a.SetOnDirty(sy.Nudge)
+	go sy.Run()
+	defer sy.Stop()
+
+	a.SetDecision("151_FUJI/DSCF0001", "keep") // fires Nudge -> loop pushes
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !fake.has("151_FUJI/DSCF0001") {
+		if time.Now().After(deadline) {
+			t.Fatal("syncer loop did not push the decision after a nudge")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// and the local record is now marked clean (acked)
+	deadline = time.Now().Add(2 * time.Second)
+	for len(a.Outbox()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("record not acked after push, outbox=%v", a.Outbox())
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/zack/fuji-tools/internal/gphoto"
 	"github.com/zack/fuji-tools/internal/mtpcli"
@@ -136,7 +137,13 @@ type cliBackend struct {
 	roots    []string // camera-absolute DCIM paths, e.g. "/SLOT 1/DCIM"
 	cacheDir string   // catalog cache home; empty disables caching
 	probed   bool     // lsprops-probe fired once this run
+	identity string   // "<Model> <Serial>" from device-info; the sync namespace
 }
+
+// CameraIdentity returns "<model> <serial>" for the sync namespace, matching the
+// iOS ICC path so the same body keys the same session on every platform. Empty
+// until Discover has run device-info (or if the camera reports no serial).
+func (b *cliBackend) CameraIdentity() string { return b.identity }
 
 // catalogCache persists folder listings between runs; cached folders
 // refresh via a one-request handle diff on attach (new files fetched
@@ -270,6 +277,16 @@ func (b *cliBackend) deltaFolder(ctx context.Context, dir, rel, folder string, c
 func (b *cliBackend) Name() string { return "cli" }
 
 func (b *cliBackend) Discover(ctx context.Context, progress func(stage string, files int)) ([]listing, error) {
+	// Identify the body for the sync namespace (best-effort, short-bounded so a
+	// camera that doesn't answer device-info never stalls discovery).
+	if b.identity == "" {
+		idCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		if id := mtpcli.DeviceInfo(idCtx); id != "" {
+			b.identity = id
+			log.Printf("camera: identity %q", id)
+		}
+		cancel()
+	}
 	cache := b.loadCache()
 	usedCache, cacheDirty := 0, false
 	bulkOK := true
