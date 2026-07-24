@@ -48,6 +48,18 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    TextField("https://sync.example.com", text: $draft.syncURL)
+                        .textContentType(.URL)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    SecureField("sync api key", text: $draft.syncKey)
+                } header: {
+                    Text("Cross-device sync")
+                } footer: {
+                    Text("Point at your self-hosted fuji-sync server to sync keep/reject decisions across devices. Leave empty to disable. Saving restarts the engine.")
+                }
+
+                Section {
                     LabeledContent("Link", value: engine.mode == .camera ? "camera (ImageCaptureCore)" : "fake corpus")
                     LabeledContent("Loopback", value: ":\(engine.port)")
                     LabeledContent("Shots", value: "\(engine.shotCount)")

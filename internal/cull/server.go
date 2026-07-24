@@ -32,12 +32,46 @@ type App struct {
 	dest         string
 	album        string
 
-	mu        sync.RWMutex
-	ready     bool
-	discStage string
-	discFiles int
-	discErr   string
-	camera    string // "X-H2S 21AQ00123" once discovery identified it
+	mu         sync.RWMutex
+	ready      bool
+	discStage  string
+	discFiles  int
+	discErr    string
+	camera     string // "X-H2S 21AQ00123" once discovery identified it
+	cameraSlug string // sanitized identity used as the sync namespace
+	sync       *syncer
+}
+
+// syncTarget returns the current session + sync slug under the lock. The session
+// pointer is swapped live at re-key, so the syncer must call this every cycle
+// rather than caching either value.
+func (a *App) syncTarget() (*Session, string) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.session, a.cameraSlug
+}
+
+// syncInfo is the /api/status.sync payload; nil when sync is not configured so
+// un-updated clients (which ignore the field) are unaffected.
+func (a *App) syncInfo() map[string]any {
+	a.mu.RLock()
+	sy, sess := a.sync, a.session
+	a.mu.RUnlock()
+	if sy == nil {
+		return nil
+	}
+	st := sy.status()
+	info := map[string]any{
+		"enabled":  true,
+		"lastOkMs": st.lastOkMs,
+		"error":    st.lastErr,
+	}
+	if sess != nil {
+		info["pending"] = len(sess.Outbox())
+		_, epoch, _ := sess.SyncMeta()
+		info["epoch"] = epoch
+	}
+	return info
 }
 
 func (a *App) setDiscovery(stage string, files int) {
@@ -58,6 +92,15 @@ func (a *App) finishInit(cat *Catalog, pf *Prefetcher) {
 	a.mu.Lock()
 	a.catalog = cat
 	a.prefetch = pf
+	sess := a.session
+	a.mu.Unlock()
+	// Install the canonical<->legacy bridges and re-project any records applied
+	// before discovery, so the legacy Decisions map is complete BEFORE clients
+	// can read it (ready flips below).
+	if sess != nil {
+		sess.SetResolvers(cat.Canonical, cat.Legacy)
+	}
+	a.mu.Lock()
 	a.ready = true
 	a.mu.Unlock()
 }
@@ -145,6 +188,7 @@ func (a *App) handler() http.Handler {
 			"decisions":   a.session.Decisions(),
 			"counts":      a.counts(),
 			"import":      a.importer.Status(),
+			"sync":        a.syncInfo(),
 		})
 	})
 
@@ -156,6 +200,7 @@ func (a *App) handler() http.Handler {
 			"fetch":     a.prefetch.Snapshot(),
 			"counts":    a.counts(),
 			"import":    a.importer.Status(),
+			"sync":      a.syncInfo(),
 			"bulkSick":  bulkSick,
 			"partSick":  partSick,
 			"streaming": a.prefetch.StreamingAvailable() && !a.importer.Status().Running,

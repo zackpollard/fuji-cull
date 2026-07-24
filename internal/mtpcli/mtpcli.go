@@ -102,6 +102,32 @@ func Ls(ctx context.Context, dir string) (string, error) {
 	return RunBatch(ctx, fmt.Sprintf(`cd %q`, dir), "ls")
 }
 
+// DeviceInfo runs `device-info` and parses "<Model> <Serial>" for the sync
+// namespace, matching what the iOS ICC path derives. Best-effort: returns "" on
+// any failure so it never blocks discovery. aft-mtp-cli prints lines like
+// "Manufacturer:  FUJIFILM", "Model:  X-H2S", "Serial:  21AQ...".
+func DeviceInfo(ctx context.Context) string {
+	out, err := RunBatch(ctx, "device-info")
+	if err != nil {
+		return ""
+	}
+	var model, serial string
+	for _, line := range strings.Split(out, "\n") {
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		v = strings.TrimSpace(v)
+		switch strings.ToLower(strings.TrimSpace(k)) {
+		case "model", "device model":
+			model = v
+		case "serial", "serial number", "device serial":
+			serial = v
+		}
+	}
+	return strings.TrimSpace(model + " " + serial)
+}
+
 // Entry is one file from an extended directory listing.
 type Entry struct {
 	ObjectID string

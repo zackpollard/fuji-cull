@@ -12,6 +12,9 @@ struct AppSettings: Codable, Equatable {
     var album: String = ""
     var importDest: String = ""
     var forceFake: Bool = false
+    // cross-device progress sync (optional): a self-hosted fuji-sync server
+    var syncURL: String = ""
+    var syncKey: String = ""
 }
 
 @MainActor

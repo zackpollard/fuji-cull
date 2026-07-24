@@ -87,6 +87,39 @@ cd ios && ./run-device.sh --bind    # build engine + app, install to your iPad
 Video playback uses [MPVKit](https://github.com/mpvkit/MPVKit) (mpv/FFmpeg,
 LGPL build).
 
+## Cross-device sync (fuji-sync)
+
+Start culling on one device and resume on another. Each client keeps a full
+local copy of its keep/reject decisions and syncs them, when online, through a
+small **self-hosted** relay you run — so no decision ever lives only on the
+server. Decisions are keyed per camera (model + serial), so the same card's
+progress follows you across the iPad, phone, desktop, and web UI.
+
+**Run the server** (Docker):
+
+```sh
+cd deploy/sync
+echo "SYNC_API_KEY=$(openssl rand -hex 32)" > .env      # a strong shared key
+docker compose up -d --build                            # listens on :8777
+```
+
+Put it behind your own TLS reverse proxy for anything beyond a trusted LAN — the
+API key is the only credential. (Or run the binary directly:
+`go run ./cmd/fuji-sync --api-key <key> --db ./sync.db`.)
+
+**Point each client at it:**
+
+- **Desktop:** `fuji-cull --sync-url https://sync.example.com --sync-key <key>`
+  (or `FUJI_SYNC_URL` / `FUJI_SYNC_KEY` env).
+- **iPad / Android:** Settings → *Cross-device sync* → server URL + key.
+- **Web:** it's served by the engine, so it uses whatever the engine process was
+  started with.
+
+Sync is entirely optional and inert until configured. It's offline-first (queues
+your decisions and retries forever), merges concurrent edits per photo by
+most-recent-wins with tombstones for clears, and never overwrites a genuine edit
+with an older one. Design notes: [`docs/sync-design.md`](docs/sync-design.md).
+
 ## fuji-import
 
 Headless bulk importer (the original tool): pull everything via `aft-mtp-cli`,

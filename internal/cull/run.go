@@ -45,6 +45,11 @@ type Options struct {
 	Retries     int
 	UploadConc  int
 	HashConc    int
+
+	// Cross-device progress sync (optional). When both are set, the engine
+	// pushes decisions to / pulls them from a self-hosted fuji-sync server.
+	SyncURL string
+	SyncKey string
 }
 
 // Start wires the app, kicks off background discovery, and returns the App
@@ -56,6 +61,15 @@ func Start(o Options) (*App, http.Handler, error) {
 	if !o.SkipImmich && (o.ImmichURL == "" || o.ImmichKey == "") {
 		log.Printf("WARN: Immich URL/key not configured; imports will only copy to the destination (--skip-immich implied)")
 		o.SkipImmich = true
+	}
+	// Sync config also arrives via env (mobile sets it with mobile.SetEnv before
+	// Start, avoiding four gomobile signature changes; desktop flags default to
+	// the same env). Explicit Options win.
+	if o.SyncURL == "" {
+		o.SyncURL = strings.TrimSpace(os.Getenv("FUJI_SYNC_URL"))
+	}
+	if o.SyncKey == "" {
+		o.SyncKey = strings.TrimSpace(os.Getenv("FUJI_SYNC_KEY"))
 	}
 
 	var backend Backend
@@ -173,21 +187,16 @@ func startWith(o Options, backend Backend, session *Session, cache string) (*App
 		if o.SessionName == "" || o.SessionName == "default" {
 			if ib, ok := backend.(interface{ CameraIdentity() string }); ok {
 				if id := ib.CameraIdentity(); id != "" {
-					slug := strings.Map(func(r rune) rune {
-						switch {
-						case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-':
-							return r
-						default:
-							return '-'
-						}
-					}, id)
+					slug := slugify(id)
 					keyed, err := loadSession(filepath.Join(filepath.Dir(session.path), slug+".json"))
 					if err != nil {
 						log.Printf("session: per-camera load failed (%v) — staying on %q", err, o.SessionName)
 					} else {
+						keyed.SetCameraSlug(slug) // persist so sync can run camera-absent later
 						app.mu.Lock()
 						app.session = keyed
 						app.camera = id
+						app.cameraSlug = slug
 						app.mu.Unlock()
 						session = keyed
 						log.Printf("session: keyed to camera %q", id)
@@ -220,6 +229,21 @@ func startWith(o Options, backend Backend, session *Session, cache string) (*App
 			// namespace so they can never pollute a camera's
 			cache = filepath.Join(cache, "local")
 		}
+		// Explicit sync-namespace override: pin the sync slug without disturbing
+		// session/cache keying. Lets a --backend dir tree (a NAS folder, the fake
+		// corpus) sync, and is the escape hatch when a body reports no serial.
+		app.mu.RLock()
+		haveSlug := app.cameraSlug != ""
+		app.mu.RUnlock()
+		if !haveSlug {
+			if v := strings.TrimSpace(os.Getenv("FUJI_SYNC_CAMERA")); v != "" {
+				slug := slugify(v)
+				app.mu.Lock()
+				app.cameraSlug = slug
+				app.mu.Unlock()
+				session.SetCameraSlug(slug)
+			}
+		}
 		cursor := session.Cursor()
 		if cursor < 0 || cursor >= len(catalog.Shots) {
 			cursor = 0
@@ -249,6 +273,22 @@ func startWith(o Options, backend Backend, session *Session, cache string) (*App
 		if app.imcheck != nil {
 			go app.imcheck.Backfill()
 		}
+		// Cross-device sync: push decisions to / pull them from the self-hosted
+		// server. Optional (built only when configured), offline-tolerant, and
+		// woken by every local decision. It reads the live session pointer via
+		// app.syncTarget() so a re-key never strands it on the old file.
+		if o.SyncURL != "" && o.SyncKey != "" {
+			app.mu.Lock()
+			sy := newSyncer(newSyncClient(o.SyncURL, o.SyncKey), app.syncTarget)
+			app.sync = sy
+			sess := app.session
+			app.mu.Unlock()
+			if sess != nil {
+				sess.SetOnDirty(sy.Nudge)
+			}
+			go sy.Run()
+			log.Printf("sync: enabled -> %s", o.SyncURL)
+		}
 		log.Printf("fuji-cull ready: http://%s  (session=%s, backend=%s, %d shots, buffer %d ahead / %d behind)",
 			o.Listen, o.SessionName, backend.Name(), len(catalog.Shots), o.Ahead, o.Behind)
 	}()
@@ -256,8 +296,16 @@ func startWith(o Options, backend Backend, session *Session, cache string) (*App
 	return app, app.handler(), nil
 }
 
-// Close stops background work (prefetcher); safe before readiness.
+// Close stops background work (prefetcher, syncer); safe before readiness.
+// Correctness never depends on Close (the desktop GUI never calls it) — the
+// syncer's outbox is already durable on disk; this is a best-effort clean stop.
 func (a *App) Close() {
+	a.mu.RLock()
+	sy := a.sync
+	a.mu.RUnlock()
+	if sy != nil {
+		sy.Stop()
+	}
 	if a.isReady() {
 		a.prefetch.Close()
 	}

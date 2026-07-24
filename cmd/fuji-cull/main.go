@@ -48,6 +48,8 @@ func main() {
 	flag.IntVar(&o.Retries, "retries", 3, "retries for Immich upload validation gaps")
 	flag.IntVar(&o.UploadConc, "upload-concurrency", 4, "parallel Immich uploads")
 	flag.IntVar(&o.HashConc, "hash-concurrency", 4, "parallel SHA-1 workers")
+	flag.StringVar(&o.SyncURL, "sync-url", os.Getenv("FUJI_SYNC_URL"), "cross-device sync server URL (or env FUJI_SYNC_URL)")
+	flag.StringVar(&o.SyncKey, "sync-key", os.Getenv("FUJI_SYNC_KEY"), "cross-device sync API key (or env FUJI_SYNC_KEY)")
 	flag.Parse()
 	setupLogging(*logPath)
 

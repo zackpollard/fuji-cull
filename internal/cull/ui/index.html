@@ -355,6 +355,7 @@
       <span class="u" id="cUndecided">U 0</span>
     </span>
     <span class="camsick" id="camSick" title="the camera is replaying stale buffers instead of file data; a power cycle is the only fix"></span>
+    <span class="counter" id="syncBadge" title="cross-device sync" style="display:none"></span>
     <span class="counter" id="metaProg" title="metadata (orientation) coverage"></span>
     <span class="counter" id="thumbProg" title="thumbnail sweep progress"></span>
     <button class="grid-toggle" id="gridBtn">GRID</button>
@@ -1376,6 +1377,20 @@ function nextUndecided() {
   toast("no undecided shots left");
 }
 
+/* ── sync badge ───────────────────────────────────────────── */
+function updateSyncBadge(sync) {
+  const el = $("syncBadge");
+  if (!sync || !sync.enabled) { el.style.display = "none"; return; }
+  el.style.display = "";
+  if (sync.error) {
+    el.textContent = "SYNC ⚠"; el.title = "sync error: " + sync.error;
+  } else if (sync.pending > 0) {
+    el.textContent = "SYNC ↑" + sync.pending; el.title = sync.pending + " change(s) pending upload";
+  } else {
+    el.textContent = "SYNCED"; el.title = "in sync with the server";
+  }
+}
+
 /* ── status poll ──────────────────────────────────────────── */
 async function poll() {
   try {
@@ -1383,6 +1398,10 @@ async function poll() {
     fetchStates = st.fetch || {};
     importStatus = st.import || {};
     videoStreaming = !!st.streaming;
+    // Cross-device sync: the engine's decision map is authoritative (it folds in
+    // decisions pulled from other devices), so adopt it wholesale each poll.
+    if (st.decisions) decisions = st.decisions;
+    updateSyncBadge(st.sync);
     $("camSick").textContent = st.bulkSick ? "CAMERA SICK · POWER-CYCLE"
       : st.partSick ? "CAMERA PARTIAL-READS SICK · POWER-CYCLE" : "";
     decorate();

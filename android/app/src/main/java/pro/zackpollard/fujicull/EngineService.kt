@@ -53,6 +53,9 @@ class EngineService : Service() {
             val ffmpeg = File(applicationInfo.nativeLibraryDir, "libffmpeg.so")
             if (ffmpeg.exists()) Mobile.setEnv("FUJI_FFMPEG", ffmpeg.absolutePath)
             val prefs = getSharedPreferences("immich", MODE_PRIVATE)
+            // cross-device sync config reaches the engine via env (before start)
+            Mobile.setEnv("FUJI_SYNC_URL", prefs.getString("syncUrl", "") ?: "")
+            Mobile.setEnv("FUJI_SYNC_KEY", prefs.getString("syncKey", "") ?: "")
             engine = Mobile.start(
                 dataDir.absolutePath,
                 bufDir.absolutePath,
