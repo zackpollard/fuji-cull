@@ -125,6 +125,8 @@ func buildCatalog(items []listing) *Catalog {
 	for i, s := range ordered {
 		cat.Index[s.ID] = i
 	}
+	// device-independent sync keys + the two reverse indexes (see canonical.go)
+	cat.Canonical, cat.Legacy = assignCanonicalKeys(ordered)
 	return cat
 }
 

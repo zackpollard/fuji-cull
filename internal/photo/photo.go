@@ -29,7 +29,12 @@ func (f FileEntry) CameraPath() string { return f.Folder + "/" + f.Name }
 
 // Shot groups files that belong to one exposure: a RAF+JPG pair, or a video.
 type Shot struct {
-	ID        string            // "151_FUJI/DSCF0001" (unique, stable)
+	ID        string            // backend-local id "<CameraDir>/<Base>" — stable WITHIN a device; used for fetch/thumb/cache keys. NOT portable across backends.
+	// CanonicalKey is the device-INDEPENDENT sync key: "<Folder>/<Base>", e.g.
+	// "151_FUJI/DSCF0001". Unlike ID it drops the backend-specific slot/DCIM
+	// prefix so the same physical frame gets the same key on every backend. A
+	// "#<fingerprint>" suffix disambiguates dual-card overflow twins (§ sync).
+	CanonicalKey string
 	CameraDir string            // dir relative to the camera root, e.g. "SLOT 1/DCIM/151_FUJI"
 	Folder    string            // base folder name, e.g. "151_FUJI" (used for dest layout)
 	Base      string            // "DSCF0001"
