@@ -4,42 +4,15 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"time"
+
+	"github.com/zack/fuji-tools/internal/synccore"
 )
 
-// hlc is a Hybrid Logical Clock timestamp: wall time in ms, a logical counter to
-// break ties within the same ms, the originating device, and a random nonce so
-// two installs that (through a restore/clone) share a deviceID still get a total
-// order. Ordering is lexicographic (Wall, Ctr, Dev, Nonce).
-type hlc struct {
-	Wall  int64  `json:"w"`
-	Ctr   int64  `json:"c"`
-	Dev   string `json:"d"`
-	Nonce string `json:"n,omitempty"`
-}
+// hlc aliases the shared clock type so the engine and the sync server order and
+// merge records by the exact same rule (synccore is the single authority).
+type hlc = synccore.HLC
 
-// less reports a strict total order. Never returns true for equal clocks.
-func (a hlc) less(b hlc) bool {
-	switch {
-	case a.Wall != b.Wall:
-		return a.Wall < b.Wall
-	case a.Ctr != b.Ctr:
-		return a.Ctr < b.Ctr
-	case a.Dev != b.Dev:
-		return a.Dev < b.Dev
-	default:
-		return a.Nonce < b.Nonce
-	}
-}
-
-func (a hlc) isZero() bool { return a.Wall == 0 && a.Ctr == 0 && a.Dev == "" }
-
-// maxHLC returns whichever clock sorts higher.
-func maxHLC(a, b hlc) hlc {
-	if a.less(b) {
-		return b
-	}
-	return a
-}
+func maxHLC(a, b hlc) hlc { return synccore.Max(a, b) }
 
 func nowMs() int64 { return time.Now().UnixMilli() }
 

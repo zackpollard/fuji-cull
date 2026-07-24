@@ -1,36 +1,12 @@
 package cull
 
+import "github.com/zack/fuji-tools/internal/synccore"
+
 // The sync-facing Session API: the durable outbox (unacked records), inbound
 // batch merge (ApplyRemote), and ack handling. All merges are HLC-LWW,
 // commutative and idempotent, so re-delivery and reconnect order never lose or
-// double-apply a decision.
-
-// remoteRecord is one decision row as it crosses the wire (push item or pull
-// delta). Migrated is set only for a client seeding the server from a v1 file.
-type remoteRecord struct {
-	Ckey     string `json:"ckey"`
-	D        string `json:"d"`
-	Del      bool   `json:"del,omitempty"`
-	HLC      hlc    `json:"hlc"`
-	Migrated bool   `json:"migrated,omitempty"`
-	Version  int64  `json:"version,omitempty"` // server-assigned; becomes SV on the client
-}
-
-// remoteCursor is one per-device resume point on the wire.
-type remoteCursor struct {
-	Dev     string `json:"dev"`
-	Ckey    string `json:"ckey"`
-	HLC     hlc    `json:"hlc"`
-	Version int64  `json:"version,omitempty"`
-}
-
-// ack is a push-response item: the server's authoritative winner for a key.
-type ack struct {
-	Ckey    string `json:"ckey"`
-	Version int64  `json:"version"`
-	Winner  remoteRecord
-	Contested bool `json:"contested,omitempty"`
-}
+// double-apply a decision. Wire types come from synccore so the engine and the
+// server merge by the identical rule.
 
 // SetServerRef records the last server clock (ms) for the forward wall clamp.
 func (s *Session) SetServerRef(ms int64) {
@@ -43,19 +19,30 @@ func (s *Session) SetServerRef(ms int64) {
 
 // Outbox returns every unacked (SV==0) record as wire rows to push. The session
 // file IS the outbox, so this survives app kills for free.
-func (s *Session) Outbox() []remoteRecord {
+func (s *Session) Outbox() []synccore.DecisionRow {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out []remoteRecord
+	var out []synccore.DecisionRow
 	for ck, r := range s.data.Records {
 		if r.SV == 0 {
-			out = append(out, remoteRecord{Ckey: ck, D: r.D, Del: r.Del, HLC: r.HLC, Migrated: r.Migrated})
+			out = append(out, synccore.DecisionRow{Ckey: ck, D: r.D, Del: r.Del, HLC: r.HLC, Migrated: r.Migrated})
 		}
 	}
 	return out
 }
 
-// SyncMeta returns the pull high-water and last-seen epoch for building a pull.
+// OutboxResume returns this device's resume point if it is unacked, else nil.
+func (s *Session) OutboxResume() *synccore.ResumeRow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.data.Resume[s.data.DeviceID]
+	if !ok || c.SV != 0 || c.K == "" {
+		return nil
+	}
+	return &synccore.ResumeRow{Dev: s.data.DeviceID, Ckey: c.K, HLC: c.HLC}
+}
+
+// SyncMeta returns the pull high-water, last-seen epoch, and device id.
 func (s *Session) SyncMeta() (serverVer int64, epoch, deviceID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -63,9 +50,9 @@ func (s *Session) SyncMeta() (serverVer int64, epoch, deviceID string) {
 }
 
 // ApplyRemote LWW-merges a batch of pulled rows under one lock and one save.
-// Advancing ServerVer is the caller's business via deltaHigh (pull only, never a
-// push response). Returns whether anything changed.
-func (s *Session) ApplyRemote(recs []remoteRecord, cursors []remoteCursor, epoch string, deltaHigh, serverNow int64) (changed bool) {
+// deltaHigh advances the pull high-water (pull only, never a push response).
+// Returns whether anything changed.
+func (s *Session) ApplyRemote(recs []synccore.DecisionRow, cursors []synccore.ResumeRow, epoch string, deltaHigh, serverNow int64) (changed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -85,7 +72,7 @@ func (s *Session) ApplyRemote(recs []remoteRecord, cursors []remoteCursor, epoch
 	}
 	for _, c := range cursors {
 		cur, ok := s.data.Resume[c.Dev]
-		if !ok || cur.HLC.less(c.HLC) {
+		if !ok || cur.HLC.Less(c.HLC) {
 			s.data.Resume[c.Dev] = cursorRec{K: c.Ckey, HLC: c.HLC, SV: c.Version}
 			s.data.NodeHLC = maxHLC(s.data.NodeHLC, c.HLC)
 			changed = true
@@ -109,29 +96,41 @@ func (s *Session) ApplyRemote(recs []remoteRecord, cursors []remoteCursor, epoch
 // LWW-merges each winner (so a losing push still converges toward the server's
 // state) and marks a record clean (SV set) only when the record we now hold IS
 // the server's winner and we haven't re-edited it since dispatch.
-func (s *Session) AckPush(acks []ack) {
+func (s *Session) AckPush(resp synccore.PushResponse) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if resp.ServerNow > s.serverRef {
+		s.serverRef = resp.ServerNow
+	}
 	dirty := false
-	for _, a := range acks {
+	for _, a := range resp.Results {
 		win := record{D: a.Winner.D, Del: a.Winner.Del, HLC: a.Winner.HLC, SV: a.Version, Migrated: a.Winner.Migrated}
 		cur, ok := s.data.Records[a.Ckey]
 		if recordWins(win, cur, ok) {
-			// server's winner beats what we hold: adopt it, and it's clean
 			s.data.Records[a.Ckey] = win
 			s.data.NodeHLC = maxHLC(s.data.NodeHLC, win.HLC)
 			s.projectLocked(a.Ckey, win, "")
 			dirty = true
 		} else if ok && cur.HLC == a.Winner.HLC && cur.SV == 0 {
-			// what we hold IS the server's winner and unchanged since dispatch: clean it
 			cur.SV = a.Version
 			s.data.Records[a.Ckey] = cur
 			dirty = true
 		}
-		// else: we've re-edited since dispatch (newer HLC, SV still 0) -> stays
-		// dirty and will re-push. Idempotent.
+		// else: re-edited since dispatch -> stays dirty, will re-push. Idempotent.
 	}
 	if dirty {
+		_ = s.saveLocked()
+	}
+}
+
+// AckResume marks this device's resume point clean once the server accepts it.
+func (s *Session) AckResume(version int64, sentHLC hlc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.data.Resume[s.data.DeviceID]
+	if ok && c.HLC == sentHLC && c.SV == 0 {
+		c.SV = version
+		s.data.Resume[s.data.DeviceID] = c
 		_ = s.saveLocked()
 	}
 }
@@ -148,6 +147,12 @@ func (s *Session) ResetForEpoch(newEpoch string) {
 		if r.SV != 0 {
 			r.SV = 0
 			s.data.Records[ck] = r
+		}
+	}
+	for dev, c := range s.data.Resume {
+		if c.SV != 0 {
+			c.SV = 0
+			s.data.Resume[dev] = c
 		}
 	}
 	_ = s.saveLocked()

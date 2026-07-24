@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/zack/fuji-tools/internal/synccore"
 )
 
 // Session persists culling decisions so a run survives disconnects/restarts, and
@@ -338,17 +340,10 @@ func (s *Session) DeviceID() string {
 	return s.data.DeviceID
 }
 
-// recordWins reports whether `in` should replace `stored` under HLC-LWW, honoring
-// migrated precedence: a genuine (non-migrated) record always beats a migrated
-// one regardless of clock.
+// recordWins reports whether `in` should replace `stored` under the shared
+// HLC-LWW rule (synccore is the single merge authority for engine and server).
 func recordWins(in, stored record, storedExists bool) bool {
-	if !storedExists {
-		return true
-	}
-	if in.Migrated != stored.Migrated {
-		return !in.Migrated // the non-migrated side wins
-	}
-	return stored.HLC.less(in.HLC)
+	return synccore.Wins(in.HLC, in.Migrated, stored.HLC, stored.Migrated, storedExists)
 }
 
 // helper for int64 max

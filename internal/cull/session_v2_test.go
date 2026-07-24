@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/zack/fuji-tools/internal/synccore"
 )
 
 func tmpSession(t *testing.T) string {
@@ -94,7 +96,7 @@ func TestClearIsTombstone(t *testing.T) {
 	}
 	// a remote keep with an OLDER hlc must not win over the tombstone
 	older := hlc{Wall: r.HLC.Wall - 1000, Ctr: 0, Dev: "other"}
-	s.ApplyRemote([]remoteRecord{{Ckey: "151_FUJI/DSCF0001", D: "keep", HLC: older}}, nil, "", 0, 0)
+	s.ApplyRemote([]synccore.DecisionRow{{Ckey: "151_FUJI/DSCF0001", D: "keep", HLC: older}}, nil, "", 0, 0)
 	if r2 := s.data.Records["151_FUJI/DSCF0001"]; !r2.Del {
 		t.Errorf("older remote keep resurrected a tombstone: %+v", r2)
 	}
@@ -110,7 +112,7 @@ func TestMigratedLosesToGenuine(t *testing.T) {
 		map[string][]string{"151_FUJI/DSCF0001": {"151_FUJI/DSCF0001"}})
 
 	// remote reject with an OLDER wall but non-migrated -> must win
-	s.ApplyRemote([]remoteRecord{{
+	s.ApplyRemote([]synccore.DecisionRow{{
 		Ckey: "151_FUJI/DSCF0001", D: "reject",
 		HLC: hlc{Wall: 1000, Ctr: 0, Dev: "srv"}, Migrated: false, Version: 5,
 	}}, nil, "e1", 5, nowMs())
@@ -127,7 +129,7 @@ func TestApplyRemoteIdempotent(t *testing.T) {
 	p := tmpSession(t)
 	s, _ := loadSession(p)
 	s.SetResolvers(map[string]string{}, map[string][]string{"151_FUJI/DSCF0001": {"L/151_FUJI/DSCF0001"}})
-	batch := []remoteRecord{{Ckey: "151_FUJI/DSCF0001", D: "keep", HLC: hlc{Wall: 5000, Dev: "srv"}, Version: 3}}
+	batch := []synccore.DecisionRow{{Ckey: "151_FUJI/DSCF0001", D: "keep", HLC: hlc{Wall: 5000, Dev: "srv"}, Version: 3}}
 	if !s.ApplyRemote(batch, nil, "e", 3, nowMs()) {
 		t.Fatal("first apply should change state")
 	}
@@ -151,13 +153,13 @@ func TestOutboxAndAck(t *testing.T) {
 	}
 	sent := out[0]
 	// ack with the same winner -> cleaned
-	s.AckPush([]ack{{Ckey: sent.Ckey, Version: 10, Winner: remoteRecord{D: "keep", HLC: sent.HLC}}})
+	s.AckPush(synccore.PushResponse{Results: []synccore.AckRow{{Ckey: sent.Ckey, Accepted: true, Version: 10, Winner: synccore.DecisionRow{D: "keep", HLC: sent.HLC}}}})
 	if len(s.Outbox()) != 0 {
 		t.Errorf("record should be clean after matching ack, outbox=%v", s.Outbox())
 	}
 	// re-edit, dispatch, then ack the OLD winner -> stays dirty (we moved on)
 	s.SetDecision("L/151_FUJI/DSCF0001", "reject")
-	s.AckPush([]ack{{Ckey: sent.Ckey, Version: 11, Winner: remoteRecord{D: "keep", HLC: sent.HLC}}})
+	s.AckPush(synccore.PushResponse{Results: []synccore.AckRow{{Ckey: sent.Ckey, Accepted: true, Version: 11, Winner: synccore.DecisionRow{D: "keep", HLC: sent.HLC}}}})
 	if len(s.Outbox()) != 1 {
 		t.Errorf("re-edited record should remain dirty until its own ack, outbox=%v", s.Outbox())
 	}
@@ -169,7 +171,7 @@ func TestReprojectAfterResolvers(t *testing.T) {
 	p := tmpSession(t)
 	s, _ := loadSession(p)
 	// no resolver yet (pre-discovery): apply a remote decision
-	s.ApplyRemote([]remoteRecord{{Ckey: "151_FUJI/DSCF0001", D: "keep", HLC: hlc{Wall: 9000, Dev: "srv"}, Version: 1}}, nil, "e", 1, nowMs())
+	s.ApplyRemote([]synccore.DecisionRow{{Ckey: "151_FUJI/DSCF0001", D: "keep", HLC: hlc{Wall: 9000, Dev: "srv"}, Version: 1}}, nil, "e", 1, nowMs())
 	if len(s.Decisions()) != 0 {
 		t.Errorf("no projection expected before resolver, got %v", s.Decisions())
 	}
@@ -212,7 +214,7 @@ func TestRemoteProjectsToBothTwins(t *testing.T) {
 		map[string]string{"SLOT 1/DCIM/151_FUJI/DSCF0001": "151_FUJI/DSCF0001", "SLOT 2/DCIM/151_FUJI/DSCF0001": "151_FUJI/DSCF0001"},
 		map[string][]string{"151_FUJI/DSCF0001": {"SLOT 1/DCIM/151_FUJI/DSCF0001", "SLOT 2/DCIM/151_FUJI/DSCF0001"}},
 	)
-	s.ApplyRemote([]remoteRecord{{Ckey: "151_FUJI/DSCF0001", D: "keep", HLC: hlc{Wall: 5000, Dev: "srv"}, Version: 2}}, nil, "e", 2, nowMs())
+	s.ApplyRemote([]synccore.DecisionRow{{Ckey: "151_FUJI/DSCF0001", D: "keep", HLC: hlc{Wall: 5000, Dev: "srv"}, Version: 2}}, nil, "e", 2, nowMs())
 	dec := s.Decisions()
 	if dec["SLOT 1/DCIM/151_FUJI/DSCF0001"] != "keep" || dec["SLOT 2/DCIM/151_FUJI/DSCF0001"] != "keep" {
 		t.Errorf("remote decision should project to both twins: %v", dec)
