@@ -367,6 +367,14 @@
     <div class="zoomtag" id="zoomtag">100%</div>
     <div id="overlay"><div class="blink" id="ovMsg">BUFFERING</div><div class="err" id="ovErr"></div></div>
 
+    <div id="authOverlay" style="display:none;position:fixed;inset:0;z-index:1000;background:var(--bg,#0B0C0B);flex-direction:column;align-items:center;justify-content:center;gap:14px">
+      <div style="color:var(--amber,#FFB32E);font:600 15px/1.3 ui-monospace,monospace">this camera engine needs a key</div>
+      <input id="authKey" type="password" placeholder="engine key" autocomplete="off" autocapitalize="off" spellcheck="false"
+        style="width:min(360px,80vw);padding:10px 12px;background:#161815;border:1px solid #30352C;color:#ECE9E0;border-radius:8px;font:14px ui-monospace,monospace">
+      <button id="authGo" style="padding:10px 22px;background:var(--amber,#FFB32E);color:#0B0C0B;border:0;border-radius:8px;font:600 13px ui-monospace,monospace;cursor:pointer">CONNECT</button>
+      <div id="authErr" style="color:#FF5A3D;font:12px ui-monospace,monospace;min-height:14px"></div>
+    </div>
+
     <div id="importPanel">
       <div class="box">
         <h2>IMPORT KEEPERS</h2>
@@ -854,7 +862,35 @@ if (debugOn) {
 }
 
 /* ── boot ─────────────────────────────────────────────────── */
+// When the engine is exposed on the LAN it requires a key. Establish an auth
+// cookie before the boot loop so every <img>/<video> tag authenticates. No-op
+// on a loopback engine (authRequired=false) or if a prior cookie still works.
+async function ensureAuth() {
+  let h;
+  try { h = await (await fetch("/api/health")).json(); } catch (e) { return; } // offline; boot loop copes
+  if (!h || !h.authRequired) return;
+  try { if ((await fetch("/api/status")).status !== 401) return; } catch (e) { return; } // cookie still valid
+  const ov = $("authOverlay"), inp = $("authKey"), go = $("authGo"), err = $("authErr");
+  ov.style.display = "flex"; inp.focus();
+  await new Promise(resolve => {
+    const submit = async () => {
+      err.textContent = "";
+      try {
+        const res = await fetch("/api/auth", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: inp.value }),
+        });
+        if (res.ok) { ov.style.display = "none"; resolve(); return; }
+        err.textContent = "invalid key";
+      } catch (e) { err.textContent = "connection failed"; }
+    };
+    go.onclick = submit;
+    inp.onkeydown = e => { if (e.key === "Enter") submit(); };
+  });
+}
+
 async function boot() {
+  await ensureAuth();
   // The server binds before camera discovery finishes: show live progress
   // until /api/state stops reporting `discovering`.
   let st = null;
