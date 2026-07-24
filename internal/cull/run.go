@@ -45,6 +45,11 @@ type Options struct {
 	Retries     int
 	UploadConc  int
 	HashConc    int
+
+	// EngineKey, when set, requires this key on every /api/* call so the engine
+	// can be safely bound to the network (remote-camera-host mode). Empty keeps
+	// the historical unauthenticated loopback behavior.
+	EngineKey string
 }
 
 // Start wires the app, kicks off background discovery, and returns the App
@@ -56,6 +61,12 @@ func Start(o Options) (*App, http.Handler, error) {
 	if !o.SkipImmich && (o.ImmichURL == "" || o.ImmichKey == "") {
 		log.Printf("WARN: Immich URL/key not configured; imports will only copy to the destination (--skip-immich implied)")
 		o.SkipImmich = true
+	}
+	if o.EngineKey == "" {
+		o.EngineKey = strings.TrimSpace(os.Getenv("FUJI_ENGINE_KEY"))
+	}
+	if o.EngineKey != "" {
+		log.Printf("engine: API key required (network-exposed mode)")
 	}
 
 	var backend Backend
@@ -134,6 +145,7 @@ func startWith(o Options, backend Backend, session *Session, cache string) (*App
 		sessionName: o.SessionName,
 		dest:        o.Dest,
 		album:       o.ImmichAlbum,
+		engineKey:   o.EngineKey,
 		pipelineOpts: pipeline.Options{
 			ImmichURL:         strings.TrimRight(o.ImmichURL, "/"),
 			ImmichKey:         o.ImmichKey,

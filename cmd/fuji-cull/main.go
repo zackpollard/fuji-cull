@@ -48,6 +48,7 @@ func main() {
 	flag.IntVar(&o.Retries, "retries", 3, "retries for Immich upload validation gaps")
 	flag.IntVar(&o.UploadConc, "upload-concurrency", 4, "parallel Immich uploads")
 	flag.IntVar(&o.HashConc, "hash-concurrency", 4, "parallel SHA-1 workers")
+	flag.StringVar(&o.EngineKey, "engine-key", os.Getenv("FUJI_ENGINE_KEY"), "require this key on /api/* so the engine can be exposed on the LAN (host the camera here; browse from other devices). Empty = open loopback (or env FUJI_ENGINE_KEY)")
 	flag.Parse()
 	setupLogging(*logPath)
 

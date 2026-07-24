@@ -32,6 +32,8 @@ type App struct {
 	dest         string
 	album        string
 
+	engineKey string // when set, /api/* requires this key (network exposure)
+
 	mu        sync.RWMutex
 	ready     bool
 	discStage string
@@ -109,6 +111,8 @@ func (a *App) handler() http.Handler {
 		panic(err)
 	}
 	mux.Handle("GET /", http.FileServerFS(sub))
+
+	a.registerAuthRoutes(mux)
 
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
 		if !a.isReady() {
@@ -455,13 +459,16 @@ func (a *App) handler() http.Handler {
 
 	// Until discovery finishes, only the UI itself and /api/state (which
 	// reports discovery progress) are served; other API calls 503.
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	readiness := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !a.isReady() && strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/state" {
 			http.Error(w, "still discovering camera contents", http.StatusServiceUnavailable)
 			return
 		}
 		mux.ServeHTTP(w, r)
 	})
+	// Auth is the outermost layer: reject unauthorized /api/* before readiness
+	// or any handler runs. A no-op when no engine key is configured.
+	return a.withAuth(readiness)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
