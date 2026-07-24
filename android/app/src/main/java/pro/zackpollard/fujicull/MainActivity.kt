@@ -33,6 +33,8 @@ data class Settings(
     val session: String = "",
     val stack: Boolean = false,
     val album: String = "",
+    val syncUrl: String = "",
+    val syncKey: String = "",
 )
 
 class MainActivity : ComponentActivity() {
@@ -175,6 +177,8 @@ class MainActivity : ComponentActivity() {
             session = it.getString("session", "") ?: "",
             stack = it.getBoolean("stack", false),
             album = it.getString("album", "") ?: "",
+            syncUrl = it.getString("syncUrl", "") ?: "",
+            syncKey = it.getString("syncKey", "") ?: "",
         )
     }
 
@@ -185,6 +189,8 @@ class MainActivity : ComponentActivity() {
             .putString("session", s.session.trim())
             .putBoolean("stack", s.stack)
             .putString("album", s.album)
+            .putString("syncUrl", s.syncUrl.trim().trimEnd('/'))
+            .putString("syncKey", s.syncKey.trim())
             .apply()
     }
 

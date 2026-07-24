@@ -87,6 +87,11 @@ final class Engine: ObservableObject {
             try? FileManager.default.createDirectory(atPath: p, withIntermediateDirectories: true)
         }
 
+        // Cross-device sync config reaches the Go engine via env (set before any
+        // MobileStart*), avoiding gomobile signature changes.
+        MobileSetEnv("FUJI_SYNC_URL", settings.syncURL.trimmingCharacters(in: .whitespaces))
+        MobileSetEnv("FUJI_SYNC_KEY", settings.syncKey.trimmingCharacters(in: .whitespaces))
+
         var e: MobileEngine?
         var nsErr: NSError?
 

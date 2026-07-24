@@ -324,6 +324,8 @@ private fun SettingsScreen(
     var url by remember { mutableStateOf(initial.url) }
     var apiKey by remember { mutableStateOf(initial.key) }
     var stack by remember { mutableStateOf(initial.stack) }
+    var syncUrl by remember { mutableStateOf(initial.syncUrl) }
+    var syncKey by remember { mutableStateOf(initial.syncKey) }
 
     Column(
         Modifier.fillMaxSize().background(Color(0xFF0B0C0B)).safeDrawingPadding()
@@ -353,13 +355,29 @@ private fun SettingsScreen(
                 color = Color.White, modifier = Modifier.padding(start = 10.dp),
             )
         }
+        Text("cross-device sync", color = Amber, style = MaterialTheme.typography.titleMedium)
+        Text(
+            "sync keep/reject across devices via your self-hosted fuji-sync server; leave empty to disable",
+            color = Dim, style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedTextField(
+            value = syncUrl, onValueChange = { syncUrl = it },
+            label = { Text("sync server url") },
+            placeholder = { Text("https://sync.example.com") },
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = syncKey, onValueChange = { syncKey = it },
+            label = { Text("sync api key") },
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             if (onLog != null) {
                 TextButton(onClick = onLog) { Text("VIEW LOG", color = Dim) }
             }
             TextButton(onClick = onClose) { Text("CANCEL", color = Dim) }
             Button(onClick = {
-                onSave(initial.copy(url = url, key = apiKey, session = "", stack = stack))
+                onSave(initial.copy(url = url, key = apiKey, session = "", stack = stack, syncUrl = syncUrl, syncKey = syncKey))
             }) { Text("SAVE") }
         }
         if (onRescan != null) {
@@ -411,6 +429,13 @@ private fun CullScreen(
                 val st = api.status()
                 sick = st.optBoolean("bulkSick") || st.optBoolean("partSick")
                 enginePosters = st.optBoolean("posters")
+                // cross-device sync: adopt the engine's merged decision map so
+                // decisions made on other devices appear here (was loaded once).
+                st.optJSONObject("decisions")?.let { d ->
+                    val m = mutableMapOf<String, String>()
+                    for (k in d.keys()) m[k] = d.getString(k)
+                    decisions.value = m
+                }
                 val imp = st.getJSONObject("import")
                 if (imp.optBoolean("running")) {
                     importing = "importing ${imp.optInt("done")}/${imp.optInt("total")}"

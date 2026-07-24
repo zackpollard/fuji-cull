@@ -391,6 +391,8 @@ func main() {
 	flag.IntVar(&o.Retries, "retries", 3, "immich retries")
 	flag.IntVar(&o.UploadConc, "upload-concurrency", 4, "parallel uploads")
 	flag.IntVar(&o.HashConc, "hash-concurrency", 4, "parallel hashing")
+	flag.StringVar(&o.SyncURL, "sync-url", os.Getenv("FUJI_SYNC_URL"), "cross-device sync server URL (or env FUJI_SYNC_URL)")
+	flag.StringVar(&o.SyncKey, "sync-key", os.Getenv("FUJI_SYNC_KEY"), "cross-device sync API key (or env FUJI_SYNC_KEY)")
 	decodeAhead := flag.Int("decode-ahead", 28, "decoded frames to hold ahead of the cursor (~104 MB RAM each)")
 	decodeBehind := flag.Int("decode-behind", 8, "decoded frames to hold behind the cursor")
 	flag.Parse()
@@ -590,6 +592,7 @@ func (u *ui) frame() bool {
 			u.orients = u.app.Orientations()
 			u.immich = u.app.ImmichStates()
 			u.camBulkSick, u.camPartSick = u.app.CameraSick()
+			u.decisions = u.app.Decisions() // adopt cross-device synced decisions
 		}
 		u.updateWants()
 		// A 104 MB photo texture upload mid-playback stalls the render
