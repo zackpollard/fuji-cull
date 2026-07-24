@@ -33,6 +33,10 @@ data class Settings(
     val session: String = "",
     val stack: Boolean = false,
     val album: String = "",
+    // Remote camera host: browse a camera plugged into another machine instead
+    // of this phone. Empty = use this device's camera.
+    val remoteUrl: String = "",
+    val remoteKey: String = "",
 )
 
 class MainActivity : ComponentActivity() {
@@ -175,6 +179,8 @@ class MainActivity : ComponentActivity() {
             session = it.getString("session", "") ?: "",
             stack = it.getBoolean("stack", false),
             album = it.getString("album", "") ?: "",
+            remoteUrl = it.getString("remoteUrl", "") ?: "",
+            remoteKey = it.getString("remoteKey", "") ?: "",
         )
     }
 
@@ -185,6 +191,8 @@ class MainActivity : ComponentActivity() {
             .putString("session", s.session.trim())
             .putBoolean("stack", s.stack)
             .putString("album", s.album)
+            .putString("remoteUrl", s.remoteUrl.trim().trimEnd('/'))
+            .putString("remoteKey", s.remoteKey.trim())
             .apply()
     }
 

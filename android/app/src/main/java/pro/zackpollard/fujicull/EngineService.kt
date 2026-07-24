@@ -46,13 +46,22 @@ class EngineService : Service() {
 
     private fun startEngine() {
         try {
+            val prefs = getSharedPreferences("immich", MODE_PRIVATE)
+            // Remote-host mode: the engine runs on another machine; this app is a
+            // thin client (the UI builds a remote Api). Don't start a local
+            // engine or claim the camera.
+            if ((prefs.getString("remoteUrl", "") ?: "").isNotBlank()) {
+                engine = null
+                startError = null
+                Log.i(TAG, "remote mode: skipping local engine")
+                return
+            }
             val dataDir = File(filesDir, "data").apply { mkdirs() }
             val bufDir = File(cacheDir, "buffer").apply { mkdirs() }
             // bundled minimal ffmpeg: engine-side posters, including the
             // 4:2:2 10-bit HEVC no Android codec decodes
             val ffmpeg = File(applicationInfo.nativeLibraryDir, "libffmpeg.so")
             if (ffmpeg.exists()) Mobile.setEnv("FUJI_FFMPEG", ffmpeg.absolutePath)
-            val prefs = getSharedPreferences("immich", MODE_PRIVATE)
             engine = Mobile.start(
                 dataDir.absolutePath,
                 bufDir.absolutePath,

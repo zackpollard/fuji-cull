@@ -10,10 +10,20 @@ import java.net.URLEncoder
 /** One catalog entry, as served by /api/state. */
 data class Shot(val id: String, val folder: String, val base: String, val kind: String, val date: String = "")
 
-/** Thin client for the engine's loopback HTTP API. */
+/**
+ * Thin client for the engine's HTTP API. Local (loopback) or remote (a camera
+ * host on the LAN). For a remote host `key` authenticates: JSON calls send it as
+ * the x-api-key header, media URLs carry it as ?key= so Coil / the video player
+ * authenticate without headers.
+ */
 @androidx.compose.runtime.Stable
-class Api(private val port: Long) {
-    val base get() = "http://127.0.0.1:$port"
+class Api(private val base: String, private val key: String = "") {
+    /** Loopback convenience for the embedded engine. */
+    constructor(port: Long) : this("http://127.0.0.1:$port")
+
+    private fun keyed(url: String): String =
+        if (key.isEmpty()) url
+        else url + (if (url.contains('?')) "&" else "?") + "key=" + URLEncoder.encode(key, "UTF-8")
 
     fun thumbUrl(id: String, orient: Char = '0', tick: Int = 0): String {
         var u = "$base/api/thumb?id=" + URLEncoder.encode(id, "UTF-8")
@@ -21,17 +31,22 @@ class Api(private val port: Long) {
         // resume counter: busts Coil's per-URL cache so cells that failed
         // while the process was frozen retry after foregrounding
         if (tick > 0) u += "&rt=$tick"
-        return u
+        return keyed(u)
     }
 
     fun imageUrl(id: String): String =
-        "$base/api/image?id=" + URLEncoder.encode(id, "UTF-8")
+        keyed("$base/api/image?id=" + URLEncoder.encode(id, "UTF-8"))
 
     fun videoUrl(id: String): String =
-        "$base/api/video?id=" + URLEncoder.encode(id, "UTF-8")
+        keyed("$base/api/video?id=" + URLEncoder.encode(id, "UTF-8"))
 
     fun videoHeadUrl(id: String): String =
-        "$base/api/videohead?id=" + URLEncoder.encode(id, "UTF-8")
+        keyed("$base/api/videohead?id=" + URLEncoder.encode(id, "UTF-8"))
+
+    /** Remote readiness probe (open endpoint); false if unreachable. */
+    suspend fun health(): JSONObject? = withContext(Dispatchers.IO) {
+        runCatching { JSONObject(get("/api/health")) }.getOrNull()
+    }
 
     suspend fun state(): Pair<List<Shot>, MutableMap<String, String>> = withContext(Dispatchers.IO) {
         val o = JSONObject(get("/api/state"))
@@ -103,6 +118,7 @@ class Api(private val port: Long) {
         val c = URL(base + path).openConnection() as HttpURLConnection
         c.connectTimeout = 5000
         c.readTimeout = 30000
+        if (key.isNotEmpty()) c.setRequestProperty("x-api-key", key)
         return c.inputStream.bufferedReader().readText()
     }
 
@@ -111,6 +127,7 @@ class Api(private val port: Long) {
         c.requestMethod = "POST"
         c.doOutput = true
         c.setRequestProperty("Content-Type", "application/json")
+        if (key.isNotEmpty()) c.setRequestProperty("x-api-key", key)
         c.outputStream.write(body.toString().toByteArray())
         return c.inputStream.bufferedReader().readText()
     }
