@@ -1,8 +1,11 @@
 # fuji-cull — Offline-First Cross-Device Progress Sync
 
-Status: **in progress** (built on branch `feat/cross-device-sync`). This document is
-the design of record. It was produced by an exhaustive code-map pass and a
-red-teamed design pass (28 data-loss scenarios found and folded in as `[FIX-n]`).
+Status: **Phases 1–6 shipped** (PR #19, branch `feat/cross-device-sync`; all CI
+green). Cross-device sync is live end-to-end — verified with two engines + the
+real server. Phase 7 (cursor/resume, opt-in) and a couple of polish items remain
+as follow-ups (see the end). This document is the design of record; it was
+produced by an exhaustive code-map pass and a red-teamed design pass (28
+data-loss scenarios found and folded in as `[FIX-n]`).
 
 ## Goal
 
@@ -116,14 +119,19 @@ Deploy: `deploy/sync/{Dockerfile,compose.yml}`.
 
 ## Phased plan (each independently shippable)
 
-1. **Canonical key + robust migration** (local only — ships value immediately; also
-   de-dups the pre/post-PTP-fix key split already on the iPad).
-2. **Session v2 schema + chokepoint + HLC** (local-only, invisible).
-3. **Cross-platform + non-degenerate camera identity.**
-4. **Sync server** (standalone, curl/test-verifiable).
-5. **Engine sync client** (first end-to-end; integration test proves two engines converge).
-6. **Per-client config + inbound-apply + sync-status UI** (iOS/Android/web/desktop).
-7. **Cursor/resume + card-generation reset** (opt-in, non-gating).
+1. ✅ **Canonical key + robust migration** — `feat(sync/1)`.
+2. ✅ **Session v2 schema + chokepoint + HLC** — `feat(sync/2)`.
+3. ✅ **Cross-platform + camera identity** — `feat(sync/3)`.
+4. ✅ **Sync server** (`cmd/fuji-sync`) — `feat(sync/4)`.
+5. ✅ **Engine sync client** (two engines converge, live-verified) — `feat(sync/5)`.
+6. ✅ **Per-client config + inbound-apply + status UI** — `feat(sync/6a,6b)`.
+7. ⬜ **Cursor/resume + card-generation reset** (opt-in, non-gating) — follow-up.
 
-Full red-teamed design with all `[FIX-n]` rationale: see the design workflow output
-referenced in the PR.
+## Follow-ups (not blocking)
+
+- Phase 7: sync the per-device resume point (schema fields already present) and
+  the card-generation reset path.
+- iOS objects-fallback identity (the primary PTP path already sets identity).
+- Surface the server's `contested` flag as a resolution chip in the UIs.
+- Consider capturing a true card-level identity if card-rotation-in-one-body
+  becomes a real workflow.
