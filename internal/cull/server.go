@@ -58,6 +58,15 @@ func (a *App) finishInit(cat *Catalog, pf *Prefetcher) {
 	a.mu.Lock()
 	a.catalog = cat
 	a.prefetch = pf
+	sess := a.session
+	a.mu.Unlock()
+	// Install the canonical<->legacy bridges and re-project any records applied
+	// before discovery, so the legacy Decisions map is complete BEFORE clients
+	// can read it (ready flips below).
+	if sess != nil {
+		sess.SetResolvers(cat.Canonical, cat.Legacy)
+	}
+	a.mu.Lock()
 	a.ready = true
 	a.mu.Unlock()
 }
