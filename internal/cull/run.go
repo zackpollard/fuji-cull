@@ -62,6 +62,15 @@ func Start(o Options) (*App, http.Handler, error) {
 		log.Printf("WARN: Immich URL/key not configured; imports will only copy to the destination (--skip-immich implied)")
 		o.SkipImmich = true
 	}
+	// Sync config also arrives via env (mobile sets it with mobile.SetEnv before
+	// Start, avoiding four gomobile signature changes; desktop flags default to
+	// the same env). Explicit Options win.
+	if o.SyncURL == "" {
+		o.SyncURL = strings.TrimSpace(os.Getenv("FUJI_SYNC_URL"))
+	}
+	if o.SyncKey == "" {
+		o.SyncKey = strings.TrimSpace(os.Getenv("FUJI_SYNC_KEY"))
+	}
 
 	var backend Backend
 	switch {

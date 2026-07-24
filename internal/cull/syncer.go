@@ -3,6 +3,7 @@ package cull
 import (
 	"errors"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/zack/fuji-tools/internal/synccore"
@@ -20,6 +21,33 @@ type syncer struct {
 	wake    chan struct{}
 	stop    chan struct{}
 	done    chan struct{}
+
+	sm       sync.Mutex
+	lastOkMs int64
+	lastErr  string
+}
+
+// status is a snapshot for /api/status.sync.
+type syncStatusSnapshot struct {
+	lastOkMs int64
+	lastErr  string
+}
+
+func (s *syncer) status() syncStatusSnapshot {
+	s.sm.Lock()
+	defer s.sm.Unlock()
+	return syncStatusSnapshot{lastOkMs: s.lastOkMs, lastErr: s.lastErr}
+}
+
+func (s *syncer) note(err error) {
+	s.sm.Lock()
+	if err == nil {
+		s.lastOkMs = nowMs()
+		s.lastErr = ""
+	} else {
+		s.lastErr = err.Error()
+	}
+	s.sm.Unlock()
 }
 
 func newSyncer(client *syncClient, provide func() (*Session, string)) *syncer {
@@ -74,6 +102,7 @@ func (s *syncer) Run() {
 		if sess == nil || camera == "" {
 			wait = 5 * time.Second // no identity yet — wait for discovery
 		} else if err := syncOnce(s.client, sess, camera); err != nil {
+			s.note(err)
 			if errors.Is(err, errAuth) {
 				log.Printf("sync: %v — pausing until reconfigured", err)
 				wait = time.Hour // sticky: don't hammer a bad key
@@ -82,6 +111,7 @@ func (s *syncer) Run() {
 				fails++
 			}
 		} else {
+			s.note(nil)
 			fails = 0
 			wait = 30 * time.Second // steady-state idle re-poll
 		}
