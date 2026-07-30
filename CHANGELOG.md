@@ -1,5 +1,51 @@
 # Changelog
 
+## [1.7.0](https://github.com/zackpollard/fuji-cull/compare/v1.6.0...v1.7.0) (2026-07-30)
+
+
+### Features
+
+* **android:** design-system pass — tokens, tile grammar, no session field ([6b45de5](https://github.com/zackpollard/fuji-cull/commit/6b45de591541d2deba0f2cb66601007410545aea))
+* connectivity — cross-device sync + remote camera host (combined) ([3bea980](https://github.com/zackpollard/fuji-cull/commit/3bea9803e4d0699470f93fedd0182f5f5c382612))
+* **desktop:** design-system pass — tokens and tile grammar in SDL ([49fbffb](https://github.com/zackpollard/fuji-cull/commit/49fbffb0300722155e976d8ca81ca716d6cb3340))
+* **engine:** remember Immich credentials and read them at startup ([161e098](https://github.com/zackpollard/fuji-cull/commit/161e0989fee9333afc6033055194ed54085cd94e))
+* **engine:** screen-sized previews and per-shot focus scoring ([75fea24](https://github.com/zackpollard/fuji-cull/commit/75fea2458880d180651ef234af730ddd58cfe705))
+* **gui:** focus peaking overlay and burst-sharpest marker ([82c886e](https://github.com/zackpollard/fuji-cull/commit/82c886e08a33ac46ee57c46631cef80b96f0d188))
+* **gui:** in-app settings screen for Immich credentials ([acbbca9](https://github.com/zackpollard/fuji-cull/commit/acbbca983ebe6c6df7f1c99201422f440cef0547))
+* **gui:** write the log to a file ([7e59cf3](https://github.com/zackpollard/fuji-cull/commit/7e59cf3d89d98c3e0100b3c59ff3a0096f62f439))
+* **immich:** send the file checksum with each upload ([281e07e](https://github.com/zackpollard/fuji-cull/commit/281e07e732cf153273464bddef1502cce0347f21))
+* **import:** overlap the camera copy with hashing and upload ([b7df7df](https://github.com/zackpollard/fuji-cull/commit/b7df7df0d5e98d4332cbe6abc038e97288950a9c))
+* **ios:** design-system foundation — tokens, IBM Plex, the new tile ([8cca68b](https://github.com/zackpollard/fuji-cull/commit/8cca68b83eeae3c686c89caf671fe499544294cc))
+* **ios:** design-system screens — viewer, video, connect, import, settings ([0c21a20](https://github.com/zackpollard/fuji-cull/commit/0c21a20cca21b34f215b4509b8f322ef1c04244a))
+* **ios:** instant photo cuts in the viewer (no swipe animation) ([44f7a3f](https://github.com/zackpollard/fuji-cull/commit/44f7a3fe8e0f5b0d4c65500bd219000832ef33ff))
+* per-camera sessions — decisions follow the camera, not a name ([ad20605](https://github.com/zackpollard/fuji-cull/commit/ad206055f6e8cb4486a63c602bee676bd3dc4be4))
+* **remote:** remote camera host — browse a camera plugged into another machine ([3e193f2](https://github.com/zackpollard/fuji-cull/commit/3e193f244840ba9c546a0e652ca3cb100b24a383))
+* **sync/1:** device-independent canonical shot key + reverse indexes ([d4dd3c4](https://github.com/zackpollard/fuji-cull/commit/d4dd3c45fa80e856070117623da5eae97cc8a7cc))
+* **sync/2:** session v2 — HLC-LWW records, tombstones, migration, merge ([f88b57e](https://github.com/zackpollard/fuji-cull/commit/f88b57e12220b4f997931958c5e1a96d26f60ff9))
+* **sync/4:** self-hosted sync server + shared merge core ([453c695](https://github.com/zackpollard/fuji-cull/commit/453c69577d7a166f1c3dc3e3bd58da800861a313))
+* **sync/5:** engine sync client — end-to-end convergence ([8a6bbcd](https://github.com/zackpollard/fuji-cull/commit/8a6bbcd6e4351fadf892701de076f9d48f42bfc7))
+* **sync/6a:** engine sync status + web client inbound-apply ([961ed53](https://github.com/zackpollard/fuji-cull/commit/961ed5342f20a1c42604300c30d398329f5734e2))
+* **sync/6b:** per-client sync config + inbound-apply (iOS/Android/desktop) ([31ba8cc](https://github.com/zackpollard/fuji-cull/commit/31ba8ccc56c83620b0fada0db153a9b1d2fe5942))
+* **sync:** cross-platform camera identity + desktop config ([fcc57fa](https://github.com/zackpollard/fuji-cull/commit/fcc57faec48146df9fd6cf93a58e3cc42be291de))
+* **web:** design-system pass — tokens, IBM Plex, tile grammar ([ed273e1](https://github.com/zackpollard/fuji-cull/commit/ed273e107c201fac03e467ffa2af41ac88d1684b))
+
+
+### Bug Fixes
+
+* camera-scoped caches; carry-zoom on mobile viewers ([a07286f](https://github.com/zackpollard/fuji-cull/commit/a07286fc5b0a7e0bd738d828c61a30563513f1c5))
+* **ci:** gen-logo vet compliance; 512px desktop icon for linuxdeploy ([89d27de](https://github.com/zackpollard/fuji-cull/commit/89d27de9d3c4f9a5f507ce04414c2b92331b92a8))
+* **ci:** harden xcodegen retries — it SIGABRTs transiently on runners ([2ac9a03](https://github.com/zackpollard/fuji-cull/commit/2ac9a0388e9695c226aecabeebde53257f2a455b))
+* **gui:** scale the import panel's layout offsets ([9fbe317](https://github.com/zackpollard/fuji-cull/commit/9fbe317889637e7b0ebd91bbd6d8cb171fc9002f))
+* **import:** pull through the persistent partial-read session ([74e3503](https://github.com/zackpollard/fuji-cull/commit/74e3503e608a9a022e4eddeec07e2ae01561c3cc))
+* **ios/remote:** scrubber fling no longer bounces to the connect screen ([36fd8d9](https://github.com/zackpollard/fuji-cull/commit/36fd8d9bb2e4558152c3240ff1a27c072e8e2d5c))
+* **ios:** kill the black flash between photos (+ video-teardown crash) ([e97f3b7](https://github.com/zackpollard/fuji-cull/commit/e97f3b7cc022711810402896d91d8d095785e3e2))
+* **ios:** pan while zoomed instead of paging the viewer ([22f9557](https://github.com/zackpollard/fuji-cull/commit/22f95572e6c4b406d555a1e65357573f0587a3a6))
+
+
+### Performance Improvements
+
+* **ios:** real viewer buffering, plus focus peaking and a portrait fix ([1b09c0d](https://github.com/zackpollard/fuji-cull/commit/1b09c0dbf1d0d81034e5c3f89b51a0d166b763d1))
+
 ## [1.6.0](https://github.com/zackpollard/fuji-cull/compare/v1.5.1...v1.6.0) (2026-07-23)
 
 
