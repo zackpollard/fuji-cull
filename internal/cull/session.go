@@ -51,6 +51,13 @@ type sessionData struct {
 
 	Records map[string]record    `json:"records,omitempty"` // key=canonicalKey — sync source of truth
 	Resume  map[string]cursorRec `json:"resume,omitempty"`  // key=deviceId — per-device resume points
+
+	// Imported records shots this session has already imported, key=canonicalKey,
+	// value=RFC3339 of the run. "keep" means "pending import", so a finished
+	// event drops out of the queue and the next one starts clean instead of
+	// re-sending everything — and, worse, filing it all into the new album.
+	// Canonical keys because it must survive a re-index, like Records.
+	Imported map[string]string `json:"imported,omitempty"`
 }
 
 // record is one HLC-LWW register: a keep/reject decision or a tombstone.
@@ -357,4 +364,47 @@ func maxInt64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// MarkImported records canonical keys as imported, stamped with when.
+func (s *Session) MarkImported(keys []string, when time.Time) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.data.Imported == nil {
+		s.data.Imported = map[string]string{}
+	}
+	stamp := when.UTC().Format(time.RFC3339)
+	for _, k := range keys {
+		if k != "" {
+			s.data.Imported[k] = stamp
+		}
+	}
+	return s.saveLocked()
+}
+
+// ImportedKeys returns the canonical keys already imported.
+func (s *Session) ImportedKeys() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]string, len(s.data.Imported))
+	for k, v := range s.data.Imported {
+		out[k] = v
+	}
+	return out
+}
+
+// ClearImported forgets every imported marker, returning how many were dropped.
+// Decisions are untouched: this only puts the keepers back in the queue.
+func (s *Session) ClearImported() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := len(s.data.Imported)
+	if n == 0 {
+		return 0, nil
+	}
+	s.data.Imported = nil
+	return n, s.saveLocked()
 }

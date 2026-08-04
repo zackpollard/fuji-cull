@@ -131,6 +131,7 @@ final class GridModel: ObservableObject {
                     if st.counts != self.counts { self.counts = st.counts }
                     if st.fetch != self.fetchStates { self.fetchStates = st.fetch }
                     if st.importStatus != self.importStatus { self.importStatus = st.importStatus }
+                    if st.pending != self.pendingImport { self.pendingImport = st.pending }
                     self.startPosterSweepIfNeeded()
                     if let imp = st.importStatus {
                         if imp.running {
@@ -252,9 +253,12 @@ final class GridModel: ObservableObject {
     /// Fold a client-side event into the engine log — the one place the
     /// in-app diagnostics and the pulled engine.log both show.
     func logEvent(_ msg: String) { Task { await api?.logEvent(msg) } }
-    func startImport(dest: String, album: String) {
+    /// What the next import would send, and what it is holding back.
+    @Published private(set) var pendingImport: PendingImport?
+
+    func startImport(dest: String, album: String, reimport: Bool = false) {
         importing = "importing…"
-        Task { await api?.startImport(dest: dest, album: album) }
+        Task { await api?.startImport(dest: dest, album: album, reimport: reimport) }
     }
 
     deinit { pollTask?.cancel(); posterTask?.cancel() }

@@ -382,6 +382,11 @@
         <div class="row"><span>shots marked keep</span><b id="impShots">0</b></div>
         <div class="row"><span>files (RAF+JPG+video)</span><b id="impFiles">0</b></div>
         <div class="row"><span>total size</span><b id="impSize">0</b></div>
+        <div class="row"><span>this run</span><b id="impPending">0</b></div>
+        <label class="row" id="impReimportRow" style="display:none">
+          <span>re-import already imported</span>
+          <input type="checkbox" id="impReimport">
+        </label>
         <label>destination directory
           <input id="impDest" placeholder="/mnt/skynas/…" spellcheck="false">
         </label>
@@ -392,6 +397,7 @@
           <span class="phase" id="impPhase">COPY</span>
           <div class="bar"><i id="impBar"></i></div>
           <span class="row"><span id="impCount">0 / 0</span></span>
+          <span class="row"><span id="impUpCount"></span></span>
           <span class="error" id="impError"></span>
         </div>
         <div class="actions">
@@ -1433,6 +1439,15 @@ async function poll() {
     const st = await api("/api/status");
     fetchStates = st.fetch || {};
     importStatus = st.import || {};
+    // "keep" is a queue: say what this run would actually send, and only offer
+    // the re-import escape hatch when something is actually being held back.
+    const pend = st.pending;
+    if (pend) {
+      $("impPending").textContent = pend.imported
+        ? pend.shots + " shots  (" + pend.imported + " already imported — skipped)"
+        : pend.shots + " shots";
+      $("impReimportRow").style.display = pend.imported ? "" : "none";
+    }
     videoStreaming = !!st.streaming;
     // Cross-device sync: the engine's decision map is authoritative (it folds in
     // decisions pulled from other devices), so adopt it wholesale each poll.
@@ -1471,7 +1486,10 @@ function renderImport() {
   box.classList.toggle("show", !!active);
   if (!active) return;
   $("impPhase").textContent = (p.phase || "").toUpperCase() + (p.running ? "" : " — FINISHED");
-  $("impCount").textContent = (p.done || 0) + " / " + (p.total || 0);
+  // copy and upload run at the same time, so report them separately
+  $("impCount").textContent = "camera " + (p.done || 0) + " / " + (p.total || 0);
+  $("impUpCount").textContent = p.uploaded !== undefined && p.uploaded !== null
+    ? "immich " + p.uploaded + " / " + (p.total || 0) : "";
   $("impBar").style.width = p.total ? (100 * p.done / p.total) + "%" : "0";
   $("impError").textContent = p.error || "";
   $("impGo").disabled = !!p.running;
@@ -1480,7 +1498,8 @@ $("importBtn").onclick = openImport;
 $("impClose").onclick = closeImport;
 $("impGo").onclick = async () => {
   try {
-    await api("/api/import", { dest: $("impDest").value.trim(), album: $("impAlbum").value.trim() });
+    await api("/api/import", { dest: $("impDest").value.trim(), album: $("impAlbum").value.trim(),
+        reimport: $("impReimport").checked });
     toast("import started");
   } catch (e) { toast(e.message.trim()); }
 };

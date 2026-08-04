@@ -78,6 +78,16 @@ func (a *App) syncInfo() map[string]any {
 	return info
 }
 
+// pendingInfo describes the next import: how many shots it would send and how
+// many are held back as already imported.
+func (a *App) pendingInfo() map[string]any {
+	if !a.isReady() {
+		return nil
+	}
+	shots, skipped := a.PendingImport(false)
+	return map[string]any{"shots": shots, "imported": skipped}
+}
+
 func (a *App) setDiscovery(stage string, files int) {
 	a.mu.Lock()
 	a.discStage, a.discFiles = stage, files
@@ -211,6 +221,10 @@ func (a *App) handler() http.Handler {
 			"partSick":  partSick,
 			"streaming": a.prefetch.StreamingAvailable() && !a.importer.Status().Running,
 			"posters":   a.prefetch.PostersAvailable(),
+			// What an import would actually carry: "keep" is a queue, so a
+			// finished event drops out and clients must be able to say so
+			// rather than promising to send everything again.
+			"pending": a.pendingInfo(),
 		})
 	})
 
@@ -363,6 +377,18 @@ func (a *App) handler() http.Handler {
 		states, have := a.prefetch.ThumbStates()
 		writeJSON(w, map[string]any{"states": states, "have": have,
 			"orient": a.prefetch.OrientStates(), "immich": a.ImmichStates()})
+	})
+
+	// Forget which shots have been imported, putting every keeper back in the
+	// queue. Decisions are untouched.
+	mux.HandleFunc("POST /api/clearimported", func(w http.ResponseWriter, r *http.Request) {
+		n, err := a.session.ClearImported()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		log.Printf("import: cleared %d imported marker(s)", n)
+		writeJSON(w, map[string]any{"cleared": n})
 	})
 
 	// Focus scores, separate from /api/thumbs because that one is polled hard
@@ -530,6 +556,7 @@ func (a *App) handler() http.Handler {
 			// when Immich is configured, and keep the local copies.
 			Immich    *bool `json:"immich"`
 			KeepLocal *bool `json:"keepLocal"`
+			Reimport  *bool `json:"reimport"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -549,6 +576,9 @@ func (a *App) handler() http.Handler {
 		}
 		if req.KeepLocal != nil {
 			opt.KeepLocal = *req.KeepLocal
+		}
+		if req.Reimport != nil {
+			opt.Reimport = *req.Reimport
 		}
 		if err := a.importer.Start(a, dest, album, opt); err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)

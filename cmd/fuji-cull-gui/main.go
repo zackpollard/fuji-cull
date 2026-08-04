@@ -247,6 +247,7 @@ type ui struct {
 	setStack                 bool
 	setField                 int
 	setSaved                 bool
+	setClearArmed            bool // first shift+X arms, second clears
 	setOpenTs                uint32
 	setPrevMode              int      // where Esc returns to
 	cogRect                  sdl.Rect // header settings button, hit-tested on click
@@ -255,6 +256,7 @@ type ui struct {
 	// import panel choices: copying to disk and uploading are independent
 	impImmich   bool // upload this run
 	impKeep     bool // keep the local copies
+	impReimport bool // include shots already imported
 	immichReady bool // credentials configured, so uploading is possible
 
 	// viewer transform (CSS-pixel semantics like the web UI)
@@ -1236,6 +1238,7 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 			_, _, _, _, u.immichReady = u.app.ImmichSettings()
 			u.impImmich = u.immichReady // upload by default when it's possible
 			u.impKeep = true            // never discard local copies unasked
+			u.impReimport = false       // a fresh event is the common case
 			sdl.StartTextInput()
 		case sdl.K_l:
 			s := u.shots[u.cursor]

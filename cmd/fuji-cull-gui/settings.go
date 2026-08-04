@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"log"
 	"math"
 	"strings"
 
@@ -30,6 +32,7 @@ func (u *ui) openSettings() {
 	u.setURL, u.setKey, u.setAlbum, u.setStack = url, key, album, stack
 	u.setField = setFieldURL
 	u.setSaved = false
+	u.setClearArmed = false
 	u.setPrevMode = u.mode
 	u.mode = modeSettings
 	sdl.StartTextInput()
@@ -56,7 +59,7 @@ func (u *ui) drawSettings() {
 	// Wrap the help against the real font metrics rather than guessing at a
 	// character count: the first version ran straight out of the panel.
 	helpLines := u.wrapText(u.fontSm, permHelp, pw-sc(48))
-	ph := sc(318) + int32(len(helpLines))*sc(16)
+	ph := sc(348) + int32(len(helpLines))*sc(16)
 	box := sdl.Rect{X: (w - pw) / 2, Y: (h - ph) / 2, W: pw, H: ph}
 	u.fillRect(sdl.Rect{X: 0, Y: 0, W: w, H: h}, sdl.Color{R: 0, G: 0, B: 0, A: 180})
 	u.fillRect(box, colPanel)
@@ -104,6 +107,20 @@ func (u *ui) drawSettings() {
 	u.text(u.fontSm, mark, mc, box.X+sc(24), y, false)
 	y += sc(30)
 
+	// Forgetting what has been imported puts every keeper back in the queue,
+	// so it asks twice rather than acting on one keystroke.
+	imported := u.app.ImportedCount()
+	label := fmt.Sprintf("shift+X  forget %d imported shot(s) — puts them back in the import queue", imported)
+	c := colDim
+	if imported == 0 {
+		label = "nothing recorded as imported"
+	} else if u.setClearArmed {
+		label = fmt.Sprintf("press shift+X again to forget %d imported shot(s)", imported)
+		c = colReject
+	}
+	u.text(u.fontSm, label, c, box.X+sc(24), y, false)
+	y += sc(26)
+
 	// Honest state line: say whether uploads are actually possible.
 	if u.setSaved {
 		u.text(u.fontSm, "saved — imports will upload from now on", colKeep, box.X+sc(24), y, false)
@@ -146,6 +163,21 @@ func (u *ui) settingsKey(e *sdl.KeyboardEvent) {
 				*f += clipboardText()
 				u.setSaved = false
 			}
+		}
+	case sdl.K_x:
+		// Destructive, so it takes two presses and never a bare key.
+		if e.Keysym.Mod&sdl.KMOD_SHIFT == 0 {
+			break
+		}
+		if !u.setClearArmed {
+			u.setClearArmed = true
+			break
+		}
+		u.setClearArmed = false
+		if n, err := u.app.ClearImported(); err != nil {
+			log.Printf("clear imported: %v", err)
+		} else {
+			log.Printf("import: forgot %d imported marker(s)", n)
 		}
 	case sdl.K_BACKSPACE:
 		if f := u.setTarget(); f != nil && len(*f) > 0 {

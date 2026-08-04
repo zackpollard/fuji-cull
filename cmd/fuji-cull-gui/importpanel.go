@@ -14,7 +14,7 @@ func (u *ui) drawImportPanel() {
 	// Tall enough for the fields, both toggles AND the progress bar that
 	// appears once an import is running — the layout must not collapse at the
 	// exact moment you are watching it.
-	pw, ph := sc(640), sc(440)
+	pw, ph := sc(640), sc(470)
 	box := sdl.Rect{X: (w - pw) / 2, Y: (h - ph) / 2, W: pw, H: ph}
 	u.fillRect(sdl.Rect{X: 0, Y: 0, W: w, H: h}, sdl.Color{R: 0, G: 0, B: 0, A: 180})
 	u.fillRect(box, colPanel)
@@ -33,9 +33,17 @@ func (u *ui) drawImportPanel() {
 	y := box.Y + sc(20)
 	u.text(u.font, "IMPORT KEEPERS", colAmber, box.X+sc(24), y, false)
 	y += sc(34)
+	pending, skipped := u.app.PendingImportCounts(u.impReimport)
 	u.text(u.fontSm, fmt.Sprintf("shots marked keep: %d    files: %d    size: %.2f GB",
 		nShots, nFiles, float64(size)/1e9), colFG, box.X+sc(24), y, false)
-	y += sc(34)
+	y += sc(20)
+	if skipped > 0 {
+		u.text(u.fontSm, fmt.Sprintf("this run: %d shots  (%d already imported — skipped)", pending, skipped),
+			colAmber, box.X+sc(24), y, false)
+	} else {
+		u.text(u.fontSm, fmt.Sprintf("this run: %d shots", pending), colDim, box.X+sc(24), y, false)
+	}
+	y += sc(24)
 
 	field := func(label, val string, active bool) {
 		u.text(u.fontSm, label, colDim, box.X+sc(24), y, false)
@@ -81,6 +89,8 @@ func (u *ui) drawImportPanel() {
 		map[bool]string{true: "", false: "no server configured (⌘,)"}[u.immichReady])
 	toggle("keep local copy", u.impKeep, u.impField == 3, false,
 		map[bool]string{true: "", false: "staged, then deleted once verified"}[u.impKeep])
+	toggle("re-import already imported", u.impReimport, u.impField == 4, false,
+		map[bool]string{true: "sends finished events again", false: ""}[u.impReimport])
 	y += sc(6)
 
 	st := u.app.ImportState()
@@ -136,9 +146,9 @@ func (u *ui) importKey(e *sdl.KeyboardEvent) {
 	case sdl.K_TAB:
 		step := 1
 		if e.Keysym.Mod&sdl.KMOD_SHIFT != 0 {
-			step = 3
+			step = 4
 		}
-		u.impField = (u.impField + step) % 4
+		u.impField = (u.impField + step) % 5
 	case sdl.K_SPACE:
 		switch u.impField {
 		case 2:
@@ -147,10 +157,13 @@ func (u *ui) importKey(e *sdl.KeyboardEvent) {
 			}
 		case 3:
 			u.impKeep = !u.impKeep
+		case 4:
+			u.impReimport = !u.impReimport
 		}
 	case sdl.K_RETURN:
 		if err := u.app.StartImport(u.impDest, u.impAlbum,
-			cull.ImportOptions{Immich: u.impImmich && u.immichReady, KeepLocal: u.impKeep}); err != nil {
+			cull.ImportOptions{Immich: u.impImmich && u.immichReady, KeepLocal: u.impKeep,
+				Reimport: u.impReimport}); err != nil {
 			u.impError = err.Error()
 		} else {
 			u.impError = ""

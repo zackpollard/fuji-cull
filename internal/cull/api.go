@@ -239,5 +239,19 @@ func (a *App) StartImport(dest, album string, opt ImportOptions) error {
 	return a.importer.Start(a, d, al, opt)
 }
 
+// PendingImport reports what an import would carry and what it would hold back.
+func (a *App) PendingImportCounts(includeDone bool) (shots, skipped int) {
+	if !a.isReady() {
+		return 0, 0
+	}
+	return a.PendingImport(includeDone)
+}
+
+// ImportedCount is how many shots are recorded as already imported.
+func (a *App) ImportedCount() int { return len(a.session.ImportedKeys()) }
+
+// ClearImported forgets every imported marker; decisions are untouched.
+func (a *App) ClearImported() (int, error) { return a.session.ClearImported() }
+
 // ImportState returns the current import status snapshot.
 func (a *App) ImportState() ImportStatus { return a.importer.Status() }

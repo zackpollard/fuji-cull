@@ -76,8 +76,11 @@ class Api(private val base: String, private val key: String = "") {
         post("/api/decision", JSONObject().put("id", id).put("decision", decision.ifEmpty { "clear" }))
     }
 
-    suspend fun startImport(dest: String, album: String) = withContext(Dispatchers.IO) {
-        post("/api/import", JSONObject().put("dest", dest).put("album", album))
+    suspend fun startImport(dest: String, album: String, reimport: Boolean = false) = withContext(Dispatchers.IO) {
+        // reimport re-sends shots already imported; off by default so a
+        // finished event is not pushed into the next event's album.
+        post("/api/import", JSONObject().put("dest", dest).put("album", album)
+            .put("reimport", reimport))
     }
 
     suspend fun status(): JSONObject = withContext(Dispatchers.IO) {

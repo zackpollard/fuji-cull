@@ -70,6 +70,9 @@ const stageBufferBytes = 8 << 30 // 8 GiB
 type ImportOptions struct {
 	// Immich uploads to the configured server. Off imports to disk only.
 	Immich bool
+	// Reimport includes shots already imported. Off by default: the common
+	// case is a fresh event, not re-sending a finished one.
+	Reimport bool
 	// KeepLocal keeps the copies in dest. Off makes the copy a staging step:
 	// files land in a temp directory and are removed once the upload has been
 	// verified against the server, so nothing is deleted on trust.
@@ -95,9 +98,15 @@ func (im *Importer) Start(app *App, dest, album string, opt ImportOptions) error
 	if opt.KeepLocal && dest == "" {
 		return fmt.Errorf("no destination configured; pass --dest at startup or in the import request")
 	}
-	keepers := app.keeperFiles()
+	keepers, skipped := app.keeperFiles(opt.Reimport)
 	if len(keepers) == 0 {
+		if skipped > 0 {
+			return fmt.Errorf("every kept shot has already been imported (%d) — tick \"re-import already imported\" to send them again", skipped)
+		}
 		return fmt.Errorf("no shots marked as keep")
+	}
+	if skipped > 0 {
+		log.Printf("import: %d shot(s) already imported — skipping", skipped)
 	}
 
 	im.mu.Lock()
@@ -213,6 +222,16 @@ func (im *Importer) run(app *App, dest, album string, keepers []keeperFile, opt 
 		log.Printf("import failed: %v", err)
 	} else {
 		log.Printf("import complete: %d files -> %s", len(files), dest)
+		// "keep" is a queue: mark these done so the next event starts clean.
+		var ckeys []string
+		for _, k := range keepers {
+			if ck := app.catalog.CanonicalOf(k.shot.ID); ck != "" {
+				ckeys = append(ckeys, ck)
+			}
+		}
+		if err := app.session.MarkImported(ckeys, time.Now()); err != nil {
+			log.Printf("WARN: recording imported shots: %v", err)
+		}
 		if app.imcheck != nil {
 			// the pipeline just validated these on the server: badge them
 			seen := map[string]bool{}
@@ -381,12 +400,28 @@ func commit(tmp, target string) error {
 }
 
 // keeperFiles expands kept shots into their individual camera files.
-func (a *App) keeperFiles() []keeperFile {
+// keeperFiles returns the files to import. Shots already imported are skipped
+// unless includeDone, so "keep" behaves as a queue: finish one event and the
+// next import carries only what is new. Without this, a second import re-pulls
+// everything from the camera and — because a duplicate upload still returns an
+// asset id — files the whole previous event into the new album.
+func (a *App) keeperFiles(includeDone bool) (files []keeperFile, skipped int) {
 	decisions := a.session.Decisions()
+	done := a.session.ImportedKeys()
+	seenSkipped := map[string]bool{}
 	var out []keeperFile
 	for _, s := range a.catalog.Shots {
 		if decisions[s.ID] != "keep" {
 			continue
+		}
+		if !includeDone {
+			if k := a.catalog.CanonicalOf(s.ID); k != "" && done[k] != "" {
+				if !seenSkipped[s.ID] {
+					seenSkipped[s.ID] = true
+					skipped++
+				}
+				continue
+			}
 		}
 		exts := make([]string, 0, len(s.Files))
 		for ext := range s.Files {
@@ -397,5 +432,16 @@ func (a *App) keeperFiles() []keeperFile {
 			out = append(out, keeperFile{shot: s, ext: ext})
 		}
 	}
-	return out
+	return out, skipped
+}
+
+// PendingImport reports how many shots an import would carry, and how many are
+// held back as already imported — so the panel can say so before you start.
+func (a *App) PendingImport(includeDone bool) (shots, skipped int) {
+	files, skipped := a.keeperFiles(includeDone)
+	seen := map[string]bool{}
+	for _, f := range files {
+		seen[f.shot.ID] = true
+	}
+	return len(seen), skipped
 }

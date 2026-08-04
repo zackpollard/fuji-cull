@@ -42,6 +42,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -441,6 +442,9 @@ private fun CullScreen(
     var enginePosters by remember { mutableStateOf(true) } // assume until told otherwise
     var viewing by remember { mutableIntStateOf(-1) }
     var importing by remember { mutableStateOf("") }
+    // what the next import would send, and what it holds back as already done
+    var pendingShots by remember { mutableStateOf(0) }
+    var alreadyImported by remember { mutableStateOf(0) }
     var showImport by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
@@ -465,6 +469,10 @@ private fun CullScreen(
                 val st = api.status()
                 sick = st.optBoolean("bulkSick") || st.optBoolean("partSick")
                 enginePosters = st.optBoolean("posters")
+                st.optJSONObject("pending")?.let { p ->
+                    pendingShots = p.optInt("shots")
+                    alreadyImported = p.optInt("imported")
+                }
                 // cross-device sync: adopt the engine's merged decision map so
                 // decisions made on other devices appear here (was loaded once).
                 st.optJSONObject("decisions")?.let { d ->
@@ -756,10 +764,12 @@ private fun CullScreen(
         ImportDialog(
             initialAlbum = settings.album,
             immichConfigured = settings.url.isNotEmpty() && settings.key.isNotEmpty(),
-            onStart = { album ->
+            pendingShots = pendingShots,
+            alreadyImported = alreadyImported,
+            onStart = { album, reimport ->
                 importing = "importing…"
                 onAlbumUsed(album)
-                scope.launch { runCatching { api.startImport(importDest, album) } }
+                scope.launch { runCatching { api.startImport(importDest, album, reimport) } }
                 showImport = false
             },
             onCancel = { showImport = false },
@@ -770,9 +780,11 @@ private fun CullScreen(
 @Composable
 private fun ImportDialog(
     initialAlbum: String, immichConfigured: Boolean,
-    onStart: (String) -> Unit, onCancel: () -> Unit,
+    pendingShots: Int, alreadyImported: Int,
+    onStart: (String, Boolean) -> Unit, onCancel: () -> Unit,
 ) {
     var album by remember { mutableStateOf(initialAlbum) }
+    var reimport by remember { mutableStateOf(false) }
     Dialog(onDismissRequest = onCancel) {
         Column(
             Modifier.background(Panel).padding(20.dp),
@@ -794,9 +806,22 @@ private fun ImportDialog(
                     singleLine = true, modifier = Modifier.fillMaxWidth(),
                 )
             }
+            // "keep" is a queue: shots already imported drop out, so finishing
+            // one event does not re-send it into the next event's album.
+            if (alreadyImported > 0) {
+                Text(
+                    "$pendingShots shots this run  ($alreadyImported already imported — skipped)",
+                    color = Dim, style = MaterialTheme.typography.bodySmall,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = reimport, onCheckedChange = { reimport = it })
+                    Text("re-import already imported", color = Dim,
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 TextButton(onClick = onCancel) { Text("CANCEL", color = Dim) }
-                Button(onClick = { onStart(album) }) { Text("START") }
+                Button(onClick = { onStart(album, reimport) }) { Text("START") }
             }
         }
     }

@@ -20,6 +20,16 @@ struct ImportStatus: Decodable, Equatable {
     let message: String
     let error: String
     let dest: String
+    // Copy and upload run at the same time now, so they are counted apart.
+    let uploaded: Int?
+}
+
+// What the next import would carry. "keep" behaves as a queue: shots already
+// imported drop out, so a finished event is not sent again — and filed into
+// the wrong album.
+struct PendingImport: Decodable, Equatable {
+    let shots: Int
+    let imported: Int
 }
 
 struct AppState: Decodable {
@@ -47,9 +57,10 @@ struct EngineStatus: Decodable {
     let streaming: Bool
     let posters: Bool
     let importStatus: ImportStatus?
+    let pending: PendingImport?
 
     enum CodingKeys: String, CodingKey {
-        case counts, decisions, fetch, bulkSick, partSick, streaming, posters
+        case counts, decisions, fetch, bulkSick, partSick, streaming, posters, pending
         case importStatus = "import"
     }
 }
@@ -98,7 +109,9 @@ final class API {
     func decide(_ id: String, _ decision: String) async {
         await post("api/decision", ["id": id, "decision": decision.isEmpty ? "clear" : decision])
     }
-    func startImport(dest: String, album: String) async { await post("api/import", ["dest": dest, "album": album]) }
+    func startImport(dest: String, album: String, reimport: Bool = false) async {
+        await post("api/import", ["dest": dest, "album": album, "reimport": reimport])
+    }
     func retryShot(_ id: String) async { await post("api/retry", ["id": id]) }
     func loadVideo(_ id: String) async { await post("api/loadvideo", ["id": id]) }
     func releaseStream() async { await post("api/releasestream", [:]) }

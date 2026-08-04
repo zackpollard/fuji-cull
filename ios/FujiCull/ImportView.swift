@@ -10,6 +10,7 @@ struct ImportView: View {
     var album: String = ""
     @Environment(\.dismiss) private var dismiss
     @State private var dest: String = ""
+    @State private var reimport = false
     @State private var albumName: String = ""
 
     private var keepers: Int { model.counts["keep"] ?? 0 }
@@ -17,7 +18,11 @@ struct ImportView: View {
     private var running: Bool { status?.running ?? false }
 
     var body: some View {
-        NavigationStack {
+        // What this run would actually send, once the engine has told us.
+        let pending = model.pendingImport
+        let importCount = reimport ? keepers : (pending?.shots ?? keepers)
+        let importLabel = "Import \(importCount) keeper\(importCount == 1 ? "" : "s")"
+        return NavigationStack {
             Form {
                 Section("Destination") {
                     TextField("path", text: $dest)
@@ -32,13 +37,20 @@ struct ImportView: View {
                 }
 
                 Section {
-                    Button {
-                        model.startImport(dest: dest, album: albumName)
-                    } label: {
-                        Label("Import \(keepers) keeper\(keepers == 1 ? "" : "s")",
-                              systemImage: "square.and.arrow.down")
+                    // "keep" is a queue: shots already imported drop out, so a
+                    // finished event is not sent again — nor filed into the
+                    // next event's album.
+                    if let p = model.pendingImport, p.imported > 0 {
+                        Toggle("Re-import already imported", isOn: $reimport)
+                        Text("\(p.imported) already imported — skipped")
+                            .font(.footnote).foregroundStyle(.secondary)
                     }
-                    .disabled(keepers == 0 || running)
+                    Button {
+                        model.startImport(dest: dest, album: albumName, reimport: reimport)
+                    } label: {
+                        Label(importLabel, systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(importCount == 0 || running)
                 } footer: {
                     Text("Copies kept shots to the destination. Rejects and undecided are left on the card.")
                 }
