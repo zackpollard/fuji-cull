@@ -1,5 +1,5 @@
 diff --git a/cli/Session.cpp b/cli/Session.cpp
-index 76980c3..57ba254 100644
+index 76980c3..3f62ecb 100644
 --- a/cli/Session.cpp
 +++ b/cli/Session.cpp
 @@ -119,6 +119,21 @@ namespace cli
@@ -31,7 +31,7 @@ index 76980c3..57ba254 100644
 +		AddCommand("get-part", "<id> <offset> <size> <dst> reads a byte range of an object into <dst>",
 +			make_function([this](mtp::u32 id, const std::string &offset, const std::string &size, const LocalPath &dst) -> void { GetPart(id, offset, size, dst); }));
 +
-+		AddCommand("serve-parts", "persistent partial-read server: 'R <id> <offset> <size>' on stdin -> 'OK <n>' + raw bytes on stdout; 'Q' quits",
++		AddCommand("serve-parts", "persistent partial-read server: 'R <id> <offset> <size>' or 'N <id>' on stdin -> 'OK <n>' + raw bytes on stdout; 'Q' quits",
 +			make_function([this]() -> void { ServeParts(); }));
 +
  		AddCommand("get-thumb", "<file> downloads thumbnail for file",
@@ -190,7 +190,7 @@ index 76980c3..57ba254 100644
  	void Session::List(mtp::ObjectId parent, bool extended, bool recursive, const std::string &prefix)
  	{
  		using namespace mtp;
-@@ -694,6 +861,53 @@ namespace cli
+@@ -694,6 +861,78 @@ namespace cli
  		}
  	}
  
@@ -209,8 +209,15 @@ index 76980c3..57ba254 100644
 +	void Session::ServeParts()
 +	{
 +		// Persistent partial-read protocol for embedding applications:
-+		// request  'R <id> <offset> <size>\n'
++		// request  'R <id> <offset> <size>\n'  -> that byte range
++		// request  'N <id>\n'                  -> that object's filename
 +		// response 'OK <n>\n' followed by n raw bytes, or 'ERR <msg>\n'.
++		//
++		// N exists so a caller can confirm a handle still names the file it
++		// expects without paying for a fresh aft invocation (~4 s of session
++		// setup). Cameras rebind handles as files are added and removed, and
++		// a rebound handle otherwise hands back a different photo under the
++		// name the caller asked for — same size, no error, wrong image.
 +		// Marks the response start with a leading '\x01' so clients can skip
 +		// any library chatter on stdout.
 +		std::string line;
@@ -219,6 +226,24 @@ index 76980c3..57ba254 100644
 +			if (line == "Q")
 +				break;
 +			unsigned long long id = 0, off = 0, sz = 0;
++			if (sscanf(line.c_str(), "N %llu", &id) == 1)
++			{
++				try
++				{
++					auto info = _session->GetObjectInfo(mtp::ObjectId((mtp::u32)id));
++					const std::string &name = info.Filename;
++					printf("\x01OK %zu\n", name.size());
++					fflush(stdout);
++					fwrite(name.data(), 1, name.size(), stdout);
++					fflush(stdout);
++				}
++				catch (const std::exception &ex)
++				{
++					printf("\x01ERR %s\n", ex.what());
++					fflush(stdout);
++				}
++				continue;
++			}
 +			if (sscanf(line.c_str(), "R %llu %llu %llu", &id, &off, &sz) != 3)
 +			{
 +				printf("\x01ERR parse\n");

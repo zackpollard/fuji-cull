@@ -200,6 +200,12 @@ func (p *Prefetcher) streamFetch(st *streamState, idx int64) ([]byte, error) {
 			return nil, fmt.Errorf("stream closed")
 		}
 		if err != nil {
+			// A failed read leaves the session's framing in doubt; drop it so
+			// the next reader starts a clean one rather than inheriting it.
+			// (iOS streams through ICC, which has no shared session to drop.)
+			if srv, ok := st.srv.(*mtppart.Server); ok {
+				p.closePartsServerIf(srv)
+			}
 			return nil, err
 		}
 		st.chunks[idx] = data

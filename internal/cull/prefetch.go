@@ -17,6 +17,7 @@ import (
 
 	"github.com/zack/fuji-tools/internal/exif"
 	"github.com/zack/fuji-tools/internal/gphoto"
+	"github.com/zack/fuji-tools/internal/jpegmeta"
 	"github.com/zack/fuji-tools/internal/mtpcli"
 	"github.com/zack/fuji-tools/internal/mtppart"
 	"github.com/zack/fuji-tools/internal/photo"
@@ -72,8 +73,12 @@ type Prefetcher struct {
 	localThumbs   bool           // dir backend: thumbnails come from source files (sim path)
 	partSick      bool           // partial reads returned stale-buffer garbage
 	partSickAt    time.Time      // drives the recovery probe
-	bulkSick      bool           // bulk reads (get-id) returned stale-buffer garbage
-	bulkSickAt    time.Time
+	// emptyBatches counts consecutive batches where every pull came back with
+	// zero bytes — the "camera stopped answering" wedge, distinct from the
+	// stale-buffer one.
+	emptyBatches int
+	bulkSick     bool // bulk reads (get-id) returned stale-buffer garbage
+	bulkSickAt   time.Time
 
 	orient      map[string]uint8 // shot ID -> EXIF orientation (absent = unknown)
 	orientDirty bool
@@ -93,6 +98,9 @@ type Prefetcher struct {
 	partsSrv *mtppart.Server
 
 	onReady func(*photo.Shot) // optional hook: a verbatim file just landed
+	// onStaleHandles fires when the camera is proven to have rebound its
+	// object handles, so the catalog cache can be dropped and re-read.
+	onStaleHandles func()
 }
 
 type photoRank struct {
@@ -256,6 +264,17 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 			kind := "jpg"
 			if s.Kind == "video" {
 				kind = "mov"
+			}
+			// Size the file against what the camera says it should be. The old
+			// check only asked whether the file was non-empty, so a truncated
+			// leftover was adopted as ready and never re-pulled — the viewer
+			// showed a broken photo for a shot the engine called good.
+			// RAF-only shots are exempt: their display file is a preview we
+			// extracted, not a camera-verbatim copy.
+			if want := verbatimSize(s); want > 0 && st.Size() != want {
+				os.Remove(path)
+				purged++
+				continue
 			}
 			if !mediaValid(path, kind) {
 				os.Remove(path)
@@ -537,6 +556,19 @@ func (p *Prefetcher) partsReadAt(ctx context.Context, objID string, off, size in
 	timeout := 20*time.Second + time.Duration(size>>20)*2*time.Second
 	select {
 	case r := <-ch:
+		// A read that returns nothing without saying why is a dead session, not
+		// an empty file: the caller cannot tell it from a legitimate end-of-
+		// object, so it wrote a zero-byte file, reported success, and the
+		// prefetcher retried the same shot forever against a session that could
+		// never answer. Treat it as the failure it is and recycle the session
+		// so the next attempt starts a fresh one.
+		if r.err == nil && len(r.data) == 0 && size > 0 {
+			p.closePartsServerIf(srv)
+			if ctx.Err() == nil {
+				mtpcli.NoteTransportResult(true)
+			}
+			return nil, fmt.Errorf("partial read returned no data for %s at offset %d — session was dead", objID, off)
+		}
 		if r.err != nil {
 			p.closePartsServerIf(srv) // process likely dead; reopen next call
 			// feed the link-dead detector: a stale fd (post-reset, wedged
@@ -1336,8 +1368,27 @@ func mediaValid(path, kind string) bool {
 	case "mov":
 		return string(b[4:8]) == "ftyp"
 	default:
-		return b[0] == 0xFF && b[1] == 0xD8
+		if b[0] != 0xFF || b[1] != 0xD8 {
+			return false
+		}
+		// A truncated transfer still starts like a JPEG, so the header alone
+		// proves nothing: it passed every check and was cached as good, and
+		// the viewer then failed to decode a photo the engine reported as
+		// ready. Require the end-of-image marker too.
+		return jpegComplete(path)
 	}
+}
+
+// verbatimSize is the size the display file should have when it is a
+// camera-verbatim copy, or 0 when it is something we generated locally.
+func verbatimSize(s *photo.Shot) int64 {
+	switch {
+	case s.Kind == "video":
+		return s.Sizes[s.DisplayExt()]
+	case s.Files["JPG"] != "":
+		return s.Sizes["JPG"]
+	}
+	return 0 // RAF-only: displayPath holds an extracted preview
 }
 
 // LinkSick reports tripped camera-transfer circuit breakers for the UIs:
@@ -1637,18 +1688,33 @@ func (p *Prefetcher) fetchItemsViaParts(ctx context.Context, items []fetchItem, 
 				out.Close()
 				return err
 			}
-			if len(data) > 0 {
-				if _, werr := out.Write(data); werr != nil {
-					out.Close()
-					return werr
-				}
-				off += int64(len(data))
+			// Only an empty read means end-of-object. A short-but-non-empty
+			// read is normal mid-transfer — MTP is free to return less than
+			// asked — and treating it as EOF truncated every file a fraction
+			// short of its size, which then failed validation and was retried
+			// forever against a camera that was answering perfectly well.
+			if len(data) == 0 {
+				break
 			}
-			if int64(len(data)) < want {
-				break // short read: end of object
+			if _, werr := out.Write(data); werr != nil {
+				out.Close()
+				return werr
 			}
+			off += int64(len(data))
 		}
 		out.Close()
+		// Guard the caller's contract. A short read is only end-of-object when
+		// we have all the bytes we were promised; otherwise the transfer was
+		// cut off, and returning nil hands the caller a truncated file with no
+		// error to act on — which it then retries forever, since nothing
+		// distinguishes "this shot is empty" from "the session died mid-file".
+		switch {
+		case off == 0:
+			return fmt.Errorf("%s/%s: partial-read session produced no data", it.CameraDir, it.Name)
+		case sizes[n] > 0 && off < sizes[n]:
+			return fmt.Errorf("%s/%s: partial-read session stopped at %d of %d bytes",
+				it.CameraDir, it.Name, off, sizes[n])
+		}
 	}
 	return nil
 }
@@ -1724,14 +1790,29 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 	useParts := p.partsOK()
 	fetchDone := make(chan error, 1)
 	go func() {
-		if useParts {
-			fetchDone <- p.fetchItemsViaParts(fctx, items, sizes)
-		} else {
+		if !useParts {
 			fetchDone <- p.backend.Fetch(fctx, items)
+			return
 		}
+		err := p.fetchItemsViaParts(fctx, items, sizes)
+		// The partial-read session on this camera can stop delivering a
+		// fraction short of the end of a file and then return nothing for the
+		// tail, while a one-shot pull of the same object returns it complete
+		// and byte-exact. Rather than fail the batch — which retried forever
+		// against a camera that was answering perfectly well — drop the
+		// session and finish the job the way we know works.
+		if err != nil && fctx.Err() == nil {
+			log.Printf("prefetch: partial-read session came up short (%v) — retrying batch with one-shot pulls", err)
+			p.closePartsServer()
+			err = p.backend.Fetch(fctx, items)
+		}
+		fetchDone <- err
 	}()
 
 	promote := func(i int) {
+		p.mu.Lock()
+		p.emptyBatches = 0 // the camera answered; the streak is broken
+		p.mu.Unlock()
 		if !mediaValid(tmps[i], kinds[i]) {
 			os.Remove(tmps[i])
 			log.Printf("prefetch: %s: transfer content is not %s — camera bulk reads are replaying stale buffers; POWER-CYCLE the camera (automated pulls paused, navigation still probes)",
@@ -1743,6 +1824,31 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 			finished[i] = true
 			fcancel() // the rest of the batch is garbage too; don't pull ~290 MB of it
 			return
+		}
+		// Right size, right media type — but is it the right FILE? With a live
+		// session the camera can be asked outright for one round trip, so
+		// every promoted file is checked by name; the EXIF timestamp is the
+		// fallback where no session exists (one-shot pulls, iOS).
+		if name, ok := p.handleNameViaSession(targets[i].ObjectIDs[srcExtOf(targets[i])]); ok {
+			if want := targets[i].Files[srcExtOf(targets[i])]; want != "" && name != want {
+				log.Printf("prefetch: %s: handle names %q, not %q — discarding and re-reading the catalog",
+					targets[i].ID, name, want)
+				os.Remove(tmps[i])
+				p.setState(targets[i].ID, "failed", "handle pointed at a different file — catalog re-read scheduled")
+				finished[i] = true
+				if p.onStaleHandles != nil {
+					p.onStaleHandles()
+				}
+				return
+			}
+		} else if p.identitySuspect(targets[i], tmps[i]) {
+			if p.checkHandleRebound(targets[i], srcExtOf(targets[i])) {
+				log.Printf("prefetch: %s: downloaded bytes are a different photo than the catalog expected — discarding", targets[i].ID)
+				os.Remove(tmps[i])
+				p.setState(targets[i].ID, "failed", "handle pointed at a different file — catalog re-read scheduled")
+				finished[i] = true
+				return
+			}
 		}
 		if err := p.finalizeShot(targets[i], tmps[i]); err != nil {
 			log.Printf("prefetch: %s: %v", targets[i].ID, err)
@@ -1803,6 +1909,19 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 					continue
 				}
 				msg := "pull produced no data for " + s.ID
+				if st, serr := os.Stat(tmps[i]); serr == nil && st.Size() > 0 {
+					msg = fmt.Sprintf("incomplete pull for %s: %d of %d bytes", s.ID, st.Size(), expect[i])
+					// A pull that lands short is the only cheap hint that the
+					// handle we asked for is no longer the file we think it
+					// is. Ask the camera outright: if the handle now names a
+					// different file, every cached binding is suspect, and
+					// carrying on would keep serving the WRONG photo under
+					// the right name — the size check is the only thing
+					// standing between that and a wrong upload.
+					if p.checkHandleRebound(s, srcExtOf(s)) {
+						msg += " — camera has rebound its object handles; re-reading the catalog"
+					}
+				}
 				if fetchErr != nil {
 					msg = fetchErr.Error()
 				}
@@ -1815,6 +1934,22 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 			}
 			if failLogged > 1 {
 				log.Printf("prefetch: … and %d more shots in this batch failed the same way", failLogged-1)
+			}
+			// A camera handing back nothing at all is as wedged as one handing
+			// back stale buffers, but only the latter tripped the breaker — so
+			// this failure retried forever, hammering a camera that could not
+			// answer and leaving the UI with no idea anything was wrong. Two
+			// consecutive all-empty batches is the signal: one can be a
+			// preemption or a single bad file.
+			if fetchErr == nil && failLogged == len(targets) && failLogged > 0 {
+				p.mu.Lock()
+				p.emptyBatches++
+				n := p.emptyBatches
+				if n >= 2 && !p.bulkSick {
+					p.bulkSick, p.bulkSickAt = true, time.Now()
+					log.Printf("prefetch: %d consecutive batches returned no data — the camera has stopped answering; UNPLUG THE USB CABLE and reconnect (turning the camera off does not re-enumerate it). Automated pulls paused.", n)
+				}
+				p.mu.Unlock()
 			}
 			return
 		case <-tick.C:
@@ -1864,4 +1999,119 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return out.Close()
+}
+
+// identitySuspect reports whether a downloaded file's own EXIF capture time
+// disagrees with the timestamp the camera gave for that object.
+//
+// Size is not identity. A handle rebound to a different file of the same byte
+// count passes the size check, and mediaValid only confirms the bytes are a
+// JPEG — not WHICH JPEG. The file's embedded capture time is the cheapest
+// thing that actually distinguishes them, and it is already read for
+// orientation, so this costs nothing extra.
+//
+// Returns false whenever either side is unknown (videos carry no EXIF
+// DateTimeOriginal, and older cached listings have no timestamp): the point is
+// to catch a definite disagreement, never to reject on absence.
+func (p *Prefetcher) identitySuspect(s *photo.Shot, path string) bool {
+	if s.Kind != "photo" || s.Taken == "" {
+		return false
+	}
+	want := captureUnix(normalizePTPTime(s.Taken))
+	if want == 0 {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	head := make([]byte, 64<<10)
+	n, _ := io.ReadFull(f, head)
+	f.Close()
+	if n < 4 {
+		return false
+	}
+	got := captureUnix(jpegmeta.DateTimeOriginal(head[:n]))
+	if got == 0 {
+		return false
+	}
+	// A second of slack: the camera's listing and the EXIF field are written
+	// by the same clock but not necessarily the same instant.
+	if d := got - want; d > 1 || d < -1 {
+		return true
+	}
+	return false
+}
+
+// normalizePTPTime turns "20260714T151530" into the EXIF-style layout that
+// captureUnix parses.
+func normalizePTPTime(raw string) string {
+	if len(raw) < 15 || raw[8] != 'T' {
+		return raw
+	}
+	return raw[0:4] + ":" + raw[4:6] + ":" + raw[6:8] + " " +
+		raw[9:11] + ":" + raw[11:13] + ":" + raw[13:15]
+}
+
+// srcExtOf is the extension fetchBatch would have pulled for a shot.
+func srcExtOf(s *photo.Shot) string {
+	switch {
+	case s.Kind == "video":
+		return s.DisplayExt()
+	case s.Files["JPG"] != "":
+		return "JPG"
+	case s.Files["RAF"] != "":
+		return "RAF"
+	}
+	return ""
+}
+
+// handleNames asks the open partial-read session what a handle is called.
+// Falls back to nothing when there is no session — the caller then relies on
+// the slower confirmation path.
+func (p *Prefetcher) handleNameViaSession(objID string) (string, bool) {
+	p.mu.Lock()
+	srv := p.partsSrv
+	p.mu.Unlock()
+	if srv == nil {
+		return "", false
+	}
+	name, err := srv.NameOf(objID)
+	if err != nil || name == "" {
+		return "", false
+	}
+	return name, true
+}
+
+// checkHandleRebound asks the camera what a handle actually points at and
+// reports whether it has been rebound to a different file. On a mismatch it
+// drops the catalog cache so the next start re-reads the card, because every
+// other cached binding is equally suspect.
+func (p *Prefetcher) checkHandleRebound(s *photo.Shot, ext string) bool {
+	objID := s.ObjectIDs[ext]
+	want := s.Files[ext]
+	if objID == "" || want == "" {
+		return false
+	}
+	got, ok := p.handleNameViaSession(objID)
+	if !ok {
+		// No session: fall back to a one-shot lookup (slow, but this only
+		// runs when something already looks wrong).
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		entries, err := mtpcli.InfoByIDs(ctx, []string{objID})
+		if err != nil || len(entries) == 0 {
+			return false
+		}
+		got = entries[0].Name
+	}
+	if got == want {
+		return false
+	}
+	log.Printf("prefetch: handle %s is %q on the camera but %q in the catalog — the card's object handles have been rebound; dropping the catalog cache (restart, or Settings -> full rescan, to re-read it)",
+		objID, got, want)
+	if p.onStaleHandles != nil {
+		p.onStaleHandles()
+	}
+	return true
 }

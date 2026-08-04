@@ -296,6 +296,9 @@ func startWith(o Options, backend Backend, session *Session, cache string) (*App
 		if prefetch.localThumbs {
 			go prefetch.localThumbSweep()
 		}
+		// Proven-stale handles drop the catalog cache so the next start re-reads
+		// the card rather than serving the wrong object under the right name.
+		prefetch.onStaleHandles = func() { app.Rescan() }
 		app.finishInit(catalog, prefetch)
 		if app.imcheck != nil {
 			go app.imcheck.Backfill()

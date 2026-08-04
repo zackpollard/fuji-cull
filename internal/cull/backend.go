@@ -38,6 +38,7 @@ type listing struct {
 	Name     string // e.g. "DSCF0001.JPG"
 	Size     int64
 	Date     string // capture day "2006-01-02"; "" unknown
+	Taken    string // camera's raw timestamp, kept for identity checking
 	ObjectID string // MTP object ID (cli backend)
 }
 
@@ -101,6 +102,11 @@ func buildCatalog(items []listing) *Catalog {
 		}
 		if s.Date == "" && it.Date != "" {
 			s.Date = it.Date
+		}
+		// The JPG's timestamp is the one to verify against: it is the file the
+		// viewer pulls, and a RAF sidecar shares the same capture moment.
+		if it.Taken != "" && (s.Taken == "" || ext == "JPG") {
+			s.Taken = it.Taken
 		}
 	}
 
@@ -222,56 +228,126 @@ func (b *cliBackend) listFolder(ctx context.Context, dir string, bulkOK *bool) (
 }
 
 // deltaFolder refreshes a cached folder listing with a handle diff: one
-// GetObjectHandles request (always supported) plus per-file info for NEW
-// handles only. Re-listing the highest folder in full cost ~40s per attach
-// on a 7,983-file folder; a no-change diff costs one round-trip. Deletions
-// in camera drop out of the catalog automatically.
-func (b *cliBackend) deltaFolder(ctx context.Context, dir, rel, folder string, cached []listing) ([]listing, bool, error) {
-	ids, err := mtpcli.LsHandles(ctx, dir)
-	if err != nil {
-		return nil, false, err
-	}
-	live := make(map[string]bool, len(ids))
-	for _, id := range ids {
-		live[id] = true
-	}
-	known := make(map[string]bool, len(cached))
-	keep := make([]listing, 0, len(cached))
-	removed := 0
+// bulk property listing (two requests) rather than per-file info, so a
+// re-attach costs seconds instead of the ~40s a full re-list took on a
+// 7,983-file folder. Deletions in camera drop out of the catalog
+// automatically, and capture dates are reused from cache by filename.
+func (b *cliBackend) deltaFolder(ctx context.Context, dir, rel, folder string, cached []listing, group []mtpcli.AllEntry) ([]listing, bool, error) {
+	// Re-read the folder's handle->name bindings every time rather than
+	// trusting the cached ones.
+	//
+	// The old diff only asked which handles still EXIST, and kept the cached
+	// name for any that did. But a camera is free to rebind a live handle to a
+	// different object — after deletes, a format, or simply more shooting —
+	// and this card did exactly that, shifting every binding by one file. The
+	// cache then paired the right name and size with the wrong handle, so each
+	// fetch pulled a DIFFERENT photo and stopped at its length. The size check
+	// turned that into an unkillable retry loop; two files of equal size would
+	// instead have been culled and uploaded as the wrong image.
+	//
+	// lsprops is two bulk requests per folder, so the authoritative answer is
+	// cheap. The cache still earns its keep: it carries capture dates, which
+	// cost a per-file lookup, and those are keyed by NAME — the identity that
+	// does not move.
+	// `ls` is the authoritative handle->name mapping and is supported
+	// everywhere; lsprops would give sizes too but this camera answers it with
+	// UnsupportedSpecByDepth — and does so as a successful exit with no rows,
+	// which is why an earlier attempt read every folder as empty.
+	prevByName := make(map[string]listing, len(cached))
 	for _, l := range cached {
-		known[l.ObjectID] = true
-		if live[l.ObjectID] {
-			keep = append(keep, l)
-		} else {
-			removed++
-		}
+		prevByName[l.Name] = l
 	}
-	var newIDs []string
-	for _, id := range ids {
-		if !known[id] {
-			newIDs = append(newIDs, id)
-		}
-	}
-	if len(newIDs) > 0 {
-		entries, err := mtpcli.InfoByIDs(ctx, newIDs)
-		if err != nil {
-			return nil, false, err
-		}
-		for _, e := range entries {
+	// The card-wide listing already has everything: handle, name, size and
+	// date, authoritative and free. Use it when discovery managed to fetch it.
+	if len(group) > 0 {
+		fresh := make([]listing, 0, len(group))
+		rebound := 0
+		for _, e := range group {
 			if _, _, ok := photo.SplitMedia(e.Name); !ok {
 				continue
 			}
-			keep = append(keep, listing{
+			if old, ok := prevByName[e.Name]; ok && old.ObjectID != e.ObjectID {
+				rebound++
+			}
+			fresh = append(fresh, listing{
 				Dir: rel, Folder: folder, Name: e.Name,
-				Size: e.Size, Date: captureDay(e.Date), ObjectID: e.ObjectID,
+				Size: e.Size, Date: captureDay(e.Date), Taken: e.Date, ObjectID: e.ObjectID,
 			})
 		}
+		changed := rebound > 0 || len(fresh) != len(cached)
+		if rebound > 0 {
+			log.Printf("  %s: %d handle(s) now point at a different file — the camera rebound them; rebuilt from the card", rel, rebound)
+		}
+		return fresh, changed, nil
 	}
-	changed := removed > 0 || len(newIDs) > 0
-	if changed {
-		log.Printf("  %s: +%d new, -%d removed (handle diff)", rel, len(newIDs), removed)
+
+	live, err := mtpcli.LsIDs(ctx, dir)
+	if err != nil {
+		return nil, false, err
 	}
-	return keep, changed, nil
+	if len(live) == 0 && len(cached) > 0 {
+		// A folder we have seen files in does not become empty; treat it as a
+		// listing failure so the caller re-lists rather than silently dropping
+		// every shot in it.
+		return nil, false, fmt.Errorf("listing returned no entries for a folder with %d cached files", len(cached))
+	}
+	prev := make(map[string]listing, len(cached))
+	for _, l := range cached {
+		prev[l.Name] = l
+	}
+
+	fresh := make([]listing, 0, len(live))
+	var unknown []string // handles whose size/date we do not have cached
+	rebound := 0
+	for _, e := range live {
+		if _, _, ok := photo.SplitMedia(e.Name); !ok {
+			continue
+		}
+		old, known := prev[e.Name]
+		if known && old.ObjectID != e.ObjectID {
+			rebound++
+		}
+		l := listing{Dir: rel, Folder: folder, Name: e.Name, ObjectID: e.ObjectID}
+		if known {
+			// size and capture time belong to the file, not the handle
+			l.Size, l.Date, l.Taken = old.Size, old.Date, old.Taken
+		}
+		if l.Size == 0 || l.Date == "" {
+			unknown = append(unknown, e.ObjectID)
+		}
+		fresh = append(fresh, l)
+	}
+
+	// Only files we have never described cost a lookup.
+	if len(unknown) > 0 {
+		entries, err := mtpcli.InfoByIDs(ctx, unknown)
+		if err != nil {
+			return nil, false, err
+		}
+		byID := make(map[string]mtpcli.Entry, len(entries))
+		for _, e := range entries {
+			byID[e.ObjectID] = e
+		}
+		for i := range fresh {
+			if fresh[i].Size != 0 && fresh[i].Date != "" {
+				continue
+			}
+			if e, ok := byID[fresh[i].ObjectID]; ok {
+				fresh[i].Size = e.Size
+				fresh[i].Date = captureDay(e.Date)
+				fresh[i].Taken = e.Date
+			}
+		}
+	}
+
+	added := len(fresh) - len(prev)
+	changed := rebound > 0 || added != 0 || len(unknown) > 0
+	if rebound > 0 {
+		log.Printf("  %s: %d handle(s) now point at a different file — the camera rebound them; rebuilt from the card", rel, rebound)
+	} else if changed {
+		log.Printf("  %s: %d file(s), %d newly described (refreshed)", rel, len(fresh), len(unknown))
+	}
+	return fresh, changed, nil
 }
 
 func (b *cliBackend) Name() string { return "cli" }
@@ -295,6 +371,20 @@ func (b *cliBackend) Discover(ctx context.Context, progress func(stage string, f
 	// first uncached folder; entries grouped by parent handle.
 	var byParent map[string][]mtpcli.AllEntry
 	allTried := false
+	// Try the card-wide listing up front: three requests for every object's
+	// handle, name, size and date. That is cheaper than per-folder listing AND
+	// it is what lets cached folders be re-validated for free — handles move,
+	// and a cache that trusts them serves the wrong object.
+	if all, err := mtpcli.LsPropsAll(ctx); err == nil && len(all) > 0 {
+		byParent = make(map[string][]mtpcli.AllEntry, 64)
+		for _, e := range all {
+			byParent[e.ParentID] = append(byParent[e.ParentID], e)
+		}
+		allTried = true
+		log.Printf("catalog: card-wide bulk listing — %d objects in 3 requests", len(all))
+	} else if err != nil {
+		log.Printf("card-wide bulk listing unavailable (%.120v) — per-folder listing", err)
+	}
 	var out []listing
 	for _, root := range b.roots {
 		progress(root, len(out))
@@ -323,7 +413,7 @@ func (b *cliBackend) Discover(ctx context.Context, progress func(stage string, f
 			// cached folders refresh via a one-request handle diff; only
 			// never-seen folders pay for a listing
 			if cached, ok := cache.Folders[key]; ok {
-				fresh, changed, err := b.deltaFolder(ctx, root+"/"+folder, rel, folder, cached)
+				fresh, changed, err := b.deltaFolder(ctx, root+"/"+folder, rel, folder, cached, byParent[folderIDs[folder]])
 				if err == nil {
 					out = append(out, fresh...)
 					usedCache++
@@ -355,7 +445,7 @@ func (b *cliBackend) Discover(ctx context.Context, progress func(stage string, f
 					}
 					fresh = append(fresh, listing{
 						Dir: rel, Folder: folder, Name: e.Name,
-						Size: e.Size, Date: captureDay(e.Date), ObjectID: e.ObjectID,
+						Size: e.Size, Date: captureDay(e.Date), Taken: e.Date, ObjectID: e.ObjectID,
 					})
 				}
 			} else {
@@ -369,7 +459,7 @@ func (b *cliBackend) Discover(ctx context.Context, progress func(stage string, f
 					}
 					fresh = append(fresh, listing{
 						Dir: rel, Folder: folder, Name: e.Name,
-						Size: e.Size, Date: captureDay(e.Date), ObjectID: e.ObjectID,
+						Size: e.Size, Date: captureDay(e.Date), Taken: e.Date, ObjectID: e.ObjectID,
 					})
 				}
 			}
