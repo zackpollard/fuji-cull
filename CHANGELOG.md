@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.8.0](https://github.com/zackpollard/fuji-cull/compare/v1.7.0...v1.8.0) (2026-08-04)
+
+
+### Features
+
+* **import:** per-file upload progress and rate ([1aa18bc](https://github.com/zackpollard/fuji-cull/commit/1aa18bcae94a05aa52626a233356ef5750a1cde8))
+* **import:** treat "keep" as a queue so a finished event stays finished ([1e1cd41](https://github.com/zackpollard/fuji-cull/commit/1e1cd416f56f606f930fbf3bf29c54910dad4e9c))
+
+
+### Bug Fixes
+
+* **camera:** never serve bytes that are not the file that was asked for ([853d29e](https://github.com/zackpollard/fuji-cull/commit/853d29e27061937827d8785ab0a095e3c82b675d))
+
 ## [1.7.0](https://github.com/zackpollard/fuji-cull/compare/v1.6.0...v1.7.0) (2026-07-30)
 
 
