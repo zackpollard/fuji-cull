@@ -14,7 +14,7 @@ func (u *ui) drawImportPanel() {
 	// Tall enough for the fields, both toggles AND the progress bar that
 	// appears once an import is running — the layout must not collapse at the
 	// exact moment you are watching it.
-	pw, ph := sc(640), sc(470)
+	pw, ph := sc(640), sc(510)
 	box := sdl.Rect{X: (w - pw) / 2, Y: (h - ph) / 2, W: pw, H: ph}
 	u.fillRect(sdl.Rect{X: 0, Y: 0, W: w, H: h}, sdl.Color{R: 0, G: 0, B: 0, A: 180})
 	u.fillRect(box, colPanel)
@@ -128,6 +128,24 @@ func (u *ui) drawImportPanel() {
 		bar("download from camera", st.Done, st.Total, colKeep)
 		if uploading {
 			bar("upload to Immich", st.Uploaded, st.Total, colImmich)
+			// Per-file bytes: a multi-GB video sits on one file for minutes,
+			// and the file counter above does not move at all while it does.
+			if st.FileTotal > 0 {
+				pct := int(st.FileSent * 100 / st.FileTotal)
+				label := fmt.Sprintf("%-22s %s / %s  (%d%%)", trimName(st.File),
+					humanBytes(st.FileSent), humanBytes(st.FileTotal), pct)
+				if st.RateBps > 0 {
+					label += "   " + humanRate(st.RateBps)
+				}
+				u.text(u.fontSm, label, colFG, box.X+sc(24), y, false)
+				y += sc(20)
+				track := sdl.Rect{X: box.X + sc(24), Y: y, W: pw - sc(48), H: sc(8)}
+				u.fillRect(track, colBG)
+				fill := track
+				fill.W = int32(float64(track.W) * float64(st.FileSent) / float64(st.FileTotal))
+				u.fillRect(fill, colAmber)
+				y += sc(18)
+			}
 		}
 		y += sc(20)
 		if st.Error != "" {
@@ -199,4 +217,36 @@ func (u *ui) importText(t string) {
 	case 1:
 		u.impAlbum += t
 	}
+}
+
+// humanBytes formats a byte count for a progress line.
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.2f GB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	default:
+		return fmt.Sprintf("%d KB", n/1024)
+	}
+}
+
+// humanRate formats an upload rate, in whichever unit keeps it readable.
+func humanRate(bps float64) string {
+	switch {
+	case bps >= 1<<20:
+		return fmt.Sprintf("%.1f MB/s", bps/(1<<20))
+	case bps >= 1<<10:
+		return fmt.Sprintf("%.0f KB/s", bps/(1<<10))
+	default:
+		return fmt.Sprintf("%.0f B/s", bps)
+	}
+}
+
+// trimName keeps the panel from wrapping on a long filename.
+func trimName(n string) string {
+	if len(n) > 20 {
+		return n[:19] + "…"
+	}
+	return n
 }

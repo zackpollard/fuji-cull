@@ -20,6 +20,9 @@ type Client struct {
 	URL    string
 	APIKey string
 	HTTP   *http.Client
+	// OnProgress, when set, is called as an upload body is consumed. Uploads
+	// run concurrently, so it reports which file each update belongs to.
+	OnProgress func(name string, sent, total int64)
 }
 
 func NewClient(url, key string) *Client {
@@ -47,6 +50,27 @@ type uploadResponse struct {
 
 // Upload sends one asset to Immich using streaming multipart (memory-safe for multi-GB files).
 // Returns assetID, duplicate flag.
+// countingReader reports bytes as they are read. The multipart body streams
+// through an io.Pipe, so the writer only advances as the HTTP transport
+// consumes it — which makes this real upload progress, not just how much has
+// been read off disk.
+type countingReader struct {
+	r  io.Reader
+	n  int64
+	cb func(sent int64)
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if n > 0 {
+		c.n += int64(n)
+		if c.cb != nil {
+			c.cb(c.n)
+		}
+	}
+	return n, err
+}
+
 func (c *Client) Upload(ctx context.Context, f *photo.FileEntry) (string, bool, error) {
 	file, err := os.Open(f.LocalPath)
 	if err != nil {
@@ -92,7 +116,15 @@ func (c *Client) Upload(ctx context.Context, f *photo.FileEntry) (string, bool, 
 			pw.CloseWithError(err)
 			return
 		}
-		if _, err := io.Copy(part, file); err != nil {
+		var src io.Reader = file
+		if c.OnProgress != nil {
+			// A 4 GB video is otherwise a progress bar that does not move for
+			// minutes; per-file bytes are the only honest signal there.
+			total := st.Size()
+			name := filepath.Base(f.LocalPath)
+			src = &countingReader{r: file, cb: func(sent int64) { c.OnProgress(name, sent, total) }}
+		}
+		if _, err := io.Copy(part, src); err != nil {
 			pw.CloseWithError(err)
 			return
 		}

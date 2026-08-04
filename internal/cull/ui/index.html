@@ -398,6 +398,8 @@
           <div class="bar"><i id="impBar"></i></div>
           <span class="row"><span id="impCount">0 / 0</span></span>
           <span class="row"><span id="impUpCount"></span></span>
+          <span class="row"><span id="impFile"></span></span>
+          <div class="bar"><i id="impFileBar"></i></div>
           <span class="error" id="impError"></span>
         </div>
         <div class="actions">
@@ -470,6 +472,17 @@ async function api(path, body) {
 }
 
 let toastTimer;
+function fmtBytes(n) {
+  if (n >= 1073741824) return (n / 1073741824).toFixed(2) + " GB";
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+  return Math.round(n / 1024) + " KB";
+}
+function fmtRate(bps) {
+  if (bps >= 1048576) return (bps / 1048576).toFixed(1) + " MB/s";
+  if (bps >= 1024) return Math.round(bps / 1024) + " KB/s";
+  return Math.round(bps) + " B/s";
+}
+
 function toast(msg) {
   const t = $("toast");
   t.textContent = msg; t.classList.add("show");
@@ -1491,6 +1504,13 @@ function renderImport() {
   $("impUpCount").textContent = p.uploaded !== undefined && p.uploaded !== null
     ? "immich " + p.uploaded + " / " + (p.total || 0) : "";
   $("impBar").style.width = p.total ? (100 * p.done / p.total) + "%" : "0";
+  // Per-file bytes: a multi-GB video holds the file counter still for minutes.
+  const ft = p.fileTotal || 0, fs = p.fileSent || 0;
+  $("impFile").textContent = ft
+    ? (p.file || "") + "  " + fmtBytes(fs) + " / " + fmtBytes(ft)
+      + (p.rateBps ? "   " + fmtRate(p.rateBps) : "")
+    : "";
+  $("impFileBar").style.width = ft ? (100 * fs / ft) + "%" : "0";
   $("impError").textContent = p.error || "";
   $("impGo").disabled = !!p.running;
 }

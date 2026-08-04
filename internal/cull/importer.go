@@ -29,13 +29,19 @@ type ImportStatus struct {
 	// Uploaded counts files pushed to Immich. It is separate from Done
 	// because the two now run at the same time: sharing one counter made the
 	// number jump between copy and upload progress.
-	Uploaded   int    `json:"uploaded"`
-	Total      int    `json:"total"`
-	Message    string `json:"message"`
-	Error      string `json:"error"`
-	Dest       string `json:"dest"`
-	StartedAt  string `json:"startedAt,omitempty"`
-	FinishedAt string `json:"finishedAt,omitempty"`
+	Uploaded int `json:"uploaded"`
+	Total    int `json:"total"`
+	// The upload currently worth showing — a large video otherwise looks like
+	// a stalled import for minutes at a time — plus the current rate.
+	File       string  `json:"file,omitempty"`
+	FileSent   int64   `json:"fileSent,omitempty"`
+	FileTotal  int64   `json:"fileTotal,omitempty"`
+	RateBps    float64 `json:"rateBps,omitempty"`
+	Message    string  `json:"message"`
+	Error      string  `json:"error"`
+	Dest       string  `json:"dest"`
+	StartedAt  string  `json:"startedAt,omitempty"`
+	FinishedAt string  `json:"finishedAt,omitempty"`
 }
 
 func (im *Importer) Status() ImportStatus {
@@ -166,6 +172,11 @@ func (im *Importer) run(app *App, dest, album string, keepers []keeperFile, opt 
 		opts.BufferBytes = stageBufferBytes
 		opts.DeleteAfterUpload = true
 	}
+	opts.FileProgress = func(name string, sent, total int64, bps float64) {
+		im.update(func(s *ImportStatus) {
+			s.File, s.FileSent, s.FileTotal, s.RateBps = name, sent, total, bps
+		})
+	}
 	opts.Progress = func(phase string, done, total int) {
 		im.update(func(s *ImportStatus) {
 			if phase == "upload" {
@@ -201,6 +212,7 @@ func (im *Importer) run(app *App, dest, album string, keepers []keeperFile, opt 
 	}
 
 	im.update(func(s *ImportStatus) {
+		s.File, s.FileSent, s.FileTotal, s.RateBps = "", 0, 0, 0
 		s.Running = false
 		s.FinishedAt = time.Now().Format(time.RFC3339)
 		if err != nil {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/zack/fuji-tools/internal/exif"
 	"github.com/zack/fuji-tools/internal/hashutil"
@@ -49,6 +50,13 @@ type Streamer struct {
 
 	mu      sync.Mutex
 	bytesMu sync.Mutex
+	// in-flight upload progress, keyed by file; several run at once, so the
+	// one reported is the biggest — that is the one a person is waiting on.
+	progMu   sync.Mutex
+	inflight map[string]*fileProg
+	rateAt   time.Time
+	rateSent int64
+	rateBps  float64
 	// Entries are pointers so the workers' references stay valid as more
 	// files arrive; appending to a slice of values would move them.
 	entries        []*photo.FileEntry
@@ -63,11 +71,12 @@ type Streamer struct {
 // `total` is only used for progress reporting.
 func NewStreamer(ctx context.Context, opts Options, total int) (*Streamer, error) {
 	s := &Streamer{
-		ctx:   ctx,
-		opts:  opts,
-		total: total,
-		jobs:  make(chan *photo.FileEntry, 64),
-		dirs:  map[string]struct{}{},
+		ctx:      ctx,
+		opts:     opts,
+		total:    total,
+		jobs:     make(chan *photo.FileEntry, 64),
+		dirs:     map[string]struct{}{},
+		inflight: map[string]*fileProg{},
 	}
 	if opts.BufferAhead > 0 {
 		s.sem = make(chan struct{}, opts.BufferAhead)
@@ -78,6 +87,9 @@ func NewStreamer(ctx context.Context, opts Options, total int) (*Streamer, error
 	}
 	if !opts.SkipImmich {
 		s.client = immich.NewClient(opts.ImmichURL, opts.ImmichKey)
+		if opts.FileProgress != nil {
+			s.client.OnProgress = s.noteFileProgress
+		}
 		if opts.ImmichAlbum != "" {
 			id, err := s.client.EnsureAlbum(ctx, opts.ImmichAlbum)
 			if err != nil {
@@ -220,6 +232,62 @@ func (s *Streamer) upload(f *photo.FileEntry) bool {
 	}
 	s.opts.progress("upload", s.ok+s.dup+s.fail, s.total)
 	return err == nil
+}
+
+// fileProg is one upload's byte counter.
+type fileProg struct {
+	sent, total int64
+}
+
+// noteFileProgress records an upload's progress and publishes whichever
+// in-flight file is largest, with a rate smoothed over ~1s. Uploads are
+// concurrent, so reporting "the current file" needs a rule: biggest wins,
+// because that is the one the person is actually waiting for.
+func (s *Streamer) noteFileProgress(name string, sent, total int64) {
+	s.progMu.Lock()
+	fp := s.inflight[name]
+	if fp == nil {
+		fp = &fileProg{}
+		s.inflight[name] = fp
+	}
+	delta := sent - fp.sent
+	fp.sent, fp.total = sent, total
+	if sent >= total {
+		delete(s.inflight, name)
+	}
+
+	// rate: bytes across all uploads over the last sample window
+	s.rateSent += delta
+	now := time.Now()
+	if s.rateAt.IsZero() {
+		s.rateAt = now
+	}
+	if d := now.Sub(s.rateAt); d >= time.Second {
+		inst := float64(s.rateSent) / d.Seconds()
+		if s.rateBps == 0 {
+			s.rateBps = inst
+		} else {
+			s.rateBps = 0.6*s.rateBps + 0.4*inst // smooth the sawtooth
+		}
+		s.rateAt, s.rateSent = now, 0
+	}
+
+	// pick the biggest in-flight file to display
+	var bigName string
+	var big *fileProg
+	for n, f := range s.inflight {
+		if big == nil || f.total > big.total {
+			bigName, big = n, f
+		}
+	}
+	bps := s.rateBps
+	s.progMu.Unlock()
+
+	if big != nil {
+		s.opts.FileProgress(bigName, big.sent, big.total, bps)
+	} else {
+		s.opts.FileProgress("", 0, 0, bps)
+	}
 }
 
 func (s *Streamer) note(msg string) {

@@ -45,6 +45,10 @@ type Options struct {
 	DeleteAfterUpload bool
 	// Progress, when non-nil, receives (phase, done, total) updates.
 	Progress func(phase string, done, total int)
+	// FileProgress, when non-nil, receives the upload currently worth showing:
+	// its name, bytes sent so far, its size, and the current rate in bytes per
+	// second. A 4 GB video otherwise looks like a stalled import.
+	FileProgress func(name string, sent, total int64, bps float64)
 }
 
 func (o Options) progress(phase string, done, total int) {
