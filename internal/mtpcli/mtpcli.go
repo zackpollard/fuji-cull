@@ -349,24 +349,25 @@ func GetThumbs(ctx context.Context, dir string, pairs map[string]string) error {
 	return nil
 }
 
-// DiscoverCamera lists NNN_FUJI folders under cameraRoot and their DSCF files.
-// dest is used to precompute each entry's LocalPath.
+// DiscoverCamera lists media folders under cameraRoot and their media files.
+// dest is used to precompute each entry's LocalPath. Listings are parsed into
+// entries rather than regex-scraped out of the raw output: an `ls` line also
+// carries an object ID and a size, and those columns are shaped exactly like
+// the folder and file names we are looking for.
 func DiscoverCamera(ctx context.Context, cameraRoot, dest string) ([]photo.FileEntry, error) {
-	// List subfolders under camera root
-	out, err := RunBatch(ctx,
-		fmt.Sprintf(`cd %q`, cameraRoot),
-		"ls",
-	)
+	dirEntries, err := LsIDs(ctx, cameraRoot)
 	if err != nil {
 		return nil, err
 	}
 	folderSet := map[string]struct{}{}
-	for _, m := range photo.FolderRe.FindAllString(out, -1) {
-		folderSet[m] = struct{}{}
+	for _, d := range dirEntries {
+		if photo.IsMediaFolder(d.Name) {
+			folderSet[d.Name] = struct{}{}
+		}
 	}
 	if len(folderSet) == 0 {
-		return nil, fmt.Errorf("no %q-style folders found under %s; output was:\n%s",
-			"NNN_FUJI", cameraRoot, truncate(out, 800))
+		return nil, fmt.Errorf("no media folders found under %s (looked for DCF folders like %q and date folders like %q among %d entries)",
+			cameraRoot, "151_FUJI", "2026-08-12", len(dirEntries))
 	}
 	folders := make([]string, 0, len(folderSet))
 	for k := range folderSet {
@@ -377,16 +378,15 @@ func DiscoverCamera(ctx context.Context, cameraRoot, dest string) ([]photo.FileE
 
 	var entries []photo.FileEntry
 	for _, folder := range folders {
-		out, err := RunBatch(ctx,
-			fmt.Sprintf(`cd %q`, cameraRoot+"/"+folder),
-			"ls",
-		)
+		files, err := LsIDs(ctx, cameraRoot+"/"+folder)
 		if err != nil {
 			return nil, fmt.Errorf("list %s: %w", folder, err)
 		}
 		filenames := map[string]struct{}{}
-		for _, m := range photo.FileRe.FindAllString(out, -1) {
-			filenames[m] = struct{}{}
+		for _, f := range files {
+			if _, _, ok := photo.SplitMedia(f.Name); ok {
+				filenames[f.Name] = struct{}{}
+			}
 		}
 		names := make([]string, 0, len(filenames))
 		for k := range filenames {
@@ -459,7 +459,7 @@ func Pull(ctx context.Context, cameraRoot, dest string, files []photo.FileEntry,
 	return nil
 }
 
-// DiscoverLocal walks dest for previously pulled DSCF files.
+// DiscoverLocal walks dest for previously pulled media files.
 func DiscoverLocal(dest string) ([]photo.FileEntry, error) {
 	var out []photo.FileEntry
 	err := filepath.Walk(dest, func(p string, info os.FileInfo, err error) error {
@@ -470,7 +470,7 @@ func DiscoverLocal(dest string) ([]photo.FileEntry, error) {
 			return nil
 		}
 		name := info.Name()
-		if !photo.FileRe.MatchString(name) {
+		if _, _, ok := photo.SplitMedia(name); !ok {
 			return nil
 		}
 		rel, err := filepath.Rel(dest, p)

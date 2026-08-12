@@ -22,6 +22,24 @@ func jpegStream(data []byte) []byte {
 	return data[off:]
 }
 
+// isTIFF reports whether data opens with a TIFF header — byte order plus the
+// magic 42. A TIFF-based raw (Sony ARW, Nikon NEF, Canon CR2) is one directly,
+// so its EXIF is the file's own IFD0 rather than a segment inside a JPEG.
+func isTIFF(data []byte) bool {
+	return len(data) >= 8 &&
+		(string(data[:4]) == "II*\x00" || string(data[:4]) == "MM\x00*")
+}
+
+// exifTIFF returns the TIFF payload carrying a file's EXIF: the file itself
+// when it is a TIFF-based raw, otherwise the APP1 segment of the JPEG (for a
+// RAF, of the preview JPEG it embeds).
+func exifTIFF(data []byte) []byte {
+	if isTIFF(data) {
+		return data
+	}
+	return app1(jpegStream(data))
+}
+
 // app1 returns the TIFF payload of the JPEG's APP1/Exif segment, or nil.
 func app1(data []byte) []byte {
 	i := 2
@@ -100,7 +118,7 @@ func (t tiff) findTag(ifd, tag int) int {
 // Orientation extracts the EXIF orientation (1-8; 1 = upright) from a JPEG
 // or Fuji RAF byte stream. Returns 1 when no orientation tag is present.
 func Orientation(data []byte) int {
-	t, ok := newTIFF(app1(jpegStream(data)))
+	t, ok := newTIFF(exifTIFF(data))
 	if !ok {
 		return 1
 	}
@@ -116,7 +134,7 @@ func Orientation(data []byte) int {
 // from a JPEG or Fuji RAF byte stream, falling back to IFD0's ModifyDate.
 // Returns "" when absent.
 func DateTimeOriginal(data []byte) string {
-	t, ok := newTIFF(app1(jpegStream(data)))
+	t, ok := newTIFF(exifTIFF(data))
 	if !ok {
 		return ""
 	}
@@ -152,7 +170,7 @@ func (t tiff) ascii(valueOff int) string {
 // embed the same 160×120 preview that MTP GetThumb serves, so a file head
 // can substitute for a thumbnail transfer entirely.
 func Thumbnail(data []byte) []byte {
-	t, ok := newTIFF(app1(jpegStream(data)))
+	t, ok := newTIFF(exifTIFF(data))
 	if !ok {
 		return nil
 	}
@@ -176,4 +194,33 @@ func Thumbnail(data []byte) []byte {
 		return nil
 	}
 	return th
+}
+
+// TIFFPreview locates the largest JPEG embedded in a TIFF-based raw. Each IFD
+// in the chain can carry one at JPEGInterchangeFormat/Length (0x0201/0x0202):
+// a Sony ARW holds a 160×120 thumbnail in IFD1, a screen-sized preview in
+// IFD0, and the full-resolution JpgFromRaw in IFD2, so the biggest is the one
+// worth displaying. head need only span the IFD chain (a few hundred KB); the
+// returned offset is file-absolute and usually points past it.
+func TIFFPreview(head []byte) (off, length int, ok bool) {
+	if !isTIFF(head) {
+		return 0, 0, false
+	}
+	t, valid := newTIFF(head)
+	if !valid {
+		return 0, 0, false
+	}
+	// Bounded walk: a malformed next-IFD pointer must not loop forever.
+	for ifd, hop := t.u32(4), 0; ifd > 0 && hop < 16; hop++ {
+		o, l := t.u32(t.findTag(ifd, 0x0201)), t.u32(t.findTag(ifd, 0x0202))
+		if o > 0 && l > length {
+			off, length, ok = o, l, true
+		}
+		next := t.u32(ifd + 2 + t.u16(ifd)*12)
+		if next <= ifd {
+			break // pointers run forward; anything else is corrupt
+		}
+		ifd = next
+	}
+	return off, length, ok
 }

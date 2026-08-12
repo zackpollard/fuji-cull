@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -386,34 +387,61 @@ func (b *cliBackend) Discover(ctx context.Context, progress func(stage string, f
 		log.Printf("card-wide bulk listing unavailable (%.120v) — per-folder listing", err)
 	}
 	var out []listing
-	for _, root := range b.roots {
+	// Roots to try: the configured DCIM paths, then the storage root as a
+	// fallback. A Sony body in MTP mode publishes no DCIM tree at all — its
+	// media sits in date-named folders at the top level — so the Fuji
+	// defaults find nothing on one and the fallback is what makes it work
+	// without being told.
+	roots := append([]string{}, b.roots...)
+	if !slices.Contains(roots, "/") {
+		roots = append(roots, "/")
+	}
+	// aft-mtp-cli's `cd` does not fail on a path the camera doesn't have: the
+	// Sony answers the following `ls` from the storage root regardless. Taken
+	// at face value that invents a full set of folders under every configured
+	// root, each of which then costs a listing to discover it is empty. So
+	// list the storage root once and treat any root that echoes it as absent.
+	rootIDs := map[string]bool{}
+	if entries, err := mtpcli.LsIDs(ctx, "/"); err == nil {
+		for _, d := range entries {
+			rootIDs[d.ObjectID] = true
+		}
+	}
+	for _, root := range roots {
+		if root == "/" && len(out) > 0 {
+			continue // the configured roots already yielded media
+		}
 		progress(root, len(out))
 		dirEntries, err := mtpcli.LsIDs(ctx, root)
 		if err != nil {
 			log.Printf("camera root %s: %v (skipping)", root, err)
 			continue
 		}
+		if root != "/" && len(dirEntries) > 0 && len(rootIDs) > 0 && sameObjects(dirEntries, rootIDs) {
+			log.Printf("camera root %s: not present (the camera answered from the storage root) — skipping", root)
+			continue
+		}
 		folderIDs := map[string]string{}
 		var folders []string
 		for _, d := range dirEntries {
-			if photo.FolderRe.MatchString(d.Name) {
+			if photo.IsMediaFolder(d.Name) {
 				folders = append(folders, d.Name)
 				folderIDs[d.Name] = d.ObjectID
 			}
 		}
 		if len(folders) == 0 {
-			log.Printf("camera root %s: no NNN_FUJI folders (skipping)", root)
+			log.Printf("camera root %s: no media folders (skipping)", root)
 			continue
 		}
 		sort.Strings(folders)
 		for _, folder := range folders {
-			key := root + "/" + folder
+			key := joinCamera(root, folder)
 			rel := filepath.Join(trimSlash(root), folder)
 			progress(rel, len(out))
 			// cached folders refresh via a one-request handle diff; only
 			// never-seen folders pay for a listing
 			if cached, ok := cache.Folders[key]; ok {
-				fresh, changed, err := b.deltaFolder(ctx, root+"/"+folder, rel, folder, cached, byParent[folderIDs[folder]])
+				fresh, changed, err := b.deltaFolder(ctx, joinCamera(root, folder), rel, folder, cached, byParent[folderIDs[folder]])
 				if err == nil {
 					out = append(out, fresh...)
 					usedCache++
@@ -449,7 +477,7 @@ func (b *cliBackend) Discover(ctx context.Context, progress func(stage string, f
 					})
 				}
 			} else {
-				entries, err := b.listFolder(ctx, root+"/"+folder, &bulkOK)
+				entries, err := b.listFolder(ctx, joinCamera(root, folder), &bulkOK)
 				if err != nil {
 					return nil, fmt.Errorf("list %s/%s: %w", root, folder, err)
 				}
@@ -470,7 +498,7 @@ func (b *cliBackend) Discover(ctx context.Context, progress func(stage string, f
 		}
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("no Fuji media found under camera roots %v", b.roots)
+		return nil, fmt.Errorf("no camera media found under roots %v", roots)
 	}
 	if usedCache > 0 {
 		log.Printf("catalog: %d folders served from cache (settings → full rescan to re-read)", usedCache)
@@ -513,6 +541,26 @@ func (b *cliBackend) FetchThumbSpan(ctx context.Context, cameraDir string, start
 	return gphoto.FetchThumbSpan(ctx, cameraDir, start, end, workDir)
 }
 
+// sameObjects reports whether a directory listing is exactly the storage
+// root's — the signature of a `cd` the camera silently ignored.
+func sameObjects(entries []mtpcli.DirEntryID, rootIDs map[string]bool) bool {
+	if len(entries) != len(rootIDs) {
+		return false
+	}
+	for _, d := range entries {
+		if !rootIDs[d.ObjectID] {
+			return false
+		}
+	}
+	return true
+}
+
+// joinCamera joins a camera-absolute root to a folder without doubling the
+// separator — the storage root is "/" itself.
+func joinCamera(root, folder string) string {
+	return strings.TrimSuffix(root, "/") + "/" + folder
+}
+
 func trimSlash(p string) string {
 	for len(p) > 0 && p[0] == '/' {
 		p = p[1:]
@@ -539,7 +587,7 @@ func (b *dirBackend) Discover(ctx context.Context, progress func(stage string, f
 			return nil, fmt.Errorf("read %s: %w", dcimAbs, err)
 		}
 		for _, folder := range folders {
-			if !folder.IsDir() || !photo.FolderRe.MatchString(folder.Name()) {
+			if !folder.IsDir() || !photo.IsMediaFolder(folder.Name()) {
 				continue
 			}
 			rel := filepath.Join(dcim, folder.Name())
@@ -602,7 +650,7 @@ func findDCIMRoots(root string) ([]string, error) {
 			return false
 		}
 		for _, e := range entries {
-			if e.IsDir() && photo.FolderRe.MatchString(e.Name()) {
+			if e.IsDir() && photo.IsMediaFolder(e.Name()) {
 				return true
 			}
 		}

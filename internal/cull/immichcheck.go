@@ -75,7 +75,7 @@ func (c *immichChecker) Enqueue(s *photo.Shot) {
 }
 
 // verbatimFile returns the cached camera-verbatim file to hash for a shot —
-// the same bytes an import would upload. RAF-only shots hash the RAF (the
+// the same bytes an import would upload. raw-only shots hash the raw (the
 // display JPG is a locally-extracted preview that never goes to Immich).
 func (c *immichChecker) verbatimFile(s *photo.Shot) (string, bool) {
 	switch {
@@ -83,8 +83,8 @@ func (c *immichChecker) verbatimFile(s *photo.Shot) (string, bool) {
 		return c.pf.CachedFile(s, s.DisplayExt())
 	case s.Files["JPG"] != "":
 		return c.pf.CachedFile(s, "JPG")
-	case s.Files["RAF"] != "":
-		return c.pf.CachedFile(s, "RAF")
+	case s.RawExt() != "":
+		return c.pf.CachedFile(s, s.RawExt())
 	}
 	return "", false
 }

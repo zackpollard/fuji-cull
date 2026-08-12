@@ -1,6 +1,7 @@
 package cull
 
 import (
+	"bytes"
 	"image"
 	"image/jpeg"
 	"log"
@@ -9,6 +10,7 @@ import (
 
 	xdraw "golang.org/x/image/draw"
 
+	"github.com/zack/fuji-tools/internal/exif"
 	"github.com/zack/fuji-tools/internal/photo"
 )
 
@@ -155,7 +157,15 @@ func (p *Prefetcher) generateThumbFrom(s *photo.Shot, srcPath string) error {
 	src, _, err := image.Decode(f)
 	f.Close()
 	if err != nil {
-		return err
+		// Go's image package knows JPEG, not RAF or ARW. A raw's embedded
+		// preview is what the viewer displays anyway, so scale that instead.
+		prev, perr := exif.PreviewBytes(srcPath)
+		if perr != nil {
+			return err
+		}
+		if src, _, err = image.Decode(bytes.NewReader(prev)); err != nil {
+			return err
+		}
 	}
 	// Same bargain as preview generation: the decode is already paid for, and
 	// this is the full frame, so the score is measured on real detail.

@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -279,11 +280,11 @@ func Upload(ctx context.Context, opts Options, client *immich.Client, albumID st
 	return nil
 }
 
-// StackPairs groups each RAF+JPG pair of the same shot into an Immich stack
+// StackPairs groups each raw+JPG pair of the same shot into an Immich stack
 // with the JPG as the primary asset. Failures are logged, not fatal: the
 // assets themselves are already uploaded and verified.
 func StackPairs(ctx context.Context, client *immich.Client, files []photo.FileEntry) {
-	type pair struct{ jpg, raf string }
+	type pair struct{ jpg, raw string }
 	pairs := map[string]*pair{}
 	var keys []string
 	for _, f := range files {
@@ -298,11 +299,11 @@ func StackPairs(ctx context.Context, client *immich.Client, files []photo.FileEn
 			pairs[key] = p
 			keys = append(keys, key)
 		}
-		switch ext {
-		case "JPG":
+		switch {
+		case ext == "JPG" || ext == "JPEG":
 			p.jpg = f.AssetID
-		case "RAF":
-			p.raf = f.AssetID
+		case slices.Contains(photo.RawExts, ext):
+			p.raw = f.AssetID
 		}
 	}
 	sort.Strings(keys)
@@ -310,17 +311,17 @@ func StackPairs(ctx context.Context, client *immich.Client, files []photo.FileEn
 	stacked, failed := 0, 0
 	for _, key := range keys {
 		p := pairs[key]
-		if p.jpg == "" || p.raf == "" || p.jpg == p.raf {
+		if p.jpg == "" || p.raw == "" || p.jpg == p.raw {
 			continue
 		}
-		if err := client.CreateStack(ctx, []string{p.jpg, p.raf}); err != nil {
+		if err := client.CreateStack(ctx, []string{p.jpg, p.raw}); err != nil {
 			failed++
 			log.Printf("WARN: stack %s: %v", key, err)
 			continue
 		}
 		stacked++
 	}
-	log.Printf("Stacked %d RAF+JPG pair(s), %d failed", stacked, failed)
+	log.Printf("Stacked %d raw+JPG pair(s), %d failed", stacked, failed)
 }
 
 // Validate bulk-checks all files against Immich by checksum and returns the

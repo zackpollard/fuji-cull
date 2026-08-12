@@ -269,7 +269,7 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 			// check only asked whether the file was non-empty, so a truncated
 			// leftover was adopted as ready and never re-pulled — the viewer
 			// showed a broken photo for a shot the engine called good.
-			// RAF-only shots are exempt: their display file is a preview we
+			// raw-only shots are exempt: their display file is a preview we
 			// extracted, not a camera-verbatim copy.
 			if want := verbatimSize(s); want > 0 && st.Size() != want {
 				os.Remove(path)
@@ -314,9 +314,13 @@ func (p *Prefetcher) displayPath(s *photo.Shot) string {
 	return filepath.Join(p.cache, s.SafeID()+".jpg")
 }
 
-// rafPath holds the full RAF pulled for preview extraction (reused at import).
-func (p *Prefetcher) rafPath(s *photo.Shot) string {
-	return filepath.Join(p.cache, s.SafeID()+".raf")
+// rawPath holds the full raw pulled for preview extraction (reused at import).
+func (p *Prefetcher) rawPath(s *photo.Shot) string {
+	ext := strings.ToLower(s.RawExt())
+	if ext == "" {
+		ext = "raw"
+	}
+	return filepath.Join(p.cache, s.SafeID()+"."+ext)
 }
 
 // streamCloseDebounce delays the post-navigation stream release so that rapid
@@ -720,8 +724,8 @@ func (p *Prefetcher) CachedFile(s *photo.Shot, ext string) (string, bool) {
 	p.mu.Unlock()
 	var path string
 	switch {
-	case ext == "RAF":
-		path = p.rafPath(s) // present when the RAF itself was pulled
+	case ext != "" && ext == s.RawExt():
+		path = p.rawPath(s) // present when the raw itself was pulled
 	case ext == "JPG" && s.Kind == "photo":
 		if _, hasJPG := s.Files["JPG"]; !hasJPG {
 			return "", false
@@ -1349,7 +1353,7 @@ func (p *Prefetcher) PostersAvailable() bool {
 }
 
 // mediaValid reports whether a file starts like the media it claims to be
-// ("jpg", "raf" or "mov"). The X-H2S stale-buffer bug answers reads — bulk
+// ("jpg", "raw" or "mov"). The X-H2S stale-buffer bug answers reads — bulk
 // GetObject included — with replayed MTP responses of plausible LENGTH but
 // garbage content, so size checks alone are not proof of a good transfer.
 func mediaValid(path, kind string) bool {
@@ -1363,8 +1367,11 @@ func mediaValid(path, kind string) bool {
 		return false
 	}
 	switch kind {
-	case "raf":
-		return string(b[:8]) == "FUJIFILM"
+	case "raw":
+		// RAF carries its own magic; ARW (and every other TIFF-based raw) is
+		// a plain TIFF, little- or big-endian.
+		return string(b[:8]) == "FUJIFILM" ||
+			string(b[:4]) == "II*\x00" || string(b[:4]) == "MM\x00*"
 	case "mov":
 		return string(b[4:8]) == "ftyp"
 	default:
@@ -1388,7 +1395,7 @@ func verbatimSize(s *photo.Shot) int64 {
 	case s.Files["JPG"] != "":
 		return s.Sizes["JPG"]
 	}
-	return 0 // RAF-only: displayPath holds an extracted preview
+	return 0 // raw-only: displayPath holds an extracted preview
 }
 
 // LinkSick reports tripped camera-transfer circuit breakers for the UIs:
@@ -1646,7 +1653,7 @@ func (p *Prefetcher) evictLocked() {
 		if d > p.evict {
 			s := p.cat.Shots[i]
 			_ = os.Remove(p.displayPath(s))
-			_ = os.Remove(p.rafPath(s))
+			_ = os.Remove(p.rawPath(s))
 			p.removePreviews(s)
 			delete(p.state, id)
 		}
@@ -1733,28 +1740,29 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 
 	for i, s := range targets {
 		var srcExt string
+		rawExt := s.RawExt()
 		switch {
 		case s.Kind == "video":
 			srcExt = s.DisplayExt()
 		case s.Files["JPG"] != "":
 			srcExt = "JPG"
-		case s.Files["RAF"] != "":
-			srcExt = "RAF"
+		case rawExt != "":
+			srcExt = rawExt
 		default:
 			p.setState(s.ID, "failed", "no displayable file in shot")
 			finished[i] = true
 			continue
 		}
 		dest := p.displayPath(s)
-		if srcExt == "RAF" && s.Kind == "photo" {
-			dest = p.rafPath(s)
+		if srcExt == rawExt && s.Kind == "photo" {
+			dest = p.rawPath(s)
 		}
 		kinds[i] = "jpg"
 		switch {
 		case s.Kind == "video":
 			kinds[i] = "mov"
-		case srcExt == "RAF":
-			kinds[i] = "raf"
+		case srcExt == rawExt:
+			kinds[i] = "raw"
 		}
 		tmps[i] = dest + ".tmp"
 		expect[i] = s.Sizes[srcExt]
@@ -1966,16 +1974,16 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 }
 
 // finalizeShot promotes a completed tmp pull into its cache location,
-// extracting the embedded preview for RAF-only shots.
+// extracting the embedded preview for raw-only shots.
 func (p *Prefetcher) finalizeShot(s *photo.Shot, tmp string) error {
 	if s.Kind == "photo" && s.Files["JPG"] == "" {
-		// RAF-only: keep the RAF, extract its embedded preview locally.
-		raf := p.rafPath(s)
-		if err := os.Rename(tmp, raf); err != nil {
+		// raw-only: keep the raw, extract its embedded preview locally.
+		raw := p.rawPath(s)
+		if err := os.Rename(tmp, raw); err != nil {
 			return err
 		}
 		jpgTmp := p.displayPath(s) + ".tmp"
-		if err := exif.ExtractPreview(raf, jpgTmp); err != nil {
+		if err := exif.ExtractPreview(raw, jpgTmp); err != nil {
 			os.Remove(jpgTmp)
 			return err
 		}
@@ -2060,8 +2068,8 @@ func srcExtOf(s *photo.Shot) string {
 		return s.DisplayExt()
 	case s.Files["JPG"] != "":
 		return "JPG"
-	case s.Files["RAF"] != "":
-		return "RAF"
+	case s.RawExt() != "":
+		return s.RawExt()
 	}
 	return ""
 }

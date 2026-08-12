@@ -276,9 +276,9 @@ func (b *iccBackend) discoverPTP(ctx context.Context, progress func(stage string
 		return out
 	}
 
-	folders := map[uint32]string{} // handle -> NNN_FUJI name
+	folders := map[uint32]string{} // handle -> media folder name
 	for h, n := range nameOf {
-		if photo.FolderRe.MatchString(n) {
+		if photo.IsMediaFolder(n) {
 			folders[h] = n
 		}
 	}

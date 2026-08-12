@@ -319,11 +319,13 @@ func (p *Prefetcher) fetchOrientBatch(ctx context.Context, batch []*photo.Shot) 
 // partial-read binary is missing or the breaker is tripped.
 const healHeadSize = 128 << 10
 
-// mediaHead reports whether bytes begin like a JPEG or a Fuji RAF (whose
-// embedded preview jpegmeta reads transparently).
+// mediaHead reports whether bytes begin like a JPEG, a Fuji RAF (whose
+// embedded preview jpegmeta reads transparently), or a TIFF-based raw such as
+// a Sony ARW (whose EXIF and thumbnail jpegmeta reads directly).
 func mediaHead(b []byte) bool {
 	return (len(b) >= 2 && b[0] == 0xFF && b[1] == 0xD8) ||
-		(len(b) >= 8 && string(b[:8]) == "FUJIFILM")
+		(len(b) >= 8 && string(b[:8]) == "FUJIFILM") ||
+		(len(b) >= 8 && (string(b[:4]) == "II*\x00" || string(b[:4]) == "MM\x00*"))
 }
 
 // pickHealBatchLocked selects photos still lacking thumbnails (fresh and

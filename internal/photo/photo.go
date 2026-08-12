@@ -7,12 +7,51 @@ import (
 	"strings"
 )
 
+// Names are matched against parsed directory entries, never scraped out of raw
+// tool output: an `ls` line carries an object ID and a size too, and those
+// columns are shaped exactly like the names below.
 var (
-	// FolderRe matches Fuji DCIM subfolders like "151_FUJI".
-	FolderRe = regexp.MustCompile(`\b\d{3}_FUJI\b`)
-	// FileRe matches Fuji media files like "DSCF0001.JPG".
-	FileRe = regexp.MustCompile(`DSCF\d+\.(JPG|MOV|RAF|MP4)`)
+	// A DCF directory is three digits plus five free characters: "151_FUJI"
+	// (Fuji), "100MSDCF" (Sony), "100CANON", "100_PANA".
+	dcfFolderRe = regexp.MustCompile(`^\d{3}[A-Z0-9_]{5}$`)
+	// A Sony body in MTP mode exposes no DCIM tree at all — media sits in
+	// date-named folders at the storage root ("2026-08-12").
+	dateFolderRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	// A DCF basename is up to five leading characters then a frame number:
+	// "DSCF0001" (Fuji), "DSC01764"/"_DSC0001"/"C0001" (Sony), "IMG_0001".
+	mediaFileRe = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,4}\d{3,5}\.(?:JPG|JPEG|MOV|MP4|RAF|ARW)$`)
 )
+
+// RawExts are the raw extensions the pipeline knows how to pair with a JPG,
+// pull an embedded preview out of, and upload.
+var RawExts = []string{"RAF", "ARW"}
+
+// IsMediaFolder reports whether a parsed directory name is one the camera
+// stores media in — either DCF layout or a Sony MTP date folder.
+func IsMediaFolder(name string) bool {
+	up := strings.ToUpper(name)
+	if dateFolderRe.MatchString(up) {
+		return true
+	}
+	// A DCF name's five free characters always carry a letter or underscore
+	// ("_FUJI", "MSDCF", "CANON"). Requiring one keeps an all-digit token —
+	// an object ID, a byte count — from passing as a folder name.
+	return dcfFolderRe.MatchString(up) &&
+		strings.ContainsAny(up[3:], "ABCDEFGHIJKLMNOPQRSTUVWXYZ_")
+}
+
+// MediaFolderPrefix returns the part of a camera dir that precedes its media
+// folder segment ("SLOT 1/DCIM/151_FUJI" -> "SLOT 1/DCIM"), or the whole path
+// when it holds no recognizable media folder.
+func MediaFolderPrefix(cameraDir string) string {
+	parts := strings.Split(cameraDir, "/")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if IsMediaFolder(parts[i]) {
+			return strings.Join(parts[:i], "/")
+		}
+	}
+	return cameraDir
+}
 
 // FileEntry is one media file moving through the import pipeline.
 type FileEntry struct {
@@ -52,7 +91,19 @@ type Shot struct {
 
 // DisplayExt returns the extension of the file used for on-screen preview.
 func (s *Shot) DisplayExt() string {
-	for _, ext := range []string{"JPG", "RAF", "MOV", "MP4"} {
+	for _, ext := range []string{"JPG", "JPEG", "RAF", "ARW", "MOV", "MP4"} {
+		if _, ok := s.Files[ext]; ok {
+			return ext
+		}
+	}
+	return ""
+}
+
+// RawExt returns the shot's raw extension ("RAF", "ARW"), or "" when it has
+// none. A raw-only shot has no JPG to display, so it is the one that has to
+// pull the raw and extract its embedded preview.
+func (s *Shot) RawExt() string {
+	for _, ext := range RawExts {
 		if _, ok := s.Files[ext]; ok {
 			return ext
 		}
@@ -84,10 +135,11 @@ func ShotKind(ext string) string {
 	}
 }
 
-// SplitMedia parses "DSCF0001.JPG" into base and upper-case ext; ok=false if not a Fuji media file.
+// SplitMedia parses "DSCF0001.JPG" into base and upper-case ext; ok=false if
+// the name is not a camera media file.
 func SplitMedia(name string) (base, ext string, ok bool) {
 	upper := strings.ToUpper(name)
-	if !FileRe.MatchString(upper) {
+	if !mediaFileRe.MatchString(upper) {
 		return "", "", false
 	}
 	e := strings.TrimPrefix(strings.ToUpper(filepath.Ext(name)), ".")

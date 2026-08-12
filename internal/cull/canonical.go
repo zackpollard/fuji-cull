@@ -88,14 +88,10 @@ func sameContent(group []*photo.Shot) bool {
 }
 
 // slotFingerprint hashes the slot/DCIM prefix of a CameraDir (everything before
-// the NNN_FUJI folder) into a short stable token, so overflow twins on SLOT 1 vs
+// the media folder) into a short stable token, so overflow twins on SLOT 1 vs
 // SLOT 2 get distinct — but deterministic — canonical keys on every device.
 func slotFingerprint(cameraDir string) string {
-	prefix := cameraDir
-	if i := photo.FolderRe.FindStringIndex(cameraDir); i != nil {
-		prefix = cameraDir[:i[0]]
-	}
-	prefix = strings.Trim(prefix, "/ ")
+	prefix := strings.Trim(photo.MediaFolderPrefix(cameraDir), "/ ")
 	sum := sha1.Sum([]byte(prefix))
 	return hex.EncodeToString(sum[:])[:6]
 }
@@ -123,7 +119,7 @@ func slugify(s string) string {
 //	"151_FUJI/DSCF0001"             -> "151_FUJI/DSCF0001" (idempotent)
 //	"151_FUJI/DSCF0001#abc123"      -> unchanged (already disambiguated)
 //
-// ok is false for a key that does not end in a recognizable "<NNN_FUJI>/<base>"
+// ok is false for a key that does not end in a recognizable "<folder>/<base>"
 // (leave such keys legacy-only rather than mis-canonicalizing them).
 func canonicalizeLegacyKey(oldID string) (canonical string, ok bool) {
 	// an already-disambiguated overflow key is canonical as-is
@@ -140,7 +136,7 @@ func canonicalizeLegacyKey(oldID string) (canonical string, ok bool) {
 	}
 	folder := parts[len(parts)-2]
 	base := parts[len(parts)-1]
-	if base == "" || !photo.FolderRe.MatchString(folder) {
+	if base == "" || !photo.IsMediaFolder(folder) {
 		return "", false
 	}
 	return folder + "/" + base, true

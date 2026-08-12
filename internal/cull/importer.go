@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -301,8 +302,8 @@ func (im *Importer) copyPhase(app *App, dest string, keepers []keeperFile, onFil
 		}
 		kind := "jpg"
 		switch {
-		case k.ext == "RAF":
-			kind = "raf"
+		case slices.Contains(photo.RawExts, k.ext):
+			kind = "raw"
 		case k.shot.Kind == "video":
 			kind = "mov"
 		}

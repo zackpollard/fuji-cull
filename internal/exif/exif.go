@@ -1,4 +1,4 @@
-// Package exif restamps file mtimes from capture metadata and extracts RAF
+// Package exif restamps file mtimes from capture metadata and extracts raw
 // previews — in pure Go. It replaced an exiftool (Perl) dependency, which
 // Android cannot carry and other platforms are happier without.
 package exif
@@ -22,7 +22,7 @@ import (
 // era (there is nothing external to find anymore).
 func EnsurePath() error { return nil }
 
-// RestampMtime sets file mtimes from EXIF DateTimeOriginal (JPG/RAF) or the
+// RestampMtime sets file mtimes from EXIF DateTimeOriginal (JPG/RAF/ARW) or the
 // QuickTime mvhd creation time (MOV/MP4), recursively over dir. Matching the
 // previous exiftool behavior, timestamps are interpreted as local wall time.
 // Best-effort per file; only the directory walk itself can fail.
@@ -34,7 +34,7 @@ func RestampMtime(dir string) error {
 		}
 		var ts time.Time
 		switch strings.ToUpper(filepath.Ext(path)) {
-		case ".JPG", ".JPEG", ".RAF":
+		case ".JPG", ".JPEG", ".RAF", ".ARW":
 			ts = imageCaptureTime(path)
 		case ".MOV", ".MP4":
 			ts = quicktimeCreateTime(path)
@@ -201,39 +201,79 @@ func mvhdCreateTime(f *os.File, off, end int64) time.Time {
 	return time.Time{}
 }
 
-// ExtractPreview writes the embedded full-resolution JPEG of a Fuji RAF to
-// dst. The RAF header stores the preview's offset and length big-endian at
-// bytes 84 and 88.
+// previewHeadSize bounds the head read used to find an embedded preview: a
+// RAF states its offset in the first 92 bytes, and a TIFF-based raw keeps its
+// whole IFD chain near the front (a Sony ARW's ends inside 350 KB).
+const previewHeadSize = 1 << 20
+
+// previewSection locates a raw file's embedded full-resolution JPEG. A Fuji
+// RAF stores the offset and length big-endian at bytes 84 and 88 of its
+// header; a TIFF-based raw (Sony ARW) hangs previews off its IFD chain, where
+// the largest is the full-resolution one.
+func previewSection(f *os.File, src string) (*io.SectionReader, error) {
+	head := make([]byte, previewHeadSize)
+	n, err := io.ReadFull(f, head)
+	if n < 92 {
+		return nil, fmt.Errorf("raw header %s: %w", src, err)
+	}
+	head = head[:n]
+
+	var off, length int64
+	switch {
+	case string(head[:8]) == "FUJIFILM":
+		off = int64(binary.BigEndian.Uint32(head[84:88]))
+		length = int64(binary.BigEndian.Uint32(head[88:92]))
+	default:
+		o, l, ok := jpegmeta.TIFFPreview(head)
+		if !ok {
+			return nil, fmt.Errorf("%s is not a raw with an embedded preview", src)
+		}
+		off, length = int64(o), int64(l)
+	}
+	if off <= 0 || length < 1024 {
+		return nil, fmt.Errorf("no embedded preview in %s (offset %d, length %d)", src, off, length)
+	}
+	var magic [2]byte
+	if _, err := f.ReadAt(magic[:], off); err != nil || magic[0] != 0xFF || magic[1] != 0xD8 {
+		return nil, fmt.Errorf("embedded preview in %s is not a JPEG", src)
+	}
+	return io.NewSectionReader(f, off, length), nil
+}
+
+// ExtractPreview writes a raw file's embedded full-resolution JPEG to dst.
 func ExtractPreview(src, dst string) error {
 	f, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	var hdr [92]byte
-	if _, err := io.ReadFull(f, hdr[:]); err != nil {
-		return fmt.Errorf("raf header %s: %w", src, err)
-	}
-	if string(hdr[:8]) != "FUJIFILM" {
-		return fmt.Errorf("%s is not a RAF", src)
-	}
-	off := int64(binary.BigEndian.Uint32(hdr[84:88]))
-	length := int64(binary.BigEndian.Uint32(hdr[88:92]))
-	if off <= 0 || length < 1024 {
-		return fmt.Errorf("no embedded preview in %s (offset %d, length %d)", src, off, length)
-	}
-	var magic [2]byte
-	if _, err := f.ReadAt(magic[:], off); err != nil || magic[0] != 0xFF || magic[1] != 0xD8 {
-		return fmt.Errorf("embedded preview in %s is not a JPEG", src)
+	sec, err := previewSection(f, src)
+	if err != nil {
+		return err
 	}
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, io.NewSectionReader(f, off, length)); err != nil {
+	if _, err := io.Copy(out, sec); err != nil {
 		out.Close()
 		os.Remove(dst)
 		return err
 	}
 	return out.Close()
+}
+
+// PreviewBytes returns a raw file's embedded full-resolution JPEG, for callers
+// that want to decode it rather than keep it.
+func PreviewBytes(src string) ([]byte, error) {
+	f, err := os.Open(src)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	sec, err := previewSection(f, src)
+	if err != nil {
+		return nil, err
+	}
+	return io.ReadAll(sec)
 }
