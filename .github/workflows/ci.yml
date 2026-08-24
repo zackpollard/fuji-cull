@@ -64,6 +64,41 @@ jobs:
           name: fuji-cull-macos
           path: dist/macos/*.dmg
 
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: brew install xcodegen
+      - name: gomobile bind (engine xcframework)
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          gomobile bind -target=ios -o ios/Mobile.xcframework ./mobile
+      # Compile only: no signing, no archive, no .ipa. The release workflow
+      # still owns distribution — this exists so Swift breakage surfaces on the
+      # pull request instead of at release time.
+      - name: xcodebuild (unsigned, build only)
+        working-directory: ios
+        run: |
+          for i in 1 2 3; do xcodegen generate && break; echo "xcodegen attempt $i failed"; done
+          xcodebuild -project FujiCull.xcodeproj -scheme FujiCull \
+            -configuration Debug \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath /tmp/fc-dd-ci \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee xcodebuild.log \
+            | grep -E "error:|warning: .*(deprecated|unused)|BUILD SUCCEEDED|BUILD FAILED" || true
+          # Assert success explicitly. Piping to grep and testing THAT is the
+          # trap: grep exits 0 when it matches, and "error:" and "BUILD FAILED"
+          # are matches — so `| grep ... || exit 1` passes on exactly the
+          # failures it looks for. pipefail alone would still hide a grep that
+          # matched nothing.
+          grep -q "BUILD SUCCEEDED" xcodebuild.log
+
   android:
     runs-on: ubuntu-latest
     steps:
