@@ -227,12 +227,24 @@ func (im *Importer) run(app *App, dest, album string, keepers []keeperFile, opt 
 	app.prefetch.PauseAndDrain()
 	defer app.prefetch.Resume()
 
-	// Upload-only: stage into a temp directory that is removed once the
+	// Upload-only: stage into a fixed directory that is removed once the
 	// server has confirmed every file. Nothing is deleted before that.
+	//
+	// Fixed, not os.MkdirTemp. copyPhase reuses anything already sitting at
+	// the target path with a matching size, which is what lets a failed import
+	// resume — but a fresh temp directory per run put those files somewhere the
+	// next run could never look. So an upload-only import that died part-way
+	// re-pulled every RAF from the camera, and left its staged copies behind
+	// forever: one orphaned directory per failure, holding the bytes that would
+	// have made the retry free.
+	//
+	// Only one import runs at a time (Start refuses a second), and the cache is
+	// already keyed per camera, so a single well-known path is safe.
 	staging := ""
 	if !opt.KeepLocal {
-		tmp, terr := os.MkdirTemp(app.prefetch.cache, "import-stage-")
-		if terr != nil {
+		sweepStaleStaging(app.prefetch.cache)
+		fixed := filepath.Join(app.prefetch.cache, "import-stage")
+		if terr := os.MkdirAll(fixed, 0o755); terr != nil {
 			im.update(func(s *ImportStatus) {
 				s.Running, s.Phase = false, "error"
 				s.Error = fmt.Sprintf("staging dir: %v", terr)
@@ -240,7 +252,7 @@ func (im *Importer) run(app *App, dest, album string, keepers []keeperFile, opt 
 			})
 			return
 		}
-		staging, dest = tmp, tmp
+		staging, dest = fixed, fixed
 	}
 
 	opts := app.pipeline()
@@ -319,7 +331,7 @@ func (im *Importer) run(app *App, dest, album string, keepers []keeperFile, opt 
 		if err == nil {
 			os.RemoveAll(staging) // verified on the server; the copy was scratch
 		} else {
-			log.Printf("import: staged copies kept at %s (upload did not verify)", staging)
+			log.Printf("import: staged copies kept at %s — run import again to resume from them", staging)
 		}
 	}
 
@@ -570,6 +582,24 @@ func (im *Importer) copyPhase(app *App, dest string, keepers []keeperFile, total
 	}
 	noteCamera(true)
 	return files, nil
+}
+
+// sweepStaleStaging removes the per-run temp directories older versions left
+// behind. They are unreachable — nothing knows their names after the run that
+// made them — so they are pure leaked disk, and an upload-only import of a big
+// event leaks several GB of it per failure.
+func sweepStaleStaging(cache string) {
+	matches, err := filepath.Glob(filepath.Join(cache, "import-stage-*"))
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		if err := os.RemoveAll(m); err != nil {
+			log.Printf("WARN: removing stale staging dir %s: %v", m, err)
+			continue
+		}
+		log.Printf("import: removed stale staging dir %s", m)
+	}
 }
 
 func commit(tmp, target string) error {
