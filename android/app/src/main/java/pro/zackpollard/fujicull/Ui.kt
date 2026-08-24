@@ -1,5 +1,6 @@
 package pro.zackpollard.fujicull
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -86,6 +87,7 @@ import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -101,6 +103,42 @@ internal val Line = Color(0xFF30352C)
 internal val Buffered = Color(0xFF4EA6FF)
 internal val Immich = Color(0xFF57C9C1)
 internal val Dim = Color(0xFF9DA093)
+
+/**
+ * Reports poll failures once, not every tick.
+ *
+ * These loops used to swallow everything into `catch (_: Throwable) {}`, so an
+ * engine error was indistinguishable from a grid that had simply stopped
+ * moving — and the server did not log it either, so nothing anywhere said why.
+ * They run every 600ms, hence reporting the first of each distinct failure and
+ * then staying quiet until it changes or clears.
+ */
+private class PollReporter(private val api: Api, private val scope: CoroutineScope) {
+    private var key = ""
+    private var count = 0
+    private var at = 0L
+
+    fun failed(what: String, t: Throwable) {
+        count++
+        val k = "$what: ${t.message ?: t::class.simpleName}"
+        val now = System.currentTimeMillis()
+        if (k == key && now - at < 30_000) return
+        key = k
+        at = now
+        val msg = "poll $k — $count failure(s) so far"
+        Log.w("fujicull", msg)
+        scope.launch { api.logEvent(msg) }
+    }
+
+    fun ok() {
+        if (key.isEmpty()) return
+        val msg = "poll: recovered after $count failure(s)"
+        key = ""
+        count = 0
+        Log.i("fujicull", msg)
+        scope.launch { api.logEvent(msg) }
+    }
+}
 
 @Composable
 fun CullApp(
@@ -447,6 +485,7 @@ private fun CullScreen(
     var alreadyImported by remember { mutableStateOf(0) }
     var showImport by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val poll = remember(api) { PollReporter(api, scope) }
 
     LaunchedEffect(Unit) {
         while (shots.isEmpty()) {
@@ -454,7 +493,9 @@ private fun CullScreen(
                 val (s, d) = api.state()
                 shots = s
                 decisions.value = d
-            } catch (_: Throwable) {
+                poll.ok()
+            } catch (t: Throwable) {
+                poll.failed("state", t)
             }
             if (shots.isEmpty()) delay(1000)
         }
@@ -486,7 +527,9 @@ private fun CullScreen(
                 } else if (importing.isNotEmpty() && importing != "import done") {
                     importing = imp.optString("error").ifEmpty { "import done" }
                 }
-            } catch (_: Throwable) {
+                poll.ok()
+            } catch (t: Throwable) {
+                poll.failed("status", t)
             }
             // poll fast while thumbnails are still landing (a scrub's new tiles
             // then show up promptly), and back off once the count stops moving
