@@ -20,17 +20,58 @@ import (
 type Importer struct {
 	mu     sync.Mutex
 	status ImportStatus
+	// Elapsed is computed on read rather than stored per update, so it keeps
+	// ticking between progress events (a long single-file upload otherwise
+	// freezes the clock along with the counter).
+	startedAt  time.Time
+	finishedAt time.Time
+}
+
+// ImportStage is one stage of an import, with its own counters.
+//
+// Copy, hash and upload overlap by design — that is what makes an import cost
+// its slowest stage rather than the sum of them — so there is no single active
+// phase to report and any number of these may be moving at once. Every client
+// draws one lane per stage from these numbers instead of inferring a checklist
+// from Phase.
+type ImportStage struct {
+	// State is pending | running | done, for lanes that have not started and
+	// lanes that are finished.
+	State string `json:"state"`
+	Files int    `json:"files"`
+	// FilesTotal counts PAIRS for the stack stage.
+	FilesTotal int   `json:"filesTotal"`
+	Bytes      int64 `json:"bytes,omitempty"`
+	BytesTotal int64 `json:"bytesTotal,omitempty"`
+	// Rate is bytes per second, or pairs per second for the stack stage.
+	Rate float64 `json:"rate,omitempty"`
+	// Cached counts files that were already on disk and never crossed the
+	// camera link. Half a JPG+RAF import can land in the first instant; saying
+	// so is what stops that looking like a broken counter.
+	Cached int `json:"cached,omitempty"`
+	// Failed is kept out of Files so a run where everything failed cannot
+	// render as a full bar.
+	Failed int `json:"failed,omitempty"`
 }
 
 type ImportStatus struct {
 	Running bool   `json:"running"`
 	Phase   string `json:"phase"` // idle | copy | upload | validate | done | error
 	Done    int    `json:"done"`  // files copied off the camera
-	// Uploaded counts files pushed to Immich. It is separate from Done
-	// because the two now run at the same time: sharing one counter made the
-	// number jump between copy and upload progress.
+	// Uploaded counts files ACCEPTED by Immich (new or duplicate). It is
+	// separate from Done because the two run at the same time: sharing one
+	// counter made the number jump between copy and upload progress.
 	Uploaded int `json:"uploaded"`
 	Total    int `json:"total"`
+	// The stage lanes. Phase and the three counters above are the pre-stage
+	// shape, kept while every client migrates.
+	Camera ImportStage `json:"camera"`
+	Upload ImportStage `json:"upload"`
+	Verify ImportStage `json:"verify"`
+	Stack  ImportStage `json:"stack"`
+	// ElapsedSec is wall-clock seconds since the run started, so a client can
+	// show it without parsing StartedAt and without a clock of its own.
+	ElapsedSec int `json:"elapsedSec,omitempty"`
 	// The upload currently worth showing — a large video otherwise looks like
 	// a stalled import for minutes at a time — plus the current rate.
 	File       string  `json:"file,omitempty"`
@@ -47,7 +88,15 @@ type ImportStatus struct {
 func (im *Importer) Status() ImportStatus {
 	im.mu.Lock()
 	defer im.mu.Unlock()
-	return im.status
+	st := im.status
+	if !im.startedAt.IsZero() {
+		end := time.Now()
+		if !im.finishedAt.IsZero() {
+			end = im.finishedAt // a finished run stops counting
+		}
+		st.ElapsedSec = int(end.Sub(im.startedAt).Seconds())
+	}
+	return st
 }
 
 func (im *Importer) update(fn func(*ImportStatus)) {
@@ -123,12 +172,48 @@ func (im *Importer) Start(app *App, dest, album string, opt ImportOptions) error
 	if opt.KeepLocal {
 		saveImportDefaults(dest, album) // prefill the panel next session
 	}
+	var totalBytes int64
+	for _, k := range keepers {
+		totalBytes += k.shot.Sizes[k.ext]
+	}
+	// The stack lane's denominator is known here, from the keep list — waiting
+	// for StackPairs to compute it left the lane reading "0 / 0 pairs" for the
+	// whole import, which looks broken rather than pending.
+	exts := map[string]map[string]bool{}
+	for _, k := range keepers {
+		if exts[k.shot.ID] == nil {
+			exts[k.shot.ID] = map[string]bool{}
+		}
+		exts[k.shot.ID][k.ext] = true
+	}
+	pairs := 0
+	for _, e := range exts {
+		if e["JPG"] && e["RAF"] {
+			pairs++
+		}
+	}
+	now := time.Now()
+	im.startedAt, im.finishedAt = now, time.Time{}
 	im.status = ImportStatus{
 		Running:   true,
 		Phase:     "copy",
 		Total:     len(keepers),
 		Dest:      dest,
-		StartedAt: time.Now().Format(time.RFC3339),
+		StartedAt: now.Format(time.RFC3339),
+		Camera:    ImportStage{State: "running", FilesTotal: len(keepers), BytesTotal: totalBytes},
+		Upload:    ImportStage{State: "pending", FilesTotal: len(keepers), BytesTotal: totalBytes},
+		Verify:    ImportStage{State: "pending", FilesTotal: len(keepers)},
+		Stack:     ImportStage{State: "pending", FilesTotal: pairs},
+	}
+	if !opt.Immich {
+		// Nothing downstream of the copy will run; saying "pending" forever
+		// would be a lane waiting on something that never comes.
+		im.status.Upload.State = "n/a"
+		im.status.Verify.State = "n/a"
+		im.status.Stack.State = "n/a"
+	} else if !app.pipeline().ImmichStack || pairs == 0 {
+		// Same for stacking specifically: off, or nothing to pair.
+		im.status.Stack.State = "n/a"
 	}
 	im.mu.Unlock()
 
@@ -186,6 +271,33 @@ func (im *Importer) run(app *App, dest, album string, keepers []keeperFile, opt 
 			s.Phase = phase
 		})
 	}
+	var totalBytes int64
+	for _, k := range keepers {
+		totalBytes += k.shot.Sizes[k.ext]
+	}
+	opts.TotalBytes = totalBytes
+	opts.StageProgress = func(name string, st pipeline.Stage) {
+		im.update(func(s *ImportStatus) {
+			lane := &s.Upload
+			switch name {
+			case pipeline.StageVerify:
+				lane = &s.Verify
+			case pipeline.StageStack:
+				lane = &s.Stack
+			case pipeline.StageCamera:
+				lane = &s.Camera
+			}
+			state := "running"
+			if st.Done {
+				state = "done"
+			}
+			*lane = ImportStage{
+				State: state, Files: st.Files, FilesTotal: st.FilesTotal,
+				Bytes: st.Bytes, BytesTotal: st.BytesTotal, Rate: st.Rate,
+				Cached: st.Cached, Failed: st.Failed,
+			}
+		})
+	}
 
 	var files []photo.FileEntry
 	ctx := context.Background()
@@ -193,7 +305,7 @@ func (im *Importer) run(app *App, dest, album string, keepers []keeperFile, opt 
 	// two use different resources, and serialising them doubled import time.
 	stream, err := pipeline.NewStreamer(ctx, opts, len(keepers))
 	if err == nil {
-		files, err = im.copyPhase(app, dest, keepers, stream.Add)
+		files, err = im.copyPhase(app, dest, keepers, totalBytes, stream.Add)
 		if err == nil && opt.Immich {
 			im.update(func(s *ImportStatus) { s.Phase = "upload" })
 		}
@@ -211,6 +323,16 @@ func (im *Importer) run(app *App, dest, album string, keepers []keeperFile, opt 
 		}
 	}
 
+	// Report what the server did, not how many files were attempted. Album
+	// adds and stacking are non-fatal, so a run can finish with err == nil and
+	// still have failures worth naming.
+	upOK, upDup, upFail := 0, 0, 0
+	if stream != nil {
+		upOK, upDup, upFail = stream.Counts()
+	}
+	im.mu.Lock()
+	im.finishedAt = time.Now()
+	im.mu.Unlock()
 	im.update(func(s *ImportStatus) {
 		s.File, s.FileSent, s.FileTotal, s.RateBps = "", 0, 0, 0
 		s.Running = false
@@ -220,11 +342,16 @@ func (im *Importer) run(app *App, dest, album string, keepers []keeperFile, opt 
 			s.Error = err.Error()
 		} else {
 			s.Phase = "done"
+			accepted := upOK + upDup
+			suffix := ""
+			if upFail > 0 {
+				suffix = fmt.Sprintf(", %d failed", upFail)
+			}
 			switch {
 			case staging != "":
-				s.Message = fmt.Sprintf("%d files uploaded to Immich (no local copy kept)", len(files))
+				s.Message = fmt.Sprintf("%d files uploaded to Immich%s (no local copy kept)", accepted, suffix)
 			case opt.Immich:
-				s.Message = fmt.Sprintf("%d files imported to %s and uploaded", len(files), dest)
+				s.Message = fmt.Sprintf("%d files imported to %s, %d uploaded%s", len(files), dest, accepted, suffix)
 			default:
 				s.Message = fmt.Sprintf("%d files imported to %s", len(files), dest)
 			}
@@ -263,7 +390,7 @@ func (im *Importer) run(app *App, dest, album string, keepers []keeperFile, opt 
 // kept, cached camera-verbatim copies (prefetched JPGs/RAFs/videos) are
 // copied locally, and the remainder is pulled from the camera in per-folder
 // batches. Returns the FileEntry list for the pipeline.
-func (im *Importer) copyPhase(app *App, dest string, keepers []keeperFile, onFile func(photo.FileEntry)) ([]photo.FileEntry, error) {
+func (im *Importer) copyPhase(app *App, dest string, keepers []keeperFile, totalBytes int64, onFile func(photo.FileEntry)) ([]photo.FileEntry, error) {
 	type pullItem struct {
 		it   fetchItem
 		size int64
@@ -273,6 +400,34 @@ func (im *Importer) copyPhase(app *App, dest string, keepers []keeperFile, onFil
 	files := make([]photo.FileEntry, len(keepers))
 	var toPull []pullItem
 	done := 0
+
+	// Camera-lane counters. Cached files are counted apart from pulled ones and
+	// excluded from the rate: they arrive instantly, so folding them in reports
+	// a link speed of several GB/s for the first second of every import.
+	var (
+		cached      int
+		bytesDone   int64
+		pulledBytes int64
+		pullStart   time.Time
+	)
+	noteCamera := func(complete bool) {
+		rate := 0.0
+		if !pullStart.IsZero() {
+			if el := time.Since(pullStart).Seconds(); el > 0 {
+				rate = float64(pulledBytes) / el
+			}
+		}
+		d, c, b := done, cached, bytesDone
+		im.update(func(s *ImportStatus) {
+			s.Done = d
+			s.Camera.Files, s.Camera.Cached = d, c
+			s.Camera.Bytes, s.Camera.BytesTotal = b, totalBytes
+			s.Camera.Rate = rate
+			if complete {
+				s.Camera.State = "done"
+			}
+		})
+	}
 
 	for i, k := range keepers {
 		name := k.shot.Files[k.ext]
@@ -284,16 +439,22 @@ func (im *Importer) copyPhase(app *App, dest string, keepers []keeperFile, onFil
 
 		wantSize := k.shot.Sizes[k.ext]
 		if st, err := os.Stat(target); err == nil && st.Size() > 0 && (wantSize == 0 || st.Size() == wantSize) {
-			done++
-			im.update(func(s *ImportStatus) { s.Done = done })
+			done, cached = done+1, cached+1
+			bytesDone += st.Size()
+			noteCamera(false)
 			onFile(files[i])
 			continue
 		}
-		if cached, ok := app.prefetch.CachedFile(k.shot, k.ext); ok {
+		if cachedPath, ok := app.prefetch.CachedFile(k.shot, k.ext); ok {
 			tmp := target + ".tmp"
-			if err := copyFile(cached, tmp); err == nil && commit(tmp, target) == nil {
-				done++
-				im.update(func(s *ImportStatus) { s.Done = done })
+			if err := copyFile(cachedPath, tmp); err == nil && commit(tmp, target) == nil {
+				done, cached = done+1, cached+1
+				if sz := wantSize; sz > 0 {
+					bytesDone += sz
+				} else if st, err := os.Stat(target); err == nil {
+					bytesDone += st.Size()
+				}
+				noteCamera(false)
 				onFile(files[i])
 				continue
 			}
@@ -326,6 +487,9 @@ func (im *Importer) copyPhase(app *App, dest string, keepers []keeperFile, onFil
 		log.Printf("import: pulling %d files from camera (%d satisfied locally)", len(toPull), done)
 	}
 	pending := toPull
+	if len(pending) > 0 {
+		pullStart = time.Now()
+	}
 	for round := 1; len(pending) > 0 && round <= 3; round++ {
 		if round > 1 {
 			log.Printf("import: retrying %d files (round %d/3)", len(pending), round)
@@ -380,7 +544,9 @@ func (im *Importer) copyPhase(app *App, dest string, keepers []keeperFile, onFil
 					return nil, err
 				}
 				done++
-				im.update(func(s *ImportStatus) { s.Done = done })
+				pulledBytes += st.Size()
+				bytesDone += st.Size()
+				noteCamera(false)
 				onFile(files[c.idx])
 			}
 			if garbage > 0 {
@@ -402,6 +568,7 @@ func (im *Importer) copyPhase(app *App, dest string, keepers []keeperFile, onFil
 		return nil, fmt.Errorf("camera pull: %d files failed after 3 attempts (first: %s/%s) — everything else is copied; run import again to resume",
 			len(pending), pending[0].it.CameraDir, pending[0].it.Name)
 	}
+	noteCamera(true)
 	return files, nil
 }
 
