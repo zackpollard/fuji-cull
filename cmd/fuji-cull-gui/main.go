@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -296,6 +297,7 @@ type ui struct {
 	videoBar   sdl.Rect
 
 	gridScrollY    int32
+	lastWheelAt    time.Time // monotonic clock of the last wheel event, for rate limiting
 	lastHint       int
 	lastGridCursor int
 	userCols       int  // grid columns; 0 = auto (width-derived)
@@ -1296,8 +1298,13 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 		if u.shots == nil {
 			return true
 		}
+		dy, ok := wheelDelta(e)
+		if !ok {
+			return true // mis-scaled duplicate stream; applying it lurches the view
+		}
+		dt := u.wheelBudget()
 		if u.mode == modeGrid {
-			u.gridScrollY -= int32(e.Y) * sc(90)
+			u.gridScrollY -= int32(wheelStep(dy, dt, scrollClicksPerSec) * float64(sc(90)))
 			if u.gridScrollY < 0 {
 				u.gridScrollY = 0
 			}
@@ -1306,10 +1313,10 @@ func (u *ui) handleEvent(ev sdl.Event) bool {
 		if u.curTexID == "" {
 			return true
 		}
+		dy = wheelStep(dy, dt, zoomClicksPerSec)
 		pmx, pmy, _ := sdl.GetMouseState()
 		st := u.stageRect()
-		factor := 1.0 + 0.15*float64(e.Y)
-		u.zoomAt(float64(pmx)*dpr-float64(st.X), float64(pmy)*dpr-float64(st.Y), u.scale*factor)
+		u.zoomAt(float64(pmx)*dpr-float64(st.X), float64(pmy)*dpr-float64(st.Y), u.scale*zoomFactor(dy))
 	case *sdl.MouseButtonEvent:
 		if e.Button == sdl.BUTTON_LEFT && u.shots != nil {
 			if e.Type == sdl.MOUSEBUTTONDOWN {
@@ -1487,6 +1494,80 @@ func (u *ui) text(f *ttf.Font, s string, c sdl.Color, x, y int32, center bool) {
 	}
 	u.ren.Copy(te.tex, nil, &dst)
 }
+
+// wheelSpurious is the magnitude past which a wheel event cannot be a real
+// gesture. Measured against a Getech HUGE TrackBall on sdl2-compat (libSDL2
+// here is a shim over SDL3), 6.8% of events arrive on what is plainly a second,
+// mis-scaled stream: magnitudes in the hundreds — 1481 was the largest — where
+// genuine events sit around 15. They give themselves away by carrying a
+// timestamp EARLIER than the event before them; every single one of the 156
+// backwards timestamps observed was one of these. Applied, a lone one of them
+// threw the zoom across its whole range in a single frame, which is the
+// "zooming out springs back in" this guards against.
+const wheelSpurious = 50
+
+// wheelDelta reduces a wheel event to a vertical step, reporting ok=false for
+// an event that should be dropped. PreciseY is the authoritative value: the
+// integer Y is rounded from it, and sdl2-compat rounds a real -1.0 scroll to
+// y=0, which would drop a genuine event entirely.
+func wheelDelta(e *sdl.MouseWheelEvent) (float64, bool) {
+	dy := float64(e.PreciseY)
+	if dy == 0 {
+		dy = float64(e.Y) // driver filled only the integer field
+	}
+	if e.Direction == sdl.MOUSEWHEEL_FLIPPED {
+		dy = -dy
+	}
+	if math.Abs(dy) > wheelSpurious {
+		return 0, false
+	}
+	return dy, true
+}
+
+// Wheel input has to be rate limited, not just clamped per event. A mouse
+// reports one click per detent, a few times a second. A trackball in
+// libinput's on_button_down mode reports one click every 10ms — 100 a second —
+// so a per-event step of any size compounds: at 15% per event the zoom
+// travelled its whole range in about 0.15s and pinned itself against a stop.
+// These caps are in clicks per second, which bounds the travel per unit of
+// TIME and so behaves the same however often the device reports.
+// Zoom travel is exponential, so the rate is an exponent: the scale moves by
+// 1.15^(rate x seconds). At 35 a flick of ~0.15s doubles the zoom and a
+// deliberate ~0.7s sweep crosses the whole fit-to-8x range. Turn this one
+// number to taste; it is the only thing setting zoom speed.
+const (
+	zoomClicksPerSec   = 35 // ~130x zoom per second of continuous scrolling
+	scrollClicksPerSec = 90 // ~8000 px per second down the grid
+)
+
+// wheelBudget returns the seconds elapsed since the previous wheel event, which
+// is what a per-second cap gets multiplied by. It reads a monotonic clock
+// rather than e.Timestamp: those timestamps are not monotonic here, and running
+// backwards made the elapsed time underflow to a huge value, handing the very
+// event that needed limiting an unlimited budget.
+//
+func (u *ui) wheelBudget() float64 {
+	now := time.Now()
+	dt := now.Sub(u.lastWheelAt).Seconds()
+	u.lastWheelAt = now
+	return dt
+}
+
+// wheelStep limits one event to the travel its rate allows over the elapsed
+// time, and to one click regardless — so the first event after a pause (an
+// isolated mouse detent, or the opening event of a trackball sweep) moves by
+// exactly one click instead of lurching.
+func wheelStep(dy, dt, clicksPerSec float64) float64 {
+	lim := minf(1, clicksPerSec*dt)
+	return maxf(-lim, minf(lim, dy))
+}
+
+// zoomFactor converts a wheel step into a scale multiplier. It has to be
+// exponential: the old 1+0.15*dy went to zero at dy=-6.67 and NEGATIVE beyond
+// it, so any burst bigger than a few clicks inverted the zoom and snapped the
+// image back to fit instead of zooming out. Exponentiation keeps every step
+// positive and makes zoom in and out exact inverses.
+func zoomFactor(dy float64) float64 { return math.Pow(1.15, dy) }
 
 func minf(a, b float64) float64 {
 	if a < b {
