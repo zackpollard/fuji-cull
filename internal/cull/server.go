@@ -600,8 +600,68 @@ func (a *App) handler() http.Handler {
 	})
 	// Auth is the outermost layer: reject unauthorized /api/* before readiness
 	// or any handler runs. A no-op when no engine key is configured.
-	return a.withAuth(readiness)
+	return logFailures(a.withAuth(readiness))
 }
+
+// logFailures logs any response that failed, with the message the client was
+// handed.
+//
+// Thirty-odd handlers call http.Error and not one of them logged. A camera that
+// 502s, an import refused with 409, a response that fails to encode — the
+// server stayed silent, and every client discards the response body anyway. So
+// an engine error was invisible at both ends at once, which is the worst
+// possible arrangement: the UI simply stops updating and nothing anywhere says
+// why. One wrapper covers every handler, including ones added later.
+func logFailures(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sw := &statusWriter{ResponseWriter: w}
+		next.ServeHTTP(sw, r)
+		// 404 is routine here rather than a fault: a thumbnail that is not
+		// cached yet, a video with no poster. Logging those would bury
+		// everything worth reading.
+		if sw.status < 400 || sw.status == http.StatusNotFound {
+			return
+		}
+		if msg := strings.TrimSpace(sw.body.String()); msg != "" {
+			log.Printf("api: %s %s -> %d: %s", r.Method, r.URL.Path, sw.status, msg)
+			return
+		}
+		log.Printf("api: %s %s -> %d", r.Method, r.URL.Path, sw.status)
+	})
+}
+
+// statusWriter records the status code and, for failures only, a bounded copy
+// of the body — which for http.Error is the error text itself.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+	body   strings.Builder
+}
+
+// maxLoggedBody keeps a stray large error body from filling the log; the
+// engine's messages are one line.
+const maxLoggedBody = 400
+
+func (s *statusWriter) WriteHeader(code int) {
+	if s.status == 0 {
+		s.status = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusWriter) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK // an implicit 200, as net/http would
+	}
+	if s.status >= 400 && s.body.Len() < maxLoggedBody {
+		s.body.Write(b[:min(len(b), maxLoggedBody-s.body.Len())])
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+// Unwrap keeps http.ResponseController working through the wrapper, so a future
+// handler that needs Flush or a deadline is not quietly broken by this.
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
