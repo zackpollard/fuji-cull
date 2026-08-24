@@ -218,11 +218,23 @@
   #importPanel button.primary { border-color: var(--keep); color: var(--keep); }
   #importPanel button.primary:hover { background: var(--keep); color: #06130b; }
   #importPanel button:hover { border-color: var(--fg); color: var(--fg); }
-  #importPanel .progress { display: none; flex-direction: column; gap: 8px; }
+  #importPanel .progress { display: none; flex-direction: column; gap: 11px; }
   #importPanel .progress.show { display: flex; }
   #importPanel .bar { height: 6px; background: var(--bg); border: 1px solid var(--line); }
   #importPanel .bar i { display: block; height: 100%; background: var(--keep); width: 0; transition: width .3s; }
   #importPanel .phase { color: var(--amber); letter-spacing: .15em; }
+  /* One lane per stage. The panel is narrower than 640px, so lanes use the
+     stacked form: label and counter on one line, bar full width beneath. */
+  #importPanel .lane { display: flex; flex-direction: column; gap: 5px; }
+  #importPanel .lane.off { opacity: .45; }
+  #importPanel .lane.hide { display: none; }
+  #importPanel .laneHead { display: flex; align-items: baseline; gap: 8px; }
+  #importPanel .laneName { letter-spacing: .12em; font-size: 11px; }
+  #importPanel .laneNum { margin-left: auto; color: var(--dim); font-size: 11px; text-align: right; }
+  #importPanel .laneNum .bad { color: var(--reject); }
+  #importPanel .lane.textOnly .bar { display: none; }
+  #importPanel .barThin { height: 3px; }
+  #importPanel .barThin i { background: var(--amber); }
   #importPanel .error { color: var(--reject); word-break: break-word; }
 
   #perfHud {
@@ -394,12 +406,26 @@
           <input id="impAlbum" placeholder="Trip 2026" spellcheck="false">
         </label>
         <div class="progress" id="impProgress">
-          <span class="phase" id="impPhase">COPY</span>
-          <div class="bar"><i id="impBar"></i></div>
-          <span class="row"><span id="impCount">0 / 0</span></span>
-          <span class="row"><span id="impUpCount"></span></span>
-          <span class="row"><span id="impFile"></span></span>
-          <div class="bar"><i id="impFileBar"></i></div>
+          <span class="phase" id="impPhase">IMPORT</span>
+          <div class="lane" id="impCamRow">
+            <div class="laneHead"><span class="laneName" style="color:var(--keep)">CAMERA</span><span class="laneNum" id="impCamNum"></span></div>
+            <div class="bar"><i id="impCamBar" style="background:var(--keep)"></i></div>
+          </div>
+          <div class="lane" id="impUpRow">
+            <div class="laneHead"><span class="laneName" style="color:var(--immich)">UPLOAD</span><span class="laneNum" id="impUpNum"></span></div>
+            <div class="bar"><i id="impUpBar" style="background:var(--immich)"></i></div>
+          </div>
+          <div class="lane" id="impStkRow">
+            <div class="laneHead"><span class="laneName" style="color:var(--buffered)">STACK</span><span class="laneNum" id="impStkNum"></span></div>
+            <div class="bar"><i id="impStkBar" style="background:var(--buffered)"></i></div>
+          </div>
+          <div class="lane textOnly" id="impVerRow">
+            <div class="laneHead"><span class="laneName" style="color:var(--dim)">VERIFY</span><span class="laneNum" id="impVerNum"></span></div>
+          </div>
+          <div class="lane" id="impFileRow">
+            <div class="laneHead"><span class="laneName" id="impFile"></span><span class="laneNum" id="impFileNum"></span></div>
+            <div class="bar barThin"><i id="impFileBar"></i></div>
+          </div>
           <span class="error" id="impError"></span>
         </div>
         <div class="actions">
@@ -1492,23 +1518,63 @@ function importSummary() {
 }
 function openImport() { importSummary(); renderImport(); $("importPanel").classList.add("show"); }
 function closeImport() { $("importPanel").classList.remove("show"); }
+function fmtElapsed(sec) {
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m + ":" + String(s).padStart(2, "0");
+}
+// Lanes are byte-denominated: a file count cannot tell a 25 MB JPEG from a
+// 62 MB RAF, and that asymmetry is most of a JPG+RAF import.
+function renderLane(id, st, bits) {
+  const row = $(id + "Row");
+  const state = (st && st.state) || "pending";
+  row.classList.toggle("hide", state === "n/a");
+  row.classList.toggle("off", state === "pending");
+  const bar = $(id + "Bar");
+  if (bar) {
+    const num = st.bytesTotal ? st.bytes : st.files;
+    const den = st.bytesTotal || st.filesTotal;
+    bar.style.width = den > 0 ? (100 * (num || 0) / den) + "%" : "0";
+  }
+  $(id + "Num").innerHTML = bits.filter(Boolean).join(" · ");
+}
 function renderImport() {
   const p = importStatus || {};
   const box = $("impProgress");
   const active = p.running || p.phase === "done" || p.phase === "error";
   box.classList.toggle("show", !!active);
   if (!active) return;
-  $("impPhase").textContent = (p.phase || "").toUpperCase() + (p.running ? "" : " — FINISHED");
-  // copy and upload run at the same time, so report them separately
-  $("impCount").textContent = "camera " + (p.done || 0) + " / " + (p.total || 0);
-  $("impUpCount").textContent = p.uploaded !== undefined && p.uploaded !== null
-    ? "immich " + p.uploaded + " / " + (p.total || 0) : "";
-  $("impBar").style.width = p.total ? (100 * p.done / p.total) + "%" : "0";
+  $("impPhase").textContent = "IMPORT"
+    + (p.elapsedSec ? " · " + fmtElapsed(p.elapsedSec) : "")
+    + (p.running ? "" : " — FINISHED");
+
+  // Stages overlap by design, so every lane is drawn every tick and any number
+  // of them may be moving. No lane is "the current step".
+  const cam = p.camera || {}, up = p.upload || {}, stk = p.stack || {}, ver = p.verify || {};
+  const files = (st) => (st.files || 0) + " / " + (st.filesTotal || 0);
+  const bytes = (st) => st.bytesTotal ? fmtBytes(st.bytes || 0) : "";
+  const rate = (st) => st.rate ? fmtRate(st.rate) : "";
+  const failed = (st) => st.failed ? '<span class="bad">' + st.failed + " failed</span>" : "";
+
+  renderLane("impCam", cam,
+    [files(cam), bytes(cam), cam.cached ? cam.cached + " cached" : "", rate(cam)]);
+  renderLane("impUp", up, [files(up), bytes(up), rate(up), failed(up)]);
+  renderLane("impStk", stk, [
+    (stk.files || 0) + " / " + (stk.filesTotal || 0) + " pairs",
+    stk.rate ? stk.rate.toFixed(1) + " pairs/s" : "", failed(stk),
+  ]);
+  // Verify is one bulk checksum query lasting a second or two — a status line,
+  // not something with a bar worth watching.
+  renderLane("impVer", ver, [
+    ver.state === "pending" ? "after the last upload"
+      : (ver.files || 0) + " / " + (ver.filesTotal || 0) + " on server",
+  ]);
+
   // Per-file bytes: a multi-GB video holds the file counter still for minutes.
   const ft = p.fileTotal || 0, fs = p.fileSent || 0;
-  $("impFile").textContent = ft
-    ? (p.file || "") + "  " + fmtBytes(fs) + " / " + fmtBytes(ft)
-      + (p.rateBps ? "   " + fmtRate(p.rateBps) : "")
+  $("impFileRow").classList.toggle("hide", !ft);
+  $("impFile").textContent = ft ? (p.file || "") : "";
+  $("impFileNum").textContent = ft
+    ? fmtBytes(fs) + " / " + fmtBytes(ft) + (p.rateBps ? " · " + fmtRate(p.rateBps) : "")
     : "";
   $("impFileBar").style.width = ft ? (100 * fs / ft) + "%" : "0";
   $("impError").textContent = p.error || "";
