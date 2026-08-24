@@ -172,3 +172,72 @@ func TestParseDeviceInfo(t *testing.T) {
 		t.Fatalf("bad parse: %+v", di)
 	}
 }
+
+// A refusal must be legible. The response container was being discarded, so
+// every refusal — busy, unsupported, bad property — surfaced identically as
+// "returned no data".
+func TestParseResponse(t *testing.T) {
+	container := func(code uint16, txn uint32, params ...uint32) []byte {
+		b := make([]byte, 12+4*len(params))
+		binary.LittleEndian.PutUint32(b[0:], uint32(len(b)))
+		binary.LittleEndian.PutUint16(b[4:], 3) // response
+		binary.LittleEndian.PutUint16(b[6:], code)
+		binary.LittleEndian.PutUint32(b[8:], txn)
+		for i, p := range params {
+			binary.LittleEndian.PutUint32(b[12+4*i:], p)
+		}
+		return b
+	}
+
+	r, err := ParseResponse(container(RespDeviceBusy, 42, 7))
+	if err != nil {
+		t.Fatalf("ParseResponse: %v", err)
+	}
+	if r.Code != RespDeviceBusy || r.Txn != 42 {
+		t.Errorf("got code=0x%04x txn=%d", r.Code, r.Txn)
+	}
+	if len(r.Params) != 1 || r.Params[0] != 7 {
+		t.Errorf("params = %v, want [7]", r.Params)
+	}
+	if r.OK() {
+		t.Error("DeviceBusy must not report OK")
+	}
+	if got := r.String(); got != "DeviceBusy (0x2019)" {
+		t.Errorf("String() = %q", got)
+	}
+
+	if r, err := ParseResponse(container(RespOK, 1)); err != nil || !r.OK() {
+		t.Errorf("OK container: %+v err=%v", r, err)
+	}
+
+	// An unnamed code still has to log usefully — the raw number is the point.
+	r, _ = ParseResponse(container(0x2FFF, 3))
+	if got := r.String(); got != "unknown (0x2fff)" {
+		t.Errorf("unnamed code rendered %q", got)
+	}
+
+	// Hosts differ in how much of the container they hand back; a bare code is
+	// still worth having rather than discarding the one fact we came for.
+	bare := []byte{0x19, 0x20}
+	if r, err := ParseResponse(bare); err != nil || r.Code != RespDeviceBusy {
+		t.Errorf("bare code: %+v err=%v", r, err)
+	}
+
+	// A data container is not a response; say so instead of reading a code out
+	// of the wrong offset.
+	data := container(RespOK, 1)
+	binary.LittleEndian.PutUint16(data[4:], 2)
+	if _, err := ParseResponse(data); err == nil {
+		t.Error("a data container should not parse as a response")
+	}
+	if _, err := ParseResponse([]byte{1, 2, 3}); err == nil {
+		t.Error("a runt buffer should not parse")
+	}
+
+	// Truncated container: the length field claims more than we were given.
+	trunc := container(RespStoreFull, 9, 1, 2, 3)
+	binary.LittleEndian.PutUint32(trunc[0:], 999)
+	if r, err := ParseResponse(trunc); err != nil || r.Code != RespStoreFull {
+		t.Errorf("truncated container: %+v err=%v", r, err)
+	}
+}

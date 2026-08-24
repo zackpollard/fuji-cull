@@ -89,7 +89,33 @@ type iccBackend struct {
 	mu       sync.Mutex
 	txn      uint32
 	objIDs   bool   // last Discover used object-path IDs, not PTP handles
+	indexed  bool   // a Discover has succeeded, so objIDs means something
 	identity string // "X-H2S 21AQ00123" once DeviceInfo has been parsed
+	ptpSince time.Time
+}
+
+// Index paths, as reported by IndexPath.
+const (
+	IndexPTP        = "ptp"         // card-wide GetObjectPropList sweeps
+	IndexICCObjects = "icc-objects" // ICC's own catalog, the fallback
+	IndexNone       = ""            // discovery has not succeeded yet
+)
+
+// IndexPath reports which index this session is serving from.
+//
+// Worth surfacing because the fallback is both silent and STICKY: once
+// discoverObjects succeeds the session keeps using it, and nothing retries PTP.
+// Until now the only way to know which path won was to read log lines.
+func (b *iccBackend) IndexPath() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.indexed {
+		return IndexNone
+	}
+	if b.objIDs {
+		return IndexICCObjects
+	}
+	return IndexPTP
 }
 
 // CameraIdentity returns "<model> <serial>" once discovery has parsed
@@ -151,22 +177,49 @@ func (b *iccBackend) Discover(ctx context.Context, progress func(stage string, f
 	if !b.t.Connected() {
 		return nil, fmt.Errorf("no camera session")
 	}
+	b.mu.Lock()
+	if b.ptpSince.IsZero() {
+		b.ptpSince = time.Now()
+	}
+	tryingFor := time.Since(b.ptpSince)
+	b.mu.Unlock()
+
+	t0 := time.Now()
 	out, err := b.discoverPTP(ctx, progress)
 	if err == nil {
 		b.mu.Lock()
-		b.objIDs = false
+		b.objIDs, b.indexed = false, true
 		b.mu.Unlock()
+		log.Printf("camera: index path = PTP sweeps (%d files in %s)",
+			len(out), time.Since(t0).Round(time.Millisecond))
 		return out, nil
 	}
-	log.Printf("camera: PTP index failed (%v) — falling back to the ICC catalog", err)
+	// Both timings matter: the PTP attempt's duration says whether it is being
+	// refused or merely queued, and the pair together says which path won the
+	// race against ICC's catalog completing.
+	// How long PTP has been attempted across every retry, not just this one.
+	// Whether the fallback is being taken because PTP is broken or merely
+	// because it has not had long enough is the open question, and this is the
+	// number that answers it.
+	ptpTook := time.Since(t0)
+	log.Printf("camera: PTP index failed after %s, %s into the session (%v) — trying the ICC catalog",
+		ptpTook.Round(time.Millisecond), tryingFor.Round(time.Second), err)
+	t1 := time.Now()
 	out, oerr := b.discoverObjects(ctx, progress)
 	if oerr != nil {
 		// surface the PTP error too: the fallback usually just isn't ready yet
+		log.Printf("camera: ICC catalog also unavailable after %s (%v)",
+			time.Since(t1).Round(time.Millisecond), oerr)
 		return nil, fmt.Errorf("%w (PTP: %v)", oerr, err)
 	}
 	b.mu.Lock()
-	b.objIDs = true
+	b.objIDs, b.indexed = true, true
 	b.mu.Unlock()
+	// Loud, because it is sticky: nothing retries PTP for the rest of the
+	// session, and the object path is the slower of the two.
+	log.Printf("camera: index path = ICC CATALOG FALLBACK (%d files in %s) — "+
+		"PTP was unavailable for %s and will not be retried this session",
+		len(out), time.Since(t1).Round(time.Millisecond), ptpTook.Round(time.Millisecond))
 	return out, nil
 }
 

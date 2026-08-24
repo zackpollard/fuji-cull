@@ -20,6 +20,7 @@ import (
 	"golang.org/x/image/math/fixed"
 
 	"github.com/zack/fuji-tools/internal/cull"
+	"github.com/zack/fuji-tools/internal/ptp"
 )
 
 // StartLocal boots the engine against a local media tree (the `dir` backend)
@@ -63,6 +64,25 @@ func StartLocal(dataDir, cacheDir, mediaRoot, session string) (*Engine, error) {
 	e := &Engine{app: app, ln: ln, port: ln.Addr().(*net.TCPAddr).Port}
 	go http.Serve(ln, handler)
 	return e, nil
+}
+
+// PTPResponseLabel names a PTP response code for the camera-link log.
+//
+// The Swift transport needs the name at the point it logs a refusal, and this
+// keeps the table in one place — a second copy in Swift would drift, and the
+// whole reason this exists is that the code was being discarded.
+func PTPResponseLabel(code int) string {
+	return ptp.Response{Code: uint16(code)}.String()
+}
+
+// PTPOpLabel names the operation in a command container, so a log line can say
+// which command the camera refused rather than only that one was refused.
+func PTPOpLabel(command []byte) string {
+	op, ok := ptp.CommandOp(command)
+	if !ok {
+		return "PTP"
+	}
+	return ptp.OpName(op)
 }
 
 // Transport is the camera link the host implements — on iOS, Swift's

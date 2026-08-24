@@ -33,6 +33,146 @@ const (
 	OpGetObjectPropList uint16 = 0x9805
 )
 
+var opNames = map[uint16]string{
+	OpGetDeviceInfo:     "GetDeviceInfo",
+	OpGetStorageIDs:     "GetStorageIDs",
+	OpGetObjectHandles:  "GetObjectHandles",
+	OpGetObjectInfo:     "GetObjectInfo",
+	OpGetPartialObject:  "GetPartialObject",
+	OpGetObjectPropList: "GetObjectPropList",
+}
+
+// OpName names an operation code for a log line. A diagnostic that does not
+// say WHICH command was refused only halves the mystery.
+func OpName(op uint16) string {
+	if n, ok := opNames[op]; ok {
+		return n
+	}
+	return fmt.Sprintf("op(0x%04x)", op)
+}
+
+// CommandOp reads the opcode back out of a command container, so a caller
+// holding only the bytes can still name what it sent.
+func CommandOp(b []byte) (uint16, bool) {
+	if len(b) < 8 || binary.LittleEndian.Uint16(b[4:]) != 1 {
+		return 0, false
+	}
+	return binary.LittleEndian.Uint16(b[6:]), true
+}
+
+// Response codes. The subset a Fuji body actually answers with, plus the
+// generic ones any PTP device can return.
+//
+// These exist because the response container was being thrown away: a camera
+// that refuses a command answers with a code saying WHY, and without it every
+// refusal looked identical to a timeout or an empty data phase. "PTP command
+// returned no data" cost a debugging session that a two-byte code would have
+// ended immediately.
+const (
+	RespOK                      uint16 = 0x2001
+	RespGeneralError            uint16 = 0x2002
+	RespSessionNotOpen          uint16 = 0x2003
+	RespInvalidTransactionID    uint16 = 0x2004
+	RespOperationNotSupported   uint16 = 0x2005
+	RespParameterNotSupported   uint16 = 0x2006
+	RespIncompleteTransfer      uint16 = 0x2007
+	RespInvalidStorageID        uint16 = 0x2008
+	RespInvalidObjectHandle     uint16 = 0x2009
+	RespDevicePropNotSupported  uint16 = 0x200A
+	RespStoreFull               uint16 = 0x200C
+	RespStoreNotAvailable       uint16 = 0x2013
+	RespSpecByFormatUnsupported uint16 = 0x2014
+	RespNoValidObjectInfo       uint16 = 0x2015
+	RespDeviceBusy              uint16 = 0x2019
+	RespInvalidParentObject     uint16 = 0x201A
+	RespInvalidParameter        uint16 = 0x201D
+	RespSessionAlreadyOpen      uint16 = 0x201E
+	RespTransactionCancelled    uint16 = 0x201F
+	RespInvalidObjectPropCode   uint16 = 0xA801
+	RespInvalidObjectPropFormat uint16 = 0xA802
+	RespInvalidObjectPropValue  uint16 = 0xA803
+	RespObjectPropNotSupported  uint16 = 0xA80A
+)
+
+var respNames = map[uint16]string{
+	RespOK:                      "OK",
+	RespGeneralError:            "GeneralError",
+	RespSessionNotOpen:          "SessionNotOpen",
+	RespInvalidTransactionID:    "InvalidTransactionID",
+	RespOperationNotSupported:   "OperationNotSupported",
+	RespParameterNotSupported:   "ParameterNotSupported",
+	RespIncompleteTransfer:      "IncompleteTransfer",
+	RespInvalidStorageID:        "InvalidStorageID",
+	RespInvalidObjectHandle:     "InvalidObjectHandle",
+	RespDevicePropNotSupported:  "DevicePropNotSupported",
+	RespStoreFull:               "StoreFull",
+	RespStoreNotAvailable:       "StoreNotAvailable",
+	RespSpecByFormatUnsupported: "SpecificationByFormatUnsupported",
+	RespNoValidObjectInfo:       "NoValidObjectInfo",
+	RespDeviceBusy:              "DeviceBusy",
+	RespInvalidParentObject:     "InvalidParentObject",
+	RespInvalidParameter:        "InvalidParameter",
+	RespSessionAlreadyOpen:      "SessionAlreadyOpen",
+	RespTransactionCancelled:    "TransactionCancelled",
+	RespInvalidObjectPropCode:   "InvalidObjectPropCode",
+	RespInvalidObjectPropFormat: "InvalidObjectPropFormat",
+	RespInvalidObjectPropValue:  "InvalidObjectPropValue",
+	RespObjectPropNotSupported:  "ObjectPropNotSupported",
+}
+
+// Response is a decoded PTP response container.
+type Response struct {
+	Code   uint16
+	Txn    uint32
+	Params []uint32
+}
+
+// OK reports whether the device accepted the command.
+func (r Response) OK() bool { return r.Code == RespOK }
+
+// String renders a response for a log line: the name when known, the raw code
+// either way — an unnamed code is still the most useful fact available.
+func (r Response) String() string {
+	if n, ok := respNames[r.Code]; ok {
+		return fmt.Sprintf("%s (0x%04x)", n, r.Code)
+	}
+	return fmt.Sprintf("unknown (0x%04x)", r.Code)
+}
+
+// ResponseName is the name of a response code, or "" when it is not one we
+// have a name for.
+func ResponseName(code uint16) string { return respNames[code] }
+
+// ParseResponse decodes a response container: length, type==3, code,
+// transaction id, then up to five u32 parameters.
+//
+// Hosts differ in what they hand back — some pass the whole container, some
+// only the payload — so a bare 2-byte code is accepted too rather than
+// discarding the one diagnostic we came for.
+func ParseResponse(b []byte) (Response, error) {
+	var r Response
+	if len(b) == 2 {
+		r.Code = binary.LittleEndian.Uint16(b)
+		return r, nil
+	}
+	if len(b) < 12 {
+		return r, fmt.Errorf("response: %d bytes, want at least 12", len(b))
+	}
+	if typ := binary.LittleEndian.Uint16(b[4:]); typ != 3 {
+		return r, fmt.Errorf("response: container type %d, want 3", typ)
+	}
+	r.Code = binary.LittleEndian.Uint16(b[6:])
+	r.Txn = binary.LittleEndian.Uint32(b[8:])
+	n := int(binary.LittleEndian.Uint32(b))
+	if n > len(b) {
+		n = len(b) // a truncated container still has a usable code
+	}
+	for off := 12; off+4 <= n && len(r.Params) < 5; off += 4 {
+		r.Params = append(r.Params, binary.LittleEndian.Uint32(b[off:]))
+	}
+	return r, nil
+}
+
 // Object property codes.
 const (
 	PropStorageID    uint16 = 0xDC01
