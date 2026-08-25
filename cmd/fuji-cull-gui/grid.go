@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/veandco/go-sdl2/sdl"
+
+	"github.com/zack/fuji-tools/internal/cull"
 )
 
 // Grid view: full-window thumbnail contact sheet, grouped into an
@@ -131,6 +133,11 @@ func (u *ui) drawGrid() {
 				} else {
 					// undecided hairline: the slot reads "not yet", not empty
 					u.fillRect(sdl.Rect{X: x, Y: sy + ch - sc(3), W: cw, H: sc(3)}, sdl.Color{R: 255, G: 255, B: 255, A: 20})
+				}
+				// corner tab: a stacked shot is tellable from a lone one
+				// without opening it
+				if cull.AltExt(s) != "" {
+					u.fillRect(sdl.Rect{X: x + cw - sc(9), Y: sy + sc(3), W: sc(6), H: sc(6)}, colImmich)
 				}
 				if idx == u.cursor {
 					u.ren.SetDrawColor(colAmber.R, colAmber.G, colAmber.B, 255)

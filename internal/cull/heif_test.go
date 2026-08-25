@@ -84,3 +84,30 @@ func TestMediaHeadAcceptsHEIF(t *testing.T) {
 		t.Error("zero bytes accepted as media")
 	}
 }
+
+// A raw+JPEG pair looks identical to a lone JPEG in the viewer, because the
+// camera's own rendering is what gets displayed. AltExt is what lets the UI
+// say otherwise.
+func TestAltExt(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{"heif+raf", map[string]string{"HEIC": "a.HEIC", "RAF": "a.RAF"}, "RAF"},
+		{"jpg+raf", map[string]string{"JPG": "a.JPG", "RAF": "a.RAF"}, "RAF"},
+		{"jpg only", map[string]string{"JPG": "a.JPG"}, ""},
+		{"heif only", map[string]string{"HEIC": "a.HEIC"}, ""},
+		// a lone raw is already the thing on display, so nothing rides along
+		{"raf only", map[string]string{"RAF": "a.RAF"}, ""},
+	}
+	for _, c := range cases {
+		if got := AltExt(&photo.Shot{Kind: "photo", Files: c.files}); got != c.want {
+			t.Errorf("%s: AltExt = %q, want %q", c.name, got, c.want)
+		}
+	}
+	v := &photo.Shot{Kind: "video", Files: map[string]string{"MOV": "a.MOV", "RAF": "a.RAF"}}
+	if got := AltExt(v); got != "" {
+		t.Errorf("video AltExt = %q, want empty", got)
+	}
+}

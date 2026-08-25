@@ -74,6 +74,15 @@ func (a *App) WaitImage(ctx context.Context, id string) (string, error) {
 	return a.prefetch.Wait(ctx, id)
 }
 
+// AltRendition reports the second rendition a shot carries ("RAF"), or "".
+func (a *App) AltRendition(id string) string {
+	s := a.catalog.Get(id)
+	if s == nil {
+		return ""
+	}
+	return AltExt(s)
+}
+
 // ImagePathIfReady returns the cached full-image path without waiting.
 func (a *App) ImagePathIfReady(id string) (string, bool) {
 	s := a.catalog.Get(id)

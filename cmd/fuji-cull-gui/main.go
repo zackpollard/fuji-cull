@@ -846,6 +846,11 @@ func (u *ui) drawViewer() {
 	if u.peaking {
 		u.text(u.fontSm, "PEAKING", colAmber, st.X+st.W-sc(110), st.Y+st.H-sc(30), false)
 	}
+	// What is on screen is the camera's own rendering; say when a raw rides
+	// along with it, since that is what a keep will import.
+	if alt := u.app.AltRendition(s.ID); alt != "" {
+		u.text(u.fontSm, alt+"+"+s.DisplayExt(), colImmich, st.X+sc(18), st.Y+sc(38), false)
+	}
 }
 
 func (u *ui) mountTexture(id string, te *texEntry, st sdl.Rect) {
@@ -1545,7 +1550,6 @@ const (
 // rather than e.Timestamp: those timestamps are not monotonic here, and running
 // backwards made the elapsed time underflow to a huge value, handing the very
 // event that needed limiting an unlimited budget.
-//
 func (u *ui) wheelBudget() float64 {
 	now := time.Now()
 	dt := now.Sub(u.lastWheelAt).Seconds()

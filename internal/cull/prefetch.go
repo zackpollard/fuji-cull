@@ -326,6 +326,22 @@ func (p *Prefetcher) originalPath(s *photo.Shot, ext string) string {
 // than pulled: a RAF yields its embedded preview, a HEIF a transcode.
 func needsConvert(ext string) bool { return ext == "RAF" || photo.IsHEIF(ext) }
 
+// AltExt names the rendition a shot carries besides the one on display — the
+// raw, when the camera wrote a JPEG or HEIF alongside it — or "" for the lone
+// files that make up most of a card. The viewer shows the camera's own
+// rendering (see photo.DisplayExt), so without being told, a raw+JPEG pair is
+// indistinguishable from a lone JPEG, and you cannot see what a keep will
+// actually carry into the import.
+func AltExt(s *photo.Shot) string {
+	if s.Kind != "photo" {
+		return ""
+	}
+	if _, ok := s.Files["RAF"]; ok && s.DisplayExt() != "RAF" {
+		return "RAF"
+	}
+	return ""
+}
+
 // streamCloseDebounce delays the post-navigation stream release so that rapid
 // tabbing through a bank of videos supersedes it: only a cursor that has
 // SETTLED releases the camera. Firing on every hop tore down the stream mpv was
