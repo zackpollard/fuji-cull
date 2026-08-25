@@ -64,12 +64,12 @@ type decodePool struct {
 	mu       sync.Mutex
 	app      *cull.App
 	want     []string // priority order, first = most urgent
-	inflight map[string]bool
+	inflight map[string]context.CancelFunc
 	done     map[string]*decoded
 }
 
 func newDecodePool(app *cull.App, workers int) *decodePool {
-	p := &decodePool{app: app, inflight: map[string]bool{}, done: map[string]*decoded{}}
+	p := &decodePool{app: app, inflight: map[string]context.CancelFunc{}, done: map[string]*decoded{}}
 	for i := 0; i < workers; i++ {
 		go p.worker()
 	}
@@ -78,9 +78,27 @@ func newDecodePool(app *cull.App, workers int) *decodePool {
 
 // SetWant replaces the priority list (called each frame with the cursor
 // window). Entries already decoded or inflight are skipped by workers.
+//
+// Anything no longer wanted is cancelled, and that is what makes a jump feel
+// immediate. A worker blocks inside WaitImage until ITS shot lands, so after a
+// jump every worker is still sitting on the window the cursor just left. The
+// shot you clicked cannot even be asked for until one frees — seconds, with
+// the camera idle the whole time, because the demand that preempts the
+// in-flight batch is raised inside Wait and Wait was never reached. Cancelling
+// costs nothing in transfers: the fetch batch has its own context and keeps
+// running, so bytes already on the way are still banked.
 func (p *decodePool) SetWant(ids []string) {
 	p.mu.Lock()
 	p.want = ids
+	wanted := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		wanted[id] = true
+	}
+	for id, cancel := range p.inflight {
+		if !wanted[id] {
+			cancel()
+		}
+	}
 	p.mu.Unlock()
 }
 
@@ -106,29 +124,28 @@ func (p *decodePool) Prune(keep map[string]bool) {
 	p.mu.Unlock()
 }
 
-func (p *decodePool) next() (string, bool) {
+func (p *decodePool) next() (string, context.Context, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, id := range p.want {
-		if p.inflight[id] || p.done[id] != nil {
+		if _, busy := p.inflight[id]; busy || p.done[id] != nil {
 			continue
 		}
-		p.inflight[id] = true
-		return id, true
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		p.inflight[id] = cancel
+		return id, ctx, true
 	}
-	return "", false
+	return "", nil, false
 }
 
 func (p *decodePool) worker() {
 	for {
-		id, ok := p.next()
+		id, ctx, ok := p.next()
 		if !ok {
 			time.Sleep(15 * time.Millisecond)
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		path, err := p.app.WaitImage(ctx, id) // camera fetch if not buffered
-		cancel()
 		var d decoded
 		d.when = time.Now()
 		if err != nil {
@@ -137,8 +154,16 @@ func (p *decodePool) worker() {
 			d.img, d.err = turbo.DecodeFile(path)
 		}
 		p.mu.Lock()
+		if cancel := p.inflight[id]; cancel != nil {
+			cancel() // release the context's timer
+		}
 		delete(p.inflight, id)
-		p.done[id] = &d
+		// A cancelled wait is the cursor having moved on, not a failure of
+		// this shot: leaving the error banked would make Get serve it as a
+		// failed decode for the next three seconds if the cursor came back.
+		if ctx.Err() == nil || d.err == nil {
+			p.done[id] = &d
+		}
 		p.mu.Unlock()
 	}
 }
