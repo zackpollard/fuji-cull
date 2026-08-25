@@ -303,6 +303,8 @@ func (im *Importer) copyPhase(app *App, dest string, keepers []keeperFile, onFil
 		switch {
 		case k.ext == "RAF":
 			kind = "raf"
+		case photo.IsHEIF(k.ext):
+			kind = "heif"
 		case k.shot.Kind == "video":
 			kind = "mov"
 		}

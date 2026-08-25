@@ -314,10 +314,17 @@ func (p *Prefetcher) displayPath(s *photo.Shot) string {
 	return filepath.Join(p.cache, s.SafeID()+".jpg")
 }
 
-// rafPath holds the full RAF pulled for preview extraction (reused at import).
-func (p *Prefetcher) rafPath(s *photo.Shot) string {
-	return filepath.Join(p.cache, s.SafeID()+".raf")
+// originalPath holds a camera file kept verbatim that cannot be shown as it
+// stands — a RAF, or a HEIF — pulled once so a displayable JPEG can be derived
+// from it, and reused at import. The extension is preserved so a cache written
+// by an older build (which only ever stored ".raf") still resolves.
+func (p *Prefetcher) originalPath(s *photo.Shot, ext string) string {
+	return filepath.Join(p.cache, s.SafeID()+"."+strings.ToLower(ext))
 }
+
+// needsConvert reports whether a shot's display file has to be derived rather
+// than pulled: a RAF yields its embedded preview, a HEIF a transcode.
+func needsConvert(ext string) bool { return ext == "RAF" || photo.IsHEIF(ext) }
 
 // streamCloseDebounce delays the post-navigation stream release so that rapid
 // tabbing through a bank of videos supersedes it: only a cursor that has
@@ -720,8 +727,8 @@ func (p *Prefetcher) CachedFile(s *photo.Shot, ext string) (string, bool) {
 	p.mu.Unlock()
 	var path string
 	switch {
-	case ext == "RAF":
-		path = p.rafPath(s) // present when the RAF itself was pulled
+	case needsConvert(ext):
+		path = p.originalPath(s, ext) // present when the original itself was pulled
 	case ext == "JPG" && s.Kind == "photo":
 		if _, hasJPG := s.Files["JPG"]; !hasJPG {
 			return "", false
@@ -1365,7 +1372,8 @@ func mediaValid(path, kind string) bool {
 	switch kind {
 	case "raf":
 		return string(b[:8]) == "FUJIFILM"
-	case "mov":
+	case "heif", "mov":
+		// both are ISO-BMFF: the box size leads, then the "ftyp" box type
 		return string(b[4:8]) == "ftyp"
 	default:
 		if b[0] != 0xFF || b[1] != 0xD8 {
@@ -1646,7 +1654,9 @@ func (p *Prefetcher) evictLocked() {
 		if d > p.evict {
 			s := p.cat.Shots[i]
 			_ = os.Remove(p.displayPath(s))
-			_ = os.Remove(p.rafPath(s))
+			if e := s.DisplayExt(); needsConvert(e) {
+				_ = os.Remove(p.originalPath(s, e))
+			}
 			p.removePreviews(s)
 			delete(p.state, id)
 		}
@@ -1732,27 +1742,22 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 	finished := make([]bool, len(targets))
 
 	for i, s := range targets {
-		var srcExt string
-		switch {
-		case s.Kind == "video":
-			srcExt = s.DisplayExt()
-		case s.Files["JPG"] != "":
-			srcExt = "JPG"
-		case s.Files["RAF"] != "":
-			srcExt = "RAF"
-		default:
+		srcExt := s.DisplayExt()
+		if srcExt == "" {
 			p.setState(s.ID, "failed", "no displayable file in shot")
 			finished[i] = true
 			continue
 		}
 		dest := p.displayPath(s)
-		if srcExt == "RAF" && s.Kind == "photo" {
-			dest = p.rafPath(s)
+		if s.Kind == "photo" && needsConvert(srcExt) {
+			dest = p.originalPath(s, srcExt)
 		}
 		kinds[i] = "jpg"
 		switch {
 		case s.Kind == "video":
 			kinds[i] = "mov"
+		case photo.IsHEIF(srcExt):
+			kinds[i] = "heif"
 		case srcExt == "RAF":
 			kinds[i] = "raf"
 		}
@@ -1968,20 +1973,53 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 // finalizeShot promotes a completed tmp pull into its cache location,
 // extracting the embedded preview for RAF-only shots.
 func (p *Prefetcher) finalizeShot(s *photo.Shot, tmp string) error {
-	if s.Kind == "photo" && s.Files["JPG"] == "" {
-		// RAF-only: keep the RAF, extract its embedded preview locally.
-		raf := p.rafPath(s)
-		if err := os.Rename(tmp, raf); err != nil {
+	if src := s.DisplayExt(); s.Kind == "photo" && needsConvert(src) {
+		// Keep the original — it is what an import uploads — and derive the
+		// JPEG the viewer shows: a RAF carries an embedded preview, a HEIF has
+		// to be transcoded.
+		orig := p.originalPath(s, src)
+		if err := os.Rename(tmp, orig); err != nil {
 			return err
 		}
 		jpgTmp := p.displayPath(s) + ".tmp"
-		if err := exif.ExtractPreview(raf, jpgTmp); err != nil {
+		var err error
+		if photo.IsHEIF(src) {
+			err = heifToJPEG(orig, jpgTmp)
+		} else {
+			err = exif.ExtractPreview(orig, jpgTmp)
+		}
+		if err != nil {
 			os.Remove(jpgTmp)
 			return err
 		}
 		return os.Rename(jpgTmp, p.displayPath(s))
 	}
 	return os.Rename(tmp, p.displayPath(s))
+}
+
+// heifTranscodeTimeout bounds one conversion. A 6240x4160 HEIF takes ~0.4s on
+// a desktop; the ceiling is only there so a wedged ffmpeg cannot stall the
+// buffer window behind it.
+const heifTranscodeTimeout = 60 * time.Second
+
+// heifToJPEG renders a HEIF still to a JPEG the viewer can decode. HEIF is
+// HEVC in an ISO-BMFF container, so neither libjpeg-turbo nor the Go image
+// package can read one; ffmpeg is already a dependency for video posters and
+// decodes it in one pass, applying any rotation the container asks for (which
+// is why the result needs no EXIF orientation of its own).
+func heifToJPEG(src, dst string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), heifTranscodeTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, ffmpegBin(), "-v", "error", "-y",
+		"-i", src, "-frames:v", "1", "-q:v", "3", dst).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("heif transcode %s: %w: %.200s", filepath.Base(src), err, out)
+	}
+	st, serr := os.Stat(dst)
+	if serr != nil || st.Size() == 0 {
+		return fmt.Errorf("heif transcode %s produced no image", filepath.Base(src))
+	}
+	return nil
 }
 
 func copyFile(src, dst string) error {
@@ -2054,17 +2092,7 @@ func normalizePTPTime(raw string) string {
 }
 
 // srcExtOf is the extension fetchBatch would have pulled for a shot.
-func srcExtOf(s *photo.Shot) string {
-	switch {
-	case s.Kind == "video":
-		return s.DisplayExt()
-	case s.Files["JPG"] != "":
-		return "JPG"
-	case s.Files["RAF"] != "":
-		return "RAF"
-	}
-	return ""
-}
+func srcExtOf(s *photo.Shot) string { return s.DisplayExt() }
 
 // handleNames asks the open partial-read session what a handle is called.
 // Falls back to nothing when there is no session — the caller then relies on

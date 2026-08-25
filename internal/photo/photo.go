@@ -4,6 +4,7 @@ package photo
 import (
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -11,8 +12,24 @@ var (
 	// FolderRe matches Fuji DCIM subfolders like "151_FUJI".
 	FolderRe = regexp.MustCompile(`\b\d{3}_FUJI\b`)
 	// FileRe matches Fuji media files like "DSCF0001.JPG".
-	FileRe = regexp.MustCompile(`DSCF\d+\.(JPG|MOV|RAF|MP4)`)
+	//
+	// HEIF is spelled two ways on purpose. The camera names the file
+	// "DSCF0001.HIF" and `ls` reports that, but the bulk `lsprops-all` listing
+	// reports the very same object as "DSCF0001.HEIC". Discovery uses whichever
+	// listing the camera answers, so a pattern that knows only one spelling
+	// finds the shots on one code path and silently drops them on the other.
+	FileRe = regexp.MustCompile(`DSCF\d+\.(JPG|MOV|RAF|MP4|HIF|HEIC)`)
 )
+
+// HEIFExts are the extensions holding a HEIF still. Nothing in the viewer can
+// decode one directly — it is HEVC in an ISO-BMFF container, not a JPEG — so a
+// shot carrying one gets a JPEG transcoded from it to display (see prefetch).
+var HEIFExts = []string{"HIF", "HEIC"}
+
+// IsHEIF reports whether an upper-case extension names a HEIF still.
+func IsHEIF(ext string) bool {
+	return slices.Contains(HEIFExts, ext)
+}
 
 // FileEntry is one media file moving through the import pipeline.
 type FileEntry struct {
@@ -52,7 +69,9 @@ type Shot struct {
 
 // DisplayExt returns the extension of the file used for on-screen preview.
 func (s *Shot) DisplayExt() string {
-	for _, ext := range []string{"JPG", "RAF", "MOV", "MP4"} {
+	// A HEIF outranks a RAF: both need converting before they can be shown,
+	// but the HEIF is the camera's own rendering of the frame.
+	for _, ext := range []string{"JPG", "HIF", "HEIC", "RAF", "MOV", "MP4"} {
 		if _, ok := s.Files[ext]; ok {
 			return ext
 		}

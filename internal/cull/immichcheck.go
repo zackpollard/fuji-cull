@@ -83,8 +83,9 @@ func (c *immichChecker) verbatimFile(s *photo.Shot) (string, bool) {
 		return c.pf.CachedFile(s, s.DisplayExt())
 	case s.Files["JPG"] != "":
 		return c.pf.CachedFile(s, "JPG")
-	case s.Files["RAF"] != "":
-		return c.pf.CachedFile(s, "RAF")
+	case needsConvert(s.DisplayExt()):
+		// a raw or HEIF shot uploads its original, not the JPEG we derived
+		return c.pf.CachedFile(s, s.DisplayExt())
 	}
 	return "", false
 }

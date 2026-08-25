@@ -197,6 +197,9 @@ func (p *Prefetcher) pickOrientBatchLocked(n int) []*photo.Shot {
 		if s.Kind != "photo" || s.ObjectIDs[s.DisplayExt()] == "" {
 			return false
 		}
+		if photo.IsHEIF(s.DisplayExt()) {
+			return false // EXIF lives in an ISO-BMFF box a head read cannot parse
+		}
 		_, known := p.orient[s.ID]
 		return !known
 	}
@@ -333,8 +336,12 @@ func (p *Prefetcher) pickHealBatchLocked(n int) []*photo.Shot {
 		return nil
 	}
 	needs := func(s *photo.Shot) bool {
+		// A HEIF head carries no JPEG thumbnail to lift, so sweeping one only
+		// spends camera reads to fail; its thumbnail comes from the transcoded
+		// display JPEG instead.
 		return s.Kind == "photo" && p.thumbs[s.ID] != thumbHave &&
-			!p.healTried[s.ID] && s.ObjectIDs[s.DisplayExt()] != ""
+			!p.healTried[s.ID] && s.ObjectIDs[s.DisplayExt()] != "" &&
+			!photo.IsHEIF(s.DisplayExt())
 	}
 	origin := p.thumbOriginLocked()
 	var batch []*photo.Shot
