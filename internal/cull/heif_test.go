@@ -59,3 +59,28 @@ func TestVerbatimSizeSkipsDerivedDisplayFiles(t *testing.T) {
 		t.Errorf("verbatimSize(JPG) = %d, want 12345", got)
 	}
 }
+
+// A HEIF head is ISO-BMFF, not a JPEG. mediaHead is the guard that decides a
+// partial read returned stale-buffer garbage, so misreading one as garbage
+// trips the camera-sick breaker on a perfectly healthy camera.
+func TestMediaHeadAcceptsHEIF(t *testing.T) {
+	heif := append([]byte{0, 0, 0, 0x18}, []byte("ftypheic0000heic")...)
+	if !mediaHead(heif) {
+		t.Error("HEIF head rejected — this trips the partial-read breaker")
+	}
+	mov := append([]byte{0, 0, 0, 0x14}, []byte("ftypqt  0000")...)
+	if !mediaHead(mov) {
+		t.Error("MOV head rejected")
+	}
+	jpg := []byte{0xFF, 0xD8, 0xFF, 0xE1, 0, 0, 0, 0}
+	if !mediaHead(jpg) {
+		t.Error("JPEG head rejected")
+	}
+	// what the guard exists for: replayed buffers must still be caught
+	if mediaHead([]byte("STALEBUF0123456789")) {
+		t.Error("stale-buffer garbage accepted as media")
+	}
+	if mediaHead([]byte{0, 0, 0, 0, 0, 0, 0, 0}) {
+		t.Error("zero bytes accepted as media")
+	}
+}

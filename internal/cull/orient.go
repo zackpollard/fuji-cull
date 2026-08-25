@@ -230,10 +230,14 @@ func (p *Prefetcher) fetchOrientBatch(ctx context.Context, batch []*photo.Shot) 
 
 	reqs := make([]mtppart.PartReq, len(batch))
 	for i, s := range batch {
+		size := int64(64 << 10)
+		if photo.IsHEIF(s.DisplayExt()) {
+			size = heifMetaHeadSize // its EXIF is an item in the meta box
+		}
 		reqs[i] = mtppart.PartReq{
 			ObjectID: s.ObjectIDs[s.DisplayExt()],
 			Offset:   0,
-			Size:     64 << 10,
+			Size:     size,
 			Dest:     filepath.Join(tmp, s.SafeID()+".bin"),
 		}
 	}
@@ -271,6 +275,11 @@ func (p *Prefetcher) fetchOrientBatch(ctx context.Context, batch []*photo.Shot) 
 		}
 		if !mediaHead(head) {
 			outs[i] = orientOut{id: s.ID, garbage: true}
+			continue
+		}
+		if photo.IsHEIF(s.DisplayExt()) {
+			o, _ := heifOrientation(head)
+			outs[i] = orientOut{id: s.ID, orient: uint8(o)}
 			continue
 		}
 		outs[i] = orientOut{id: s.ID, orient: uint8(jpegmeta.Orientation(head))}
@@ -320,11 +329,19 @@ func (p *Prefetcher) fetchOrientBatch(ctx context.Context, batch []*photo.Shot) 
 // partial-read binary is missing or the breaker is tripped.
 const healHeadSize = 128 << 10
 
-// mediaHead reports whether bytes begin like a JPEG or a Fuji RAF (whose
-// embedded preview jpegmeta reads transparently).
+// mediaHead reports whether bytes begin like media this camera can hand us: a
+// JPEG, a Fuji RAF (whose embedded preview jpegmeta reads transparently), or an
+// ISO-BMFF file — a HEIF still or a MOV.
+//
+// The ISO-BMFF case is not cosmetic. This is the guard that decides a partial
+// read returned stale-buffer garbage, and a HEIF head opens with a box length
+// and "ftyp" rather than a JPEG marker. Without it every HEIF sweep read looked
+// like garbage, tripped the breaker, recovered on the next probe and tripped
+// again — the camera reported sick while being perfectly healthy.
 func mediaHead(b []byte) bool {
 	return (len(b) >= 2 && b[0] == 0xFF && b[1] == 0xD8) ||
-		(len(b) >= 8 && string(b[:8]) == "FUJIFILM")
+		(len(b) >= 8 && string(b[:8]) == "FUJIFILM") ||
+		(len(b) >= 8 && string(b[4:8]) == "ftyp")
 }
 
 // heifMetaHeadSize covers a HEIF's ftyp and meta boxes — the item index — plus
