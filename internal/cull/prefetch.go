@@ -2010,8 +2010,11 @@ const heifTranscodeTimeout = 60 * time.Second
 func heifToJPEG(src, dst string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), heifTranscodeTimeout)
 	defer cancel()
+	// -f mjpeg is not optional: the destination is a ".jpg.tmp" staging path,
+	// and ffmpeg picks its muxer from the extension, so it refuses ".tmp"
+	// outright ("Unable to choose an output format").
 	out, err := exec.CommandContext(ctx, ffmpegBin(), "-v", "error", "-y",
-		"-i", src, "-frames:v", "1", "-q:v", "3", dst).CombinedOutput()
+		"-i", src, "-frames:v", "1", "-q:v", "3", "-f", "mjpeg", dst).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("heif transcode %s: %w: %.200s", filepath.Base(src), err, out)
 	}

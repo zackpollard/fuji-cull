@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/zack/fuji-tools/internal/heif"
 	"github.com/zack/fuji-tools/internal/jpegmeta"
 	"github.com/zack/fuji-tools/internal/mtppart"
 	"github.com/zack/fuji-tools/internal/photo"
@@ -197,9 +198,6 @@ func (p *Prefetcher) pickOrientBatchLocked(n int) []*photo.Shot {
 		if s.Kind != "photo" || s.ObjectIDs[s.DisplayExt()] == "" {
 			return false
 		}
-		if photo.IsHEIF(s.DisplayExt()) {
-			return false // EXIF lives in an ISO-BMFF box a head read cannot parse
-		}
 		_, known := p.orient[s.ID]
 		return !known
 	}
@@ -329,6 +327,48 @@ func mediaHead(b []byte) bool {
 		(len(b) >= 8 && string(b[:8]) == "FUJIFILM")
 }
 
+// heifMetaHeadSize covers a HEIF's ftyp and meta boxes — the item index — plus
+// the EXIF block that usually sits right behind them. 16 KB is generous: the
+// meta box measured about a kilobyte, and EXIF ended by 8 KB.
+const heifMetaHeadSize = 16 << 10
+
+// heifThumbFrom lifts a HEIF's embedded thumbnail using the item index in its
+// head. Returns nil (not an error) when the file carries no thumbnail item, so
+// the shot simply falls through to local generation.
+func (p *Prefetcher) heifThumbFrom(ctx context.Context, objectID string, head []byte) ([]byte, error) {
+	items, ok := heif.Items(head)
+	if !ok {
+		return nil, nil
+	}
+	th, ok := heif.Smallest(items, "jpeg")
+	if !ok || th.Length <= 0 || th.Length > 1<<20 {
+		return nil, nil
+	}
+	data, err := p.partsReadAt(ctx, objectID, th.Offset, th.Length)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+		return nil, nil // not a JPEG: treat as absent rather than bank garbage
+	}
+	return data, nil
+}
+
+// heifOrientation reads orientation and capture time out of the EXIF item a
+// HEIF stores alongside its images, both of which live in the same head read.
+func heifOrientation(head []byte) (orient int, taken string) {
+	items, ok := heif.Items(head)
+	if !ok {
+		return 1, ""
+	}
+	ex, ok := heif.Smallest(items, "Exif")
+	if !ok || ex.Offset+ex.Length > int64(len(head)) {
+		return 1, ""
+	}
+	tiff := heif.ExifTIFF(head[ex.Offset : ex.Offset+ex.Length])
+	return jpegmeta.Orientation(tiff), jpegmeta.DateTimeOriginal(tiff)
+}
+
 // pickHealBatchLocked selects photos still lacking thumbnails (fresh and
 // camera-impossible alike) that head reads haven't been tried on.
 func (p *Prefetcher) pickHealBatchLocked(n int) []*photo.Shot {
@@ -336,12 +376,8 @@ func (p *Prefetcher) pickHealBatchLocked(n int) []*photo.Shot {
 		return nil
 	}
 	needs := func(s *photo.Shot) bool {
-		// A HEIF head carries no JPEG thumbnail to lift, so sweeping one only
-		// spends camera reads to fail; its thumbnail comes from the transcoded
-		// display JPEG instead.
 		return s.Kind == "photo" && p.thumbs[s.ID] != thumbHave &&
-			!p.healTried[s.ID] && s.ObjectIDs[s.DisplayExt()] != "" &&
-			!photo.IsHEIF(s.DisplayExt())
+			!p.healTried[s.ID] && s.ObjectIDs[s.DisplayExt()] != ""
 	}
 	origin := p.thumbOriginLocked()
 	var batch []*photo.Shot
@@ -377,11 +413,35 @@ func (p *Prefetcher) fetchHealBatch(ctx context.Context, batch []*photo.Shot) {
 			Dest:     filepath.Join(tmp, s.SafeID()+".bin"),
 		}
 	}
+	heifOrient := make([]int, len(batch))
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second+time.Duration(len(batch))*100*time.Millisecond)
 	var runErr error
-	for _, r := range reqs {
+	for i, r := range reqs {
 		if cctx.Err() != nil {
 			break
+		}
+		if photo.IsHEIF(batch[i].DisplayExt()) {
+			// A HEIF hides its thumbnail inside the container instead of an
+			// EXIF segment, and this camera answers GetThumb for one with
+			// NoThumbnailPresent. Its meta box is a kilobyte at the front and
+			// says exactly where everything lives, so read that, then lift out
+			// just the thumbnail — ~28 KB all told, rather than the megabytes
+			// a blind head read would have to cover to reach it.
+			head, err := p.partsReadAt(cctx, r.ObjectID, 0, heifMetaHeadSize)
+			if err != nil {
+				runErr = err
+				break
+			}
+			data, err := p.heifThumbFrom(cctx, r.ObjectID, head)
+			if err != nil {
+				runErr = err
+				break
+			}
+			if data != nil {
+				os.WriteFile(r.Dest, data, 0o644)
+				heifOrient[i], _ = heifOrientation(head)
+			}
+			continue
 		}
 		data, err := p.partsReadAt(cctx, r.ObjectID, r.Offset, r.Size)
 		if err != nil {
@@ -419,8 +479,18 @@ func (p *Prefetcher) fetchHealBatch(ctx context.Context, batch []*photo.Shot) {
 			outs[i] = healOut{id: s.ID, garbage: true}
 			continue
 		}
-		o := healOut{id: s.ID, orient: uint8(jpegmeta.Orientation(head)), hasOrient: true}
-		th := jpegmeta.Thumbnail(head)
+		// A HEIF's file here IS its thumbnail — lifted from the container by
+		// the fetch loop, not an EXIF segment waiting to be parsed out of a
+		// head. Its orientation came from the same read, off the EXIF item.
+		var th []byte
+		var o healOut
+		if photo.IsHEIF(s.DisplayExt()) {
+			o = healOut{id: s.ID, orient: uint8(heifOrient[i]), hasOrient: heifOrient[i] > 0}
+			th = head
+		} else {
+			o = healOut{id: s.ID, orient: uint8(jpegmeta.Orientation(head)), hasOrient: true}
+			th = jpegmeta.Thumbnail(head)
+		}
 		if th == nil {
 			// No embedded thumbnail: fresh shots fall through to the gphoto2
 			// sweep, camera-impossible ones to the full-image generator.
