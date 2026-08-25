@@ -213,6 +213,12 @@ jobs:
       - name: update sidestore source feed
         env:
           TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
+          # The repository the assets were actually uploaded to. Hardcoding it
+          # meant a fork's feed advertised upstream's releases: the entry named
+          # the fork's tag but linked to a download that only exists upstream,
+          # so installing from it either 404s or silently fetches somebody
+          # else's build.
+          REPO: ${{ github.repository }}
         run: |
           python3 - <<PY
           import json, os, datetime
@@ -222,8 +228,8 @@ jobs:
           entry = {
             'version': os.environ['TAG'].lstrip('v'),
             'date': datetime.date.today().isoformat(),
-            'localizedDescription': 'See https://github.com/zackpollard/fuji-cull/releases/tag/' + os.environ['TAG'],
-            'downloadURL': 'https://github.com/zackpollard/fuji-cull/releases/download/' + os.environ['TAG'] + '/FujiCull.ipa',
+            'localizedDescription': 'See https://github.com/' + os.environ['REPO'] + '/releases/tag/' + os.environ['TAG'],
+            'downloadURL': 'https://github.com/' + os.environ['REPO'] + '/releases/download/' + os.environ['TAG'] + '/FujiCull.ipa',
             'size': os.path.getsize('dist/FujiCull.ipa'),
             'minOSVersion': '16.0',
           }
