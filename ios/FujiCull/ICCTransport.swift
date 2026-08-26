@@ -197,7 +197,14 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
         guard let command else { throw err("empty PTP command") }
         lock.lock(); let cam = camera; let open = sessionOpen; lock.unlock()
         guard let cam, open else { throw err("no camera session — \(authNow())") }
-        gate.wait(); defer { gate.signal() }
+        gate.wait()
+        // Released here only when the call actually settles. A timeout hands
+        // the release to a watchdog instead: the command is still outstanding
+        // inside ICC on a link the engine treats as single-threaded, and
+        // issuing the next one on top of it is how a slow link becomes a
+        // confused one.
+        var releaseGate = true
+        defer { if releaseGate { gate.signal() } }
 
         // Name the command: a diagnostic that does not say which request was
         // refused only halves the mystery. The table lives in Go so there is
@@ -225,7 +232,23 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
         // lands inside the window where the queue drains.
         if done.wait(timeout: .now() + 30) == .timedOut {
             call.abandon()
-            note("ptp \(op): no reply in 30s — \(authNow())")
+            note("ptp \(op): no reply in 30s — \(authNow()); holding the link until it settles")
+            releaseGate = false
+            // Not camQ: parking that queue would block the reads this is
+            // protecting. The cap exists so a reply that never comes cannot
+            // wedge the link for the rest of the session.
+            // Capture the semaphore, not self: releasing the link must not be
+            // conditional on anything else's lifetime. A missed signal here
+            // loses the permit permanently and every later camera call blocks
+            // on gate.wait() forever, with nothing logged to say so.
+            let gate = self.gate
+            DispatchQueue.global().async { [weak self] in
+                if done.wait(timeout: .now() + Self.strandedCallCap) == .timedOut {
+                    self?.note("ptp \(op): still no reply after a further "
+                        + "\(Int(Self.strandedCallCap))s — releasing the link anyway")
+                }
+                gate.signal()
+            }
             throw err("PTP \(op) timed out after 30s (\(authNow()))")
         }
 
@@ -255,6 +278,12 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
     private static func ms(_ from: Date) -> String {
         String(format: "%.0fms", Date().timeIntervalSince(from) * 1000)
     }
+
+    /// How long to keep the link reserved for a call that blew its timeout
+    /// before giving up on it. Long enough to cover ICC's measured ~150s
+    /// head-of-line block at session open, bounded so a lost reply cannot wedge
+    /// the link permanently.
+    private static let strandedCallCap: TimeInterval = 180
 
     // Object-path fallback: available once ICC's own catalog completes.
 
@@ -289,8 +318,10 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
         guard let objectID, let file = self.file(for: objectID) else {
             throw err("unknown object \(objectID ?? "")")
         }
-        gate.wait(); defer { gate.signal() }
-        return try readChunk(file, offset: offset, size: size)
+        gate.wait()
+        var handedOff = false
+        defer { if !handedOff { gate.signal() } }
+        return try readChunk(file, offset: offset, size: size, keptGate: &handedOff)
     }
 
     /// Whole-object pull. The prefetcher normally streams images through
@@ -300,7 +331,9 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
         guard let objectID, let destPath, let file = self.file(for: objectID) else {
             throw err("unknown object \(objectID ?? "")")
         }
-        gate.wait(); defer { gate.signal() }
+        gate.wait()
+        var handedOff = false
+        defer { if !handedOff { gate.signal() } }
 
         let url = URL(fileURLWithPath: destPath)
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
@@ -316,7 +349,7 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
         var off: Int64 = 0
         while off < total {
             let want = min(chunk, total - off)
-            let data = try readChunk(file, offset: off, size: want)
+            let data = try readChunk(file, offset: off, size: want, keptGate: &handedOff)
             if data.isEmpty { break }
             try handle.write(contentsOf: data)
             off += Int64(data.count)
@@ -326,25 +359,43 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
 
     // MARK: - internals
 
-    private func readChunk(_ file: ICCameraFile, offset: Int64, size: Int64) throws -> Data {
-        var out: Data?
-        var failure: Error?
+    /// Caller holds `gate`. Returns false when the read timed out and the gate
+    /// has been handed to a watchdog rather than released by the caller.
+    private func readChunk(_ file: ICCameraFile, offset: Int64, size: Int64,
+                           keptGate: inout Bool) throws -> Data {
+        let call = PTPCall()
         let done = DispatchSemaphore(value: 0)
-        camQ.async {
+        let started = Date()
+        camQ.async { [weak self] in
             file.requestReadData(atOffset: off_t(offset), length: off_t(size)) { data, error in
-                out = data
-                failure = error
+                let late = call.settle(data, nil, error)
                 done.signal()
+                guard late, let self else { return }
+                self.note(String(format: "read %@ @%lld+%lld: reply arrived LATE at %.1fs — %@",
+                                 file.name ?? "?", offset, size,
+                                 Date().timeIntervalSince(started),
+                                 error.map { self.describe($0) } ?? "\(data?.count ?? 0) bytes"))
             }
         }
         // above the engine's own partial-read watchdog so it wins the race
         if done.wait(timeout: .now() + 45) == .timedOut {
-            note("read \(file.name ?? "?") @\(offset)+\(size): no callback after 45s")
+            call.abandon()
+            note("read \(file.name ?? "?") @\(offset)+\(size): no callback after 45s"
+                + " — holding the link until it settles")
+            keptGate = true
+            let gate = self.gate
+            DispatchQueue.global().async { [weak self] in
+                if done.wait(timeout: .now() + Self.strandedCallCap) == .timedOut {
+                    self?.note("read \(file.name ?? "?"): still no reply — releasing the link anyway")
+                }
+                gate.signal()
+            }
             throw err("partial read timed out (offset \(offset), \(size) bytes)")
         }
+        let (data, _, failure) = call.take()
         if let failure { throw failure }
-        guard let out else { throw err("partial read returned no data") }
-        return out
+        guard let data else { throw err("partial read returned no data") }
+        return data
     }
 
     private func file(for id: String) -> ICCameraFile? {
