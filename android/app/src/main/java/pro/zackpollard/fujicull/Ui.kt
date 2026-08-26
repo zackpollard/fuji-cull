@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -91,6 +92,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 internal val Keep = Color(0xFF38D67A)
 internal val Reject = Color(0xFFFF5A3D)
@@ -101,6 +103,7 @@ internal val Line = Color(0xFF30352C)
 internal val Buffered = Color(0xFF4EA6FF)
 internal val Immich = Color(0xFF57C9C1)
 internal val Dim = Color(0xFF9DA093)
+internal val Muted = Color(0xFF6B6E62)   // pending: not started, not stalled
 
 @Composable
 fun CullApp(
@@ -442,6 +445,10 @@ private fun CullScreen(
     var enginePosters by remember { mutableStateOf(true) } // assume until told otherwise
     var viewing by remember { mutableIntStateOf(-1) }
     var importing by remember { mutableStateOf("") }
+    // The whole import status, so the dialog can draw stage lanes from it. The
+    // header chip only ever had room for one number, and the one it showed was
+    // the camera counter labelled as the upload.
+    var impStatus by remember { mutableStateOf<JSONObject?>(null) }
     // what the next import would send, and what it holds back as already done
     var pendingShots by remember { mutableStateOf(0) }
     var alreadyImported by remember { mutableStateOf(0) }
@@ -481,8 +488,18 @@ private fun CullScreen(
                     decisions.value = m
                 }
                 val imp = st.getJSONObject("import")
+                impStatus = imp
                 if (imp.optBoolean("running")) {
-                    importing = "importing ${imp.optInt("done")}/${imp.optInt("total")}"
+                    // Camera and upload advance at the same time, so the chip
+                    // names both rather than showing one and labelling it wrong.
+                    val cam = imp.optJSONObject("camera")
+                    val up = imp.optJSONObject("upload")
+                    val parts = mutableListOf<String>()
+                    if (cam != null) parts += "cam ${cam.optInt("files")}/${cam.optInt("filesTotal")}"
+                    if (up != null && up.optString("state") != "n/a") {
+                        parts += "immich ${up.optInt("files")}/${up.optInt("filesTotal")}"
+                    }
+                    importing = if (parts.isEmpty()) "importing…" else parts.joinToString(" · ")
                 } else if (importing.isNotEmpty() && importing != "import done") {
                     importing = imp.optString("error").ifEmpty { "import done" }
                 }
@@ -766,21 +783,71 @@ private fun CullScreen(
             immichConfigured = settings.url.isNotEmpty() && settings.key.isNotEmpty(),
             pendingShots = pendingShots,
             alreadyImported = alreadyImported,
+            status = impStatus,
             onStart = { album, reimport ->
                 importing = "importing…"
                 onAlbumUsed(album)
                 scope.launch { runCatching { api.startImport(importDest, album, reimport) } }
-                showImport = false
+                // Stays open: this is the only place the progress lanes are
+                // drawn, and closing on start hid the whole import.
             },
             onCancel = { showImport = false },
         )
     }
 }
 
+/** Binary units labelled GB/MB, matching humanBytes on the other clients. */
+private fun humanBytes(n: Long): String = when {
+    n >= 1L shl 30 -> String.format("%.2f GB", n.toDouble() / (1L shl 30))
+    n >= 1L shl 20 -> String.format("%.1f MB", n.toDouble() / (1L shl 20))
+    else -> "${n / 1024} KB"
+}
+
+private fun humanRate(bps: Double): String = when {
+    bps >= 1L shl 20 -> String.format("%.1f MB/s", bps / (1L shl 20))
+    bps >= 1L shl 10 -> String.format("%.0f KB/s", bps / (1L shl 10))
+    else -> String.format("%.0f B/s", bps)
+}
+
+/**
+ * One stage of an import. Copy, hash and upload overlap by design, so every
+ * lane is drawn on every tick and any number of them may be moving — there is
+ * no "current step" to highlight.
+ *
+ * Bars are byte-denominated wherever bytes are known: a file count cannot tell
+ * a 25 MB JPEG from a 62 MB RAF, and that gap is most of a JPG+RAF import.
+ */
+@Composable
+private fun StageLane(name: String, color: Color, stage: JSONObject?, counter: String) {
+    val state = stage?.optString("state") ?: "pending"
+    if (state == "n/a") return
+    val pending = state == "pending"
+    val num = stage?.optLong("bytes")?.takeIf { stage.optLong("bytesTotal") > 0 }
+        ?: stage?.optLong("files") ?: 0L
+    val den = stage?.optLong("bytesTotal")?.takeIf { it > 0 }
+        ?: stage?.optLong("filesTotal") ?: 0L
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(name, color = if (pending) Muted else color,
+                style = MaterialTheme.typography.labelSmall)
+            Spacer(Modifier.weight(1f))
+            Text(counter, color = if (pending) Muted else Dim,
+                style = MaterialTheme.typography.labelSmall)
+        }
+        // Plain track + fill rather than LinearProgressIndicator: Material's
+        // indicator draws rounded caps, a track gap and a stop dot, none of
+        // which the other clients have.
+        Box(Modifier.fillMaxWidth().height(4.dp).background(Line)) {
+            val frac = if (den > 0L) (num.toFloat() / den.toFloat()).coerceIn(0f, 1f) else 0f
+            Box(Modifier.fillMaxWidth(frac).height(4.dp).background(color))
+        }
+    }
+}
+
 @Composable
 private fun ImportDialog(
     initialAlbum: String, immichConfigured: Boolean,
-    pendingShots: Int, alreadyImported: Int,
+    pendingShots: Int, alreadyImported: Int, status: JSONObject?,
     onStart: (String, Boolean) -> Unit, onCancel: () -> Unit,
 ) {
     var album by remember { mutableStateOf(initialAlbum) }
@@ -819,9 +886,91 @@ private fun ImportDialog(
                         style = MaterialTheme.typography.bodySmall)
                 }
             }
+            val running = status?.optBoolean("running") == true
+            val phase = status?.optString("phase") ?: ""
+            if (running || phase == "done" || phase == "error") {
+                val elapsed = status?.optInt("elapsedSec") ?: 0
+                Text(
+                    "IMPORT" + (if (elapsed > 0) "  ${elapsed / 60}:%02d".format(elapsed % 60) else "")
+                        + (if (running) "" else " — finished"),
+                    color = Amber, style = MaterialTheme.typography.labelSmall,
+                )
+                val cam = status?.optJSONObject("camera")
+                val up = status?.optJSONObject("upload")
+                val stk = status?.optJSONObject("stack")
+                val ver = status?.optJSONObject("verify")
+
+                val camBits = buildList {
+                    add("${cam?.optInt("files") ?: 0} / ${cam?.optInt("filesTotal") ?: 0}")
+                    add(humanBytes(cam?.optLong("bytes") ?: 0L))
+                    (cam?.optInt("cached") ?: 0).takeIf { it > 0 }?.let { add("$it cached") }
+                    (cam?.optDouble("rate") ?: 0.0).takeIf { it > 0 }?.let { add(humanRate(it)) }
+                }
+                StageLane("CAMERA", Keep, cam, camBits.joinToString(" · "))
+
+                val upBits = buildList {
+                    add("${up?.optInt("files") ?: 0} / ${up?.optInt("filesTotal") ?: 0}")
+                    add(humanBytes(up?.optLong("bytes") ?: 0L))
+                    (up?.optDouble("rate") ?: 0.0).takeIf { it > 0 }?.let { add(humanRate(it)) }
+                    (up?.optInt("failed") ?: 0).takeIf { it > 0 }?.let { add("$it failed") }
+                }
+                StageLane("UPLOAD", Immich, up, upBits.joinToString(" · "))
+
+                val stkBits = buildList {
+                    add("${stk?.optInt("files") ?: 0} / ${stk?.optInt("filesTotal") ?: 0} pairs")
+                    (stk?.optDouble("rate") ?: 0.0).takeIf { it > 0 }
+                        ?.let { add(String.format("%.1f pairs/s", it)) }
+                    (stk?.optInt("failed") ?: 0).takeIf { it > 0 }?.let { add("$it failed") }
+                }
+                StageLane("STACK", Buffered, stk, stkBits.joinToString(" · "))
+
+                // Verify is one bulk checksum query lasting a second or two, so
+                // it is a status line rather than a bar nobody can watch.
+                if ((ver?.optString("state") ?: "n/a") != "n/a") {
+                    val verPending = ver?.optString("state") == "pending"
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("VERIFY", color = if (verPending) Muted else Dim,
+                            style = MaterialTheme.typography.labelSmall)
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            if (verPending) "after the last upload"
+                            else "${ver?.optInt("files") ?: 0} / ${ver?.optInt("filesTotal") ?: 0} on server",
+                            color = if (verPending) Muted else Dim,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+
+                // Per-file bytes: a multi-GB video holds every lane counter
+                // still for minutes at a time.
+                val fileTotal = status?.optLong("fileTotal") ?: 0L
+                if (fileTotal > 0L) {
+                    val sent = status?.optLong("fileSent") ?: 0L
+                    val rate = status?.optDouble("rateBps") ?: 0.0
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(status?.optString("file") ?: "", color = Color(0xFFECE9E0),
+                                style = MaterialTheme.typography.labelSmall)
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                humanBytes(sent) + " / " + humanBytes(fileTotal)
+                                    + (if (rate > 0) " · " + humanRate(rate) else ""),
+                                color = Dim, style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                        Box(Modifier.fillMaxWidth().height(3.dp).background(Line)) {
+                            val frac = (sent.toFloat() / fileTotal.toFloat()).coerceIn(0f, 1f)
+                            Box(Modifier.fillMaxWidth(frac).height(3.dp).background(Amber))
+                        }
+                    }
+                }
+                status?.optString("error")?.takeIf { it.isNotEmpty() }?.let {
+                    Text(it, color = Reject, style = MaterialTheme.typography.bodySmall)
+                }
+            }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = onCancel) { Text("CANCEL", color = Dim) }
-                Button(onClick = { onStart(album, reimport) }) { Text("START") }
+                TextButton(onClick = onCancel) { Text(if (running) "HIDE" else "CLOSE", color = Dim) }
+                Button(onClick = { onStart(album, reimport) }, enabled = !running) { Text("START") }
             }
         }
     }
