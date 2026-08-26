@@ -192,8 +192,15 @@ func startWith(o Options, backend Backend, session *Session, cache string) (*App
 	// power-cycled long after the app starts.
 	go func() {
 		var catalog *Catalog
-		for {
-			log.Printf("discovering camera files (backend=%s)...", backend.Name())
+		// Attempt number and elapsed time, because the interesting failures are
+		// races: ICC head-of-line blocks the link for ~150s at session open, so
+		// whether PTP or the catalog fallback wins depends on how many attempts
+		// land inside that window. Reconstructing that from timestamps alone was
+		// guesswork.
+		startedAt := time.Now()
+		for attempt := 1; ; attempt++ {
+			log.Printf("discovering camera files (backend=%s, attempt %d, %s in)...",
+				backend.Name(), attempt, time.Since(startedAt).Round(time.Second))
 			listings, err := backend.Discover(context.Background(), app.setDiscovery)
 			if err == nil {
 				catalog = buildCatalog(listings)
@@ -202,9 +209,17 @@ func startWith(o Options, backend Backend, session *Session, cache string) (*App
 				}
 				err = fmt.Errorf("no shots found on camera")
 			}
-			log.Printf("discover: %v (retrying in 5s)", err)
+			log.Printf("discover: attempt %d failed %s in (%v) — retrying in 5s",
+				attempt, time.Since(startedAt).Round(time.Second), err)
 			app.setDiscoveryError(err)
 			time.Sleep(5 * time.Second)
+		}
+		if ip, ok := backend.(interface{ IndexPath() string }); ok {
+			if p := ip.IndexPath(); p != "" {
+				app.mu.Lock()
+				app.indexPath = p
+				app.mu.Unlock()
+			}
 		}
 		log.Printf("catalog: %d shots", len(catalog.Shots))
 		// Re-key the session to the camera's identity once discovery has it:

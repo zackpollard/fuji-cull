@@ -43,7 +43,11 @@ type App struct {
 	discErr    string
 	camera     string // "X-H2S 21AQ00123" once discovery identified it
 	cameraSlug string // sanitized identity used as the sync namespace
-	sync       *syncer
+	// indexPath is which index the session is serving from ("ptp" or
+	// "icc-objects"). The ICC fallback is silent and sticky, so a session can
+	// spend its whole life on the slower path with nothing saying so.
+	indexPath string
+	sync      *syncer
 }
 
 // syncTarget returns the current session + sync slug under the lock. The session
@@ -190,12 +194,13 @@ func (a *App) handler() http.Handler {
 			}
 		}
 		a.mu.RLock()
-		cam := a.camera
+		cam, idx := a.camera, a.indexPath
 		a.mu.RUnlock()
 		writeJSON(w, map[string]any{
 			"session":     a.sessionName,
 			"camera":      cam,
 			"backend":     a.backend.Name(),
+			"indexPath":   idx,
 			"videoDirect": a.videoDirect(),
 			"dest":        a.dest,
 			"album":       a.album,

@@ -133,6 +133,62 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
         return camera == nil || catalogComplete
     }
 
+    /// One in-flight PTP call. Boxed in a class so the completion block can
+    /// still report after a timeout — the locals of `sendPTP` are gone by then,
+    /// and the reply's arrival time is the measurement that says whether the
+    /// timeout is simply too short for this card.
+    private final class PTPCall {
+        private let lk = NSLock()
+        private var abandoned = false
+        var data: Data?
+        var resp: Data?
+        var error: Error?
+
+        /// Records the reply. Returns true when nobody is waiting any more.
+        func settle(_ d: Data?, _ r: Data?, _ e: Error?) -> Bool {
+            lk.lock(); defer { lk.unlock() }
+            data = d; resp = r; error = e
+            return abandoned
+        }
+
+        func abandon() { lk.lock(); abandoned = true; lk.unlock() }
+
+        func take() -> (Data?, Data?, Error?) {
+            lk.lock(); defer { lk.unlock() }
+            return (data, resp, error)
+        }
+    }
+
+    /// The PTP response code out of a response container, or a bare code when
+    /// that is all the host hands back. nil when it is neither.
+    private func responseCode(_ d: Data?) -> UInt16? {
+        guard let d else { return nil }
+        let b = [UInt8](d)
+        if b.count == 2 { return UInt16(b[0]) | UInt16(b[1]) << 8 }
+        guard b.count >= 12, (UInt16(b[4]) | UInt16(b[5]) << 8) == 3 else { return nil }
+        return UInt16(b[6]) | UInt16(b[7]) << 8
+    }
+
+    /// Both ICC authorizations as they stand RIGHT NOW. Control auth is the gate
+    /// that makes commands vanish with no callback and no error, and it can be
+    /// pending or refused long after start() logged it once — so a failure has
+    /// to report the live value, not the boot value. Without this, a missing
+    /// grant and a busy camera are the same 30-second silence.
+    private func authNow() -> String {
+        guard browser.responds(to: #selector(ICDeviceBrowser.requestControlAuthorization(completion:))) else {
+            return "auth unavailable"
+        }
+        return "auth contents=\(browser.contentsAuthorizationStatus.rawValue)"
+            + " control=\(browser.controlAuthorizationStatus.rawValue)"
+    }
+
+    /// Domain and code, not just localizedDescription — only the description
+    /// survives the gomobile boundary, and ICC's codes are the identifying part.
+    private func describe(_ e: Error) -> String {
+        let ns = e as NSError
+        return "\(ns.domain) code=\(ns.code) \(ns.localizedDescription)"
+    }
+
     /// Sends one PTP command container, returns its data phase. The engine
     /// builds and parses everything (internal/ptp); this only moves bytes.
     /// Serialized by `gate`: MTP is a single-threaded link, and one in-flight
@@ -140,29 +196,64 @@ final class ICCTransport: NSObject, MobileTransportProtocol {
     func sendPTP(_ command: Data?, outData: Data?) throws -> Data {
         guard let command else { throw err("empty PTP command") }
         lock.lock(); let cam = camera; let open = sessionOpen; lock.unlock()
-        guard let cam, open else { throw err("no camera session") }
+        guard let cam, open else { throw err("no camera session — \(authNow())") }
         gate.wait(); defer { gate.signal() }
 
-        var out: Data?
-        var failure: Error?
+        // Name the command: a diagnostic that does not say which request was
+        // refused only halves the mystery. The table lives in Go so there is
+        // exactly one of it.
+        let op = MobilePTPOpLabel(command)
+        let call = PTPCall()
         let done = DispatchSemaphore(value: 0)
-        camQ.async {
+        let started = Date()
+        camQ.async { [weak self] in
             cam.requestSendPTPCommand(command, outData: outData) { data, resp, error in
-                out = data
-                failure = error
-                _ = resp // response container; the engine only needs the data phase
+                let late = call.settle(data, resp, error)
                 done.signal()
+                guard late, let self else { return }
+                let waited = Date().timeIntervalSince(started)
+                // requestSendPTPCommand hands back a non-optional Data here,
+                // unlike requestReadData below.
+                var what = "\(data.count) bytes"
+                if let c = self.responseCode(resp) { what += " · \(MobilePTPResponseLabel(Int(c)))" }
+                if let e = error { what = self.describe(e) }
+                self.note(String(format: "ptp %@: reply arrived LATE at %.1fs — %@", op, waited, what))
             }
         }
         // Below the engine's discover retry cadence: during ICC's startup
         // block individual calls time out and the engine retries until one
         // lands inside the window where the queue drains.
         if done.wait(timeout: .now() + 30) == .timedOut {
-            throw err("PTP command timed out")
+            call.abandon()
+            note("ptp \(op): no reply in 30s — \(authNow())")
+            throw err("PTP \(op) timed out after 30s (\(authNow()))")
         }
-        if let failure { throw failure }
-        guard let out else { throw err("PTP command returned no data") }
-        return out
+
+        let (data, resp, failure) = call.take()
+        let code = responseCode(resp)
+        let codeLabel = code.map { MobilePTPResponseLabel(Int($0)) }
+
+        if let failure {
+            let detail = codeLabel.map { " · camera said \($0)" } ?? ""
+            note("ptp \(op) failed after \(Self.ms(started)): \(describe(failure))\(detail)")
+            throw err("PTP \(op): \(describe(failure))\(detail)")
+        }
+        // A non-OK code with no NSError is the case that used to surface as
+        // "returned no data" — the camera answered, and said why.
+        if let code, code != 0x2001 {
+            note("ptp \(op) refused after \(Self.ms(started)): \(codeLabel ?? "?")")
+            throw err("PTP \(op) refused by the camera: \(codeLabel ?? "?")")
+        }
+        guard let data else {
+            let detail = codeLabel.map { " (camera said \($0))" } ?? " (no response container either)"
+            note("ptp \(op): empty data phase after \(Self.ms(started))\(detail)")
+            throw err("PTP \(op) returned no data\(detail)")
+        }
+        return data
+    }
+
+    private static func ms(_ from: Date) -> String {
+        String(format: "%.0fms", Date().timeIntervalSince(from) * 1000)
     }
 
     // Object-path fallback: available once ICC's own catalog completes.
