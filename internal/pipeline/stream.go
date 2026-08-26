@@ -62,6 +62,8 @@ type Streamer struct {
 	entries        []*photo.FileEntry
 	dirs           map[string]struct{}
 	ok, dup, fail  int
+	upBytes        int64
+	upDone         bool
 	toAlbum        []string
 	failedMessages []string
 	errs           []string
@@ -219,19 +221,40 @@ func (s *Streamer) upload(f *photo.FileEntry) bool {
 		s.failedMessages = append(s.failedMessages, fmt.Sprintf("%s: %v", f.LocalPath, err))
 	case duplicate:
 		s.dup++
+		s.upBytes += f.Size
 		f.AssetID = assetID
 		if s.albumID != "" && assetID != "" {
 			s.toAlbum = append(s.toAlbum, assetID)
 		}
 	default:
 		s.ok++
+		s.upBytes += f.Size
 		f.AssetID = assetID
 		if s.albumID != "" {
 			s.toAlbum = append(s.toAlbum, assetID)
 		}
 	}
-	s.opts.progress("upload", s.ok+s.dup+s.fail, s.total)
+	// Accepted files only. Counting failures as progress let a run where every
+	// upload failed finish with a full bar.
+	s.opts.progress("upload", s.ok+s.dup, s.total)
+	s.emitUpload()
 	return err == nil
+}
+
+// emitUpload publishes the upload stage. Caller holds s.mu.
+func (s *Streamer) emitUpload() {
+	s.progMu.Lock()
+	bps := s.rateBps
+	s.progMu.Unlock()
+	s.opts.stage(StageUpload, Stage{
+		Files:      s.ok + s.dup,
+		FilesTotal: s.total,
+		Bytes:      s.upBytes,
+		BytesTotal: s.opts.TotalBytes,
+		Rate:       bps,
+		Failed:     s.fail,
+		Done:       s.upDone,
+	})
 }
 
 // fileProg is one upload's byte counter.
@@ -294,6 +317,16 @@ func (s *Streamer) note(msg string) {
 	s.mu.Lock()
 	s.errs = append(s.errs, msg)
 	s.mu.Unlock()
+}
+
+// Counts reports what the server actually did with the files: accepted as new,
+// recognised as duplicates, and failed. Callers report outcomes with these
+// rather than with len(files), which is only ever the number ATTEMPTED — a
+// partly-failed run otherwise announces itself as a complete one.
+func (s *Streamer) Counts() (ok, dup, fail int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ok, s.dup, s.fail
 }
 
 // Files returns the entries as values, with whatever the workers learned.
@@ -368,20 +401,62 @@ func (s *Streamer) Wait() error {
 
 	log.Printf("--- validating against Immich ---")
 	s.opts.progress("validate", 0, len(files))
+	s.opts.stage(StageVerify, Stage{FilesTotal: len(files)})
 	missing, err := Validate(s.ctx, s.client, files)
 	if err != nil {
 		return fmt.Errorf("validate phase: %w", err)
 	}
+	s.opts.stage(StageVerify, Stage{
+		Files: len(files) - len(missing), FilesTotal: len(files), Done: len(missing) == 0,
+	})
+	// Retries report against the streamer's own denominators. The package-level
+	// Upload counts against len(missing), so letting it drive progress made the
+	// upload counter COLLAPSE from 400/400 to 2/2 the moment a retry began.
+	retryOpts := s.opts
+	retryOpts.Progress, retryOpts.StageProgress, retryOpts.FileProgress = nil, nil, nil
 	for attempt := 1; attempt <= s.opts.Retries && len(missing) > 0; attempt++ {
 		log.Printf("--- retry %d/%d for %d missing file(s) ---", attempt, s.opts.Retries, len(missing))
-		if err := Upload(s.ctx, s.opts, s.client, s.albumID, missing); err != nil {
+		var wasMissing int64
+		for _, f := range missing {
+			wasMissing += f.Size
+		}
+		if err := Upload(s.ctx, retryOpts, s.client, s.albumID, missing); err != nil {
 			log.Printf("retry upload error: %v", err)
 		}
 		missing, err = Validate(s.ctx, s.client, files)
 		if err != nil {
 			return fmt.Errorf("revalidation: %w", err)
 		}
+		// A retry that landed is real progress on both stages: the file is on
+		// the server, so it is no longer a failure. Its BYTES have to move too
+		// — the retry runs through the package-level Upload, which never
+		// touches upBytes, so the lane finished a clean import reading 95%.
+		var stillMissing int64
+		for _, f := range missing {
+			stillMissing += f.Size
+		}
+		s.mu.Lock()
+		if s.fail > len(missing) {
+			s.ok += s.fail - len(missing)
+			s.fail = len(missing)
+		}
+		if d := wasMissing - stillMissing; d > 0 {
+			s.upBytes += d
+		}
+		s.emitUpload()
+		s.mu.Unlock()
+		s.opts.stage(StageVerify, Stage{
+			Files: len(files) - len(missing), FilesTotal: len(files), Done: len(missing) == 0,
+		})
 	}
+	// Uploading is over once the retries have settled — pass or fail. Without
+	// this the lane sat at "running" on a finished import, so every client drew
+	// the upload as still in flight after the run ended.
+	s.mu.Lock()
+	s.upDone = true
+	s.emitUpload()
+	s.mu.Unlock()
+
 	if len(missing) > 0 {
 		for _, f := range missing {
 			log.Printf("  MISSING: %s", f.LocalPath)
@@ -393,7 +468,7 @@ func (s *Streamer) Wait() error {
 
 	if s.opts.ImmichStack && !s.opts.DryRun {
 		log.Printf("--- stacking RAF+JPG pairs ---")
-		StackPairs(s.ctx, s.client, files)
+		StackPairs(s.ctx, s.opts, s.client, files)
 	}
 	Report(s.opts.Dest, files)
 	return nil

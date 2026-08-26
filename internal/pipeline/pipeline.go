@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/zack/fuji-tools/internal/exif"
 	"github.com/zack/fuji-tools/internal/hashutil"
@@ -43,8 +44,18 @@ type Options struct {
 	// it. Only sane for staged copies: the camera still holds the original,
 	// so the worst case is re-running the import.
 	DeleteAfterUpload bool
+	// TotalBytes is the byte size of the whole selection, known by the caller
+	// before any file lands. Stage counters need a denominator in bytes: a
+	// file count cannot distinguish a 25 MB JPEG from a 62 MB RAF, and the
+	// two are most of an import's asymmetry.
+	TotalBytes int64
 	// Progress, when non-nil, receives (phase, done, total) updates.
 	Progress func(phase string, done, total int)
+	// StageProgress, when non-nil, receives one stage's counters whenever they
+	// move. Copy, hash and upload overlap by design, so there is no single
+	// active phase to report — each stage carries its own numbers and any
+	// number of them may be advancing at once.
+	StageProgress func(stage string, st Stage)
 	// FileProgress, when non-nil, receives the upload currently worth showing:
 	// its name, bytes sent so far, its size, and the current rate in bytes per
 	// second. A 4 GB video otherwise looks like a stalled import.
@@ -54,6 +65,44 @@ type Options struct {
 func (o Options) progress(phase string, done, total int) {
 	if o.Progress != nil {
 		o.Progress(phase, done, total)
+	}
+}
+
+// Stage names are the vocabulary the UIs render lanes from. Hashing is
+// deliberately absent: it is interleaved with the upload on the same worker
+// and never observable on its own, so a lane for it would only ever be a
+// phantom.
+const (
+	StageCamera = "camera"
+	StageUpload = "upload"
+	StageVerify = "verify"
+	StageStack  = "stack"
+)
+
+// Stage is one stage's live counters.
+//
+// Files and Bytes are the numerator, FilesTotal and BytesTotal the
+// denominator; for StageStack both count PAIRS rather than files and Rate is
+// pairs per second. Failed is carried separately from Files so a run where
+// every upload failed cannot show a full bar.
+type Stage struct {
+	Files      int
+	FilesTotal int
+	Bytes      int64
+	BytesTotal int64
+	Rate       float64
+	// Cached counts files that were already on disk and never crossed the
+	// camera link. Reporting it keeps the camera bar honest: half of a
+	// JPG+RAF import can arrive in the first instant, and without this the
+	// jump looks like a broken counter rather than a cache hit.
+	Cached int
+	Failed int
+	Done   bool
+}
+
+func (o Options) stage(name string, st Stage) {
+	if o.StageProgress != nil {
+		o.StageProgress(name, st)
 	}
 }
 
@@ -117,7 +166,7 @@ func Run(ctx context.Context, opts Options, files []photo.FileEntry) error {
 
 		if opts.ImmichStack && !opts.DryRun {
 			log.Printf("--- stacking RAF+JPG pairs ---")
-			StackPairs(ctx, client, files)
+			StackPairs(ctx, opts, client, files)
 		}
 	}
 
@@ -282,7 +331,11 @@ func Upload(ctx context.Context, opts Options, client *immich.Client, albumID st
 // StackPairs groups each RAF+JPG pair of the same shot into an Immich stack
 // with the JPG as the primary asset. Failures are logged, not fatal: the
 // assets themselves are already uploaded and verified.
-func StackPairs(ctx context.Context, client *immich.Client, files []photo.FileEntry) {
+//
+// One request per pair, sequentially. Whether that is too slow to leave alone
+// is a measurement nobody had, so the stage reports pairs per second and the
+// summary logs the elapsed time — decide with numbers, not with a hunch.
+func StackPairs(ctx context.Context, opts Options, client *immich.Client, files []photo.FileEntry) {
 	type pair struct{ jpg, raf string }
 	pairs := map[string]*pair{}
 	var keys []string
@@ -307,6 +360,24 @@ func StackPairs(ctx context.Context, client *immich.Client, files []photo.FileEn
 	}
 	sort.Strings(keys)
 
+	// Only complete pairs are stackable, so the denominator is those — not
+	// every key. A total that counts singles would leave the bar short of the
+	// end on any import carrying JPG-only shots or videos.
+	total := 0
+	for _, key := range keys {
+		if p := pairs[key]; p.jpg != "" && p.raf != "" && p.jpg != p.raf {
+			total++
+		}
+	}
+	st := Stage{FilesTotal: total, BytesTotal: 0}
+	opts.stage(StageStack, st)
+	if total == 0 {
+		st.Done = true
+		opts.stage(StageStack, st)
+		return
+	}
+
+	t0 := time.Now()
 	stacked, failed := 0, 0
 	for _, key := range keys {
 		p := pairs[key]
@@ -316,11 +387,24 @@ func StackPairs(ctx context.Context, client *immich.Client, files []photo.FileEn
 		if err := client.CreateStack(ctx, []string{p.jpg, p.raf}); err != nil {
 			failed++
 			log.Printf("WARN: stack %s: %v", key, err)
-			continue
+		} else {
+			stacked++
 		}
-		stacked++
+		st.Files, st.Failed = stacked, failed
+		if el := time.Since(t0).Seconds(); el > 0 {
+			st.Rate = float64(stacked+failed) / el
+		}
+		opts.stage(StageStack, st)
 	}
-	log.Printf("Stacked %d RAF+JPG pair(s), %d failed", stacked, failed)
+	el := time.Since(t0)
+	st.Done = true
+	opts.stage(StageStack, st)
+	rate := 0.0
+	if el.Seconds() > 0 {
+		rate = float64(stacked+failed) / el.Seconds()
+	}
+	log.Printf("Stacked %d RAF+JPG pair(s), %d failed, in %s (%.1f pairs/s)",
+		stacked, failed, el.Round(time.Millisecond), rate)
 }
 
 // Validate bulk-checks all files against Immich by checksum and returns the
