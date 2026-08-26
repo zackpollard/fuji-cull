@@ -246,6 +246,7 @@ func uploadRGBA(r *sdl.Renderer, img *turbo.Image) (*texEntry, error) {
 type ui struct {
 	app      *cull.App
 	apiBase  string // in-process HTTP server, for mpv stream URLs
+	apiKey   string // engine key, when one is set: mpv must authenticate too
 	pool     *decodePool
 	ren      *sdl.Renderer
 	win      *sdl.Window
@@ -500,7 +501,7 @@ func main() {
 		apiBase = "http://127.0.0.1:" + port
 	}
 
-	if err := run(app, apiBase, *decodeAhead, *decodeBehind); err != nil {
+	if err := run(app, apiBase, o.EngineKey, *decodeAhead, *decodeBehind); err != nil {
 		log.Fatalf("%v", err)
 	}
 }
@@ -523,7 +524,7 @@ func findMonoFont() string {
 	return "/usr/share/fonts/TTF/DejaVuSansMono.ttf"
 }
 
-func run(app *cull.App, apiBase string, decodeAhead, decodeBehind int) error {
+func run(app *cull.App, apiBase, apiKey string, decodeAhead, decodeBehind int) error {
 	runtime.LockOSThread()
 	if err := sdl.Init(sdl.INIT_VIDEO | sdl.INIT_EVENTS); err != nil {
 		return err
@@ -563,7 +564,7 @@ func run(app *cull.App, apiBase string, decodeAhead, decodeBehind int) error {
 		workers = 2
 	}
 	u := &ui{
-		app: app, apiBase: apiBase, ren: ren, win: win, fontPath: fontPath,
+		app: app, apiBase: apiBase, apiKey: apiKey, ren: ren, win: win, fontPath: fontPath,
 		pool:        newDecodePool(app, workers),
 		decodeAhead: decodeAhead, decodeBehind: decodeBehind,
 		full:  newTexCache(16),

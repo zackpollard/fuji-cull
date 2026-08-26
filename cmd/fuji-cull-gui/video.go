@@ -11,6 +11,21 @@ import (
 	"github.com/zack/fuji-tools/internal/mpvsw"
 )
 
+// videoURL addresses the in-process HTTP server for mpv.
+//
+// The key has to ride in the query string: --engine-key gates every /api/ path,
+// and mpv cannot be given a request header. Without it the engine 401s its own
+// player, so turning on LAN access silently killed video in the desktop app —
+// the stream fell back to "VIDEO NOT BUFFERED" with the reason visible only as
+// an unauthorized line in the log.
+func videoURL(apiBase, apiKey, id string) string {
+	u := apiBase + "/api/video?id=" + url.QueryEscape(id)
+	if apiKey != "" {
+		u += "&key=" + url.QueryEscape(apiKey)
+	}
+	return u
+}
+
 // drawVideo renders the current video shot: embedded mpv playback from the
 // local buffer when pulled, else streamed straight off the camera; the
 // pull-on-demand placeholder only remains for when neither is possible.
@@ -20,7 +35,7 @@ func (u *ui) drawVideo(st sdl.Rect) {
 	if path, ready := u.app.VideoPathIfReady(s.ID); ready {
 		src = path
 	} else if u.fetchStates[s.ID] != "fetching" && u.app.CanStreamVideo(s.ID) {
-		src = u.apiBase + "/api/video?id=" + url.QueryEscape(s.ID)
+		src = videoURL(u.apiBase, u.apiKey, s.ID)
 		streaming = true
 	}
 
