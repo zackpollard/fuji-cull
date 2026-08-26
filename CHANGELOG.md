@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.9.0](https://github.com/zackpollard/fuji-cull/compare/v1.8.0...v1.9.0) (2026-08-26)
+
+
+### Features
+
+* **camera:** make a PTP refusal say why ([be62312](https://github.com/zackpollard/fuji-cull/commit/be623129d9b133f485d921e88b5feda8fd8734ea))
+* **camera:** make a PTP refusal say why ([78fadd2](https://github.com/zackpollard/fuji-cull/commit/78fadd2420c2b0c7323cebb373423e586ee42422))
+* **camera:** support HEIF stills (.HIF/.HEIC) ([ef45f1f](https://github.com/zackpollard/fuji-cull/commit/ef45f1fb319719e523882e537fb4f6b66e12ebeb))
+* **gui:** show when a shot has a raw stacked with it ([20a5e2e](https://github.com/zackpollard/fuji-cull/commit/20a5e2e2d4678819c9841819a307e48289fa7fa1))
+* **import:** draw the desktop import panel as stage lanes ([#29](https://github.com/zackpollard/fuji-cull/issues/29)) ([b3f3395](https://github.com/zackpollard/fuji-cull/commit/b3f3395e80e46dd4081406d2bcd5154d9df600bb))
+* **import:** draw the web import panel as stage lanes ([#28](https://github.com/zackpollard/fuji-cull/issues/28)) ([74db496](https://github.com/zackpollard/fuji-cull/commit/74db496d39b6650745215a44476dd96ab347a767))
+* **import:** report progress per stage instead of one active phase ([#27](https://github.com/zackpollard/fuji-cull/issues/27)) ([bc55ad3](https://github.com/zackpollard/fuji-cull/commit/bc55ad39c1831bc765ed6b387e14f40b42065fa9))
+* **import:** stage lanes in the Android import dialog ([#30](https://github.com/zackpollard/fuji-cull/issues/30)) ([5454bfe](https://github.com/zackpollard/fuji-cull/commit/5454bfe00d514a6affa203bc70a46c931783aaf3))
+* **ios:** stage lanes in the import sheet ([#31](https://github.com/zackpollard/fuji-cull/issues/31)) ([5db3f29](https://github.com/zackpollard/fuji-cull/commit/5db3f2987ddb37741f578ec319893bdccc2c63d4))
+
+
+### Bug Fixes
+
+* **api:** log responses that failed ([57e749d](https://github.com/zackpollard/fuji-cull/commit/57e749d4b49d2707cb9687475c9903e7d997d15f))
+* **api:** log responses that failed ([bc57809](https://github.com/zackpollard/fuji-cull/commit/bc578093cb149cae62a4303c2041364f6c26be7a))
+* **camera:** stop reusing the camera link while a call is outstanding ([00b3f4b](https://github.com/zackpollard/fuji-cull/commit/00b3f4b23d3e4f0b14f92a230dcf51d7fe65766b))
+* **camera:** stop reusing the camera link while a call is outstanding ([7974987](https://github.com/zackpollard/fuji-cull/commit/797498746ad31176e97b6f87fde4c042c08f057d))
+* **clients:** stop discarding poll failures ([fbca002](https://github.com/zackpollard/fuji-cull/commit/fbca002d29e8da0a75ed66b1f92a660a22c21230))
+* **clients:** stop discarding poll failures ([11b73c9](https://github.com/zackpollard/fuji-cull/commit/11b73c964c4a4c0997bd3146f5dde5b20aa7c575))
+* **gui:** make a jump to an unbuffered shot start fetching immediately ([4cf5f1d](https://github.com/zackpollard/fuji-cull/commit/4cf5f1d7863985ab8405dd0f48bb8b9d781ecd99))
+* **gui:** stop stray wheel events flinging the zoom and grid ([4f47c05](https://github.com/zackpollard/fuji-cull/commit/4f47c05f527a889c6c568acdd8845b9ff355e9e8))
+* **heif:** stop a HEIF head reading as stale-buffer garbage ([ac25f0b](https://github.com/zackpollard/fuji-cull/commit/ac25f0bad9a647113f5e08669a4afcbd32608314))
+* **heif:** thumbnails from the container, and a transcode that runs ([c01f24e](https://github.com/zackpollard/fuji-cull/commit/c01f24e6fe5bfebcd42e90fdb74d0238a2ad3ad0))
+* **import:** let a failed upload-only import resume instead of re-pulling ([#33](https://github.com/zackpollard/fuji-cull/issues/33)) ([e15d202](https://github.com/zackpollard/fuji-cull/commit/e15d202238facdd55ba4d0d41d0b99e1d5b70a37))
+* **ios:** point the sidestore feed at the repo the assets came from ([#38](https://github.com/zackpollard/fuji-cull/issues/38)) ([fec4338](https://github.com/zackpollard/fuji-cull/commit/fec43388ac96830d3a9b4e57bc51555e7c3f1e26))
+* **ios:** resolve the import destination instead of storing it ([ccfef0e](https://github.com/zackpollard/fuji-cull/commit/ccfef0ef436a651105bf0b22f9ecb0d3c4fd507b))
+* **ios:** resolve the import destination instead of storing it ([2facda8](https://github.com/zackpollard/fuji-cull/commit/2facda8b361cbbda3d4344db6d0a9adaae51cdfa))
+
 ## [1.8.0](https://github.com/zackpollard/fuji-cull/compare/v1.7.0...v1.8.0) (2026-08-04)
 
 
