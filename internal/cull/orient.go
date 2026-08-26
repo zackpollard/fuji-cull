@@ -198,8 +198,21 @@ func (p *Prefetcher) pickOrientBatchLocked(n int) []*photo.Shot {
 		if s.Kind != "photo" || s.ObjectIDs[s.DisplayExt()] == "" {
 			return false
 		}
-		_, known := p.orient[s.ID]
-		return !known
+		if _, known := p.orient[s.ID]; !known {
+			return true
+		}
+		// A HEIF also comes here for its capture time, which no other path can
+		// supply: the JPEG path harvests it from the buffered display file,
+		// and a HEIF's display file is one ffmpeg rendered without EXIF. Both
+		// facts arrive in the same 16 KB read, so a card swept before this
+		// existed — orientation known, time missing — would otherwise keep its
+		// HEIFs out of every burst permanently.
+		if photo.IsHEIF(s.DisplayExt()) {
+			if _, known := p.taken[s.ID]; !known {
+				return true
+			}
+		}
+		return false
 	}
 	origin := p.thumbOriginLocked()
 	var batch []*photo.Shot
@@ -265,6 +278,7 @@ func (p *Prefetcher) fetchOrientBatch(ctx context.Context, batch []*photo.Shot) 
 	type orientOut struct {
 		id      string
 		orient  uint8
+		taken   int64 // HEIF only: the JPEG path gets this from its display file
 		garbage bool
 	}
 	outs := make([]orientOut, len(batch))
@@ -278,8 +292,8 @@ func (p *Prefetcher) fetchOrientBatch(ctx context.Context, batch []*photo.Shot) 
 			continue
 		}
 		if photo.IsHEIF(s.DisplayExt()) {
-			o, _ := heifOrientation(head)
-			outs[i] = orientOut{id: s.ID, orient: uint8(o)}
+			o, taken := heifOrientation(head)
+			outs[i] = orientOut{id: s.ID, orient: uint8(o), taken: captureUnix(taken)}
 			continue
 		}
 		outs[i] = orientOut{id: s.ID, orient: uint8(jpegmeta.Orientation(head))}
@@ -297,6 +311,16 @@ func (p *Prefetcher) fetchOrientBatch(ctx context.Context, batch []*photo.Shot) 
 		}
 		p.orient[o.id] = o.orient
 		p.orientDirty = true
+		// A HEIF's capture time has to come from here. harvestOrient reads it
+		// off the buffered display file, and for a HEIF that file is a JPEG
+		// ffmpeg rendered — the mjpeg muxer writes no EXIF, with or without
+		// -map_metadata, so the time is simply not in it. Without a time a
+		// shot joins no burst, and BurstBest can never name a winner among
+		// HEIFs (402 winners on the card in hand, every one a JPG).
+		if o.taken > 0 {
+			p.taken[o.id] = o.taken
+			p.takenDirty = true
+		}
 		got++
 	}
 	if garbage > 0 {
@@ -431,6 +455,7 @@ func (p *Prefetcher) fetchHealBatch(ctx context.Context, batch []*photo.Shot) {
 		}
 	}
 	heifOrient := make([]int, len(batch))
+	heifTaken := make([]int64, len(batch))
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second+time.Duration(len(batch))*100*time.Millisecond)
 	var runErr error
 	for i, r := range reqs {
@@ -456,7 +481,9 @@ func (p *Prefetcher) fetchHealBatch(ctx context.Context, batch []*photo.Shot) {
 			}
 			if data != nil {
 				os.WriteFile(r.Dest, data, 0o644)
-				heifOrient[i], _ = heifOrientation(head)
+				var taken string
+				heifOrient[i], taken = heifOrientation(head)
+				heifTaken[i] = captureUnix(taken)
 			}
 			continue
 		}
@@ -481,6 +508,7 @@ func (p *Prefetcher) fetchHealBatch(ctx context.Context, batch []*photo.Shot) {
 	type healOut struct {
 		id        string
 		orient    uint8
+		taken     int64 // HEIF only, from the same meta-box read as the thumbnail
 		hasOrient bool
 		healed    bool
 		bare      bool
@@ -502,7 +530,8 @@ func (p *Prefetcher) fetchHealBatch(ctx context.Context, batch []*photo.Shot) {
 		var th []byte
 		var o healOut
 		if photo.IsHEIF(s.DisplayExt()) {
-			o = healOut{id: s.ID, orient: uint8(heifOrient[i]), hasOrient: heifOrient[i] > 0}
+			o = healOut{id: s.ID, orient: uint8(heifOrient[i]), hasOrient: heifOrient[i] > 0,
+				taken: heifTaken[i]}
 			th = head
 		} else {
 			o = healOut{id: s.ID, orient: uint8(jpegmeta.Orientation(head)), hasOrient: true}
@@ -539,6 +568,14 @@ func (p *Prefetcher) fetchHealBatch(ctx context.Context, batch []*photo.Shot) {
 			if _, known := p.orient[o.id]; !known {
 				p.orient[o.id] = o.orient
 				p.orientDirty = true
+			}
+		}
+		// Same reason as the orientation sweep: a HEIF's capture time exists
+		// only in its meta box, never in the JPEG we rendered for display.
+		if o.taken > 0 {
+			if _, known := p.taken[o.id]; !known {
+				p.taken[o.id] = o.taken
+				p.takenDirty = true
 			}
 		}
 		p.healTried[o.id] = true
