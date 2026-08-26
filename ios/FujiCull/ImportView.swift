@@ -56,31 +56,36 @@ struct ImportView: View {
                 }
 
                 if let s = status, s.running || s.phase == "done" || s.phase == "error" {
-                    // design: the four phases as explicit rows — done ✓ green,
-                    // active amber with progress, todo muted
-                    Section("Progress") {
-                        let phases = ["copy", "hash", "upload", "validate"]
-                        let activeIdx = phases.firstIndex(of: s.phase) ?? (s.phase == "done" ? phases.count : 0)
-                        ForEach(Array(phases.enumerated()), id: \.offset) { i, p in
+                    // One lane per stage, all drawn every tick. Copy, hash and
+                    // upload overlap, so no lane is "the current step" — the
+                    // four-phase checklist this replaces could only ever show
+                    // one number, and the one it showed was the camera count.
+                    Section(progressTitle(s)) {
+                        StageLaneRow(name: "CAMERA", color: DS.keep, stage: s.camera,
+                                     counter: cameraCounter(s.camera))
+                        StageLaneRow(name: "UPLOAD", color: DS.immich, stage: s.upload,
+                                     counter: uploadCounter(s.upload))
+                        StageLaneRow(name: "STACK", color: DS.buffered, stage: s.stack,
+                                     counter: stackCounter(s.stack))
+                        // Verify is one bulk checksum query lasting a second or
+                        // two: a status line, not a bar anyone can watch.
+                        if let v = s.verify, v.state != "n/a" {
                             HStack {
-                                if i < activeIdx || s.phase == "done" {
-                                    Image(systemName: "checkmark").foregroundStyle(DS.keep)
-                                } else if i == activeIdx && s.running {
-                                    ProgressView().controlSize(.small).tint(DS.amber)
-                                } else {
-                                    Image(systemName: "circle").foregroundStyle(DS.text3)
-                                }
-                                Text(p.uppercased()).font(DS.label(13))
-                                    .foregroundStyle(i <= activeIdx ? DS.text : DS.text3)
+                                Text("VERIFY").font(DS.label(13))
+                                    .foregroundStyle(v.state == "pending" ? DS.text3 : DS.text2)
                                 Spacer()
-                                if i == activeIdx && s.running && s.total > 0 {
-                                    Text("\(s.done)/\(s.total)").font(DS.micro())
-                                        .foregroundStyle(DS.text2)
-                                }
+                                Text(v.state == "pending"
+                                     ? "after the last upload"
+                                     : "\(v.files) / \(v.filesTotal) on server")
+                                    .font(DS.micro())
+                                    .foregroundStyle(v.state == "pending" ? DS.text3 : DS.text2)
                             }
                         }
-                        if s.total > 0 && s.running {
-                            ProgressView(value: Double(s.done), total: Double(s.total)).tint(DS.amber)
+                        if let ft = s.fileTotal, ft > 0 {
+                            LaneBar(name: s.file ?? "", nameColor: DS.text,
+                                    counter: fileCounter(s), color: DS.amber,
+                                    fraction: Double(s.fileSent ?? 0) / Double(ft),
+                                    height: 3)
                         }
                         if !s.message.isEmpty {
                             Text(s.message).font(DS.body(13)).foregroundStyle(DS.text2)
@@ -104,6 +109,122 @@ struct ImportView: View {
                 if dest.isEmpty { dest = defaultDest }
                 if albumName.isEmpty { albumName = album }
             }
+        }
+    }
+}
+
+// MARK: - progress lanes
+
+/// Binary units labelled GB/MB, matching humanBytes on the other clients.
+private func humanBytes(_ n: Int64) -> String {
+    if n >= 1 << 30 { return String(format: "%.2f GB", Double(n) / Double(1 << 30)) }
+    if n >= 1 << 20 { return String(format: "%.1f MB", Double(n) / Double(1 << 20)) }
+    return "\(n / 1024) KB"
+}
+
+private func humanRate(_ bps: Double) -> String {
+    if bps >= Double(1 << 20) { return String(format: "%.1f MB/s", bps / Double(1 << 20)) }
+    if bps >= Double(1 << 10) { return String(format: "%.0f KB/s", bps / Double(1 << 10)) }
+    return String(format: "%.0f B/s", bps)
+}
+
+private func bits(_ parts: [String?]) -> String {
+    parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+}
+
+private func progressTitle(_ s: ImportStatus) -> String {
+    var t = "Progress"
+    if let e = s.elapsedSec, e > 0 { t += String(format: " · %d:%02d", e / 60, e % 60) }
+    if !s.running { t += " — finished" }
+    return t
+}
+
+/// Cached files are named here rather than shaded into the bar. Half a JPG+RAF
+/// import lands in the first instant off the browse cache; a colour band for
+/// that needed a legend, "200 cached" does not.
+private func cameraCounter(_ st: ImportStage?) -> String {
+    guard let st else { return "" }
+    return bits([
+        "\(st.files) / \(st.filesTotal)",
+        (st.bytesTotal ?? 0) > 0 ? humanBytes(st.bytes ?? 0) : nil,
+        (st.cached ?? 0) > 0 ? "\(st.cached!) cached" : nil,
+        (st.rate ?? 0) > 0 ? humanRate(st.rate!) : nil,
+    ])
+}
+
+private func uploadCounter(_ st: ImportStage?) -> String {
+    guard let st else { return "" }
+    return bits([
+        "\(st.files) / \(st.filesTotal)",
+        (st.bytesTotal ?? 0) > 0 ? humanBytes(st.bytes ?? 0) : nil,
+        (st.rate ?? 0) > 0 ? humanRate(st.rate!) : nil,
+        (st.failed ?? 0) > 0 ? "\(st.failed!) failed" : nil,
+    ])
+}
+
+private func stackCounter(_ st: ImportStage?) -> String {
+    guard let st else { return "" }
+    return bits([
+        "\(st.files) / \(st.filesTotal) pairs",
+        (st.rate ?? 0) > 0 ? String(format: "%.1f pairs/s", st.rate!) : nil,
+        (st.failed ?? 0) > 0 ? "\(st.failed!) failed" : nil,
+    ])
+}
+
+private func fileCounter(_ s: ImportStatus) -> String {
+    bits([
+        humanBytes(s.fileSent ?? 0) + " / " + humanBytes(s.fileTotal ?? 0),
+        (s.rateBps ?? 0) > 0 ? humanRate(s.rateBps!) : nil,
+    ])
+}
+
+/// A stage lane: label and counter on one line, bar full width beneath. Bars
+/// are byte-denominated wherever bytes are known — a file count cannot tell a
+/// 25 MB JPEG from a 62 MB RAF, and that gap is most of a JPG+RAF import.
+private struct StageLaneRow: View {
+    let name: String
+    let color: Color
+    let stage: ImportStage?
+    let counter: String
+
+    var body: some View {
+        if let st = stage, st.state != "n/a" {
+            let pending = st.state == "pending"
+            let den = (st.bytesTotal ?? 0) > 0 ? Double(st.bytesTotal!) : Double(st.filesTotal)
+            let num = (st.bytesTotal ?? 0) > 0 ? Double(st.bytes ?? 0) : Double(st.files)
+            LaneBar(name: name, nameColor: pending ? DS.text3 : color,
+                    counter: counter, color: pending ? DS.text3 : color,
+                    fraction: den > 0 ? num / den : 0, height: 4,
+                    counterColor: pending ? DS.text3 : DS.text2)
+        }
+    }
+}
+
+private struct LaneBar: View {
+    let name: String
+    let nameColor: Color
+    let counter: String
+    let color: Color
+    let fraction: Double
+    let height: CGFloat
+    var counterColor: Color = DS.text2
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.s2) {
+            HStack {
+                Text(name).font(DS.label(13)).foregroundStyle(nameColor)
+                Spacer()
+                Text(counter).font(DS.micro()).foregroundStyle(counterColor)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(DS.line)
+                    Rectangle().fill(color)
+                        .frame(width: geo.size.width * CGFloat(min(max(fraction, 0), 1)))
+                }
+            }
+            .frame(height: height)
+            .clipShape(RoundedRectangle(cornerRadius: 2))
         }
     }
 }

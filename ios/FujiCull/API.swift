@@ -12,9 +12,23 @@ struct Shot: Identifiable, Decodable, Equatable {
     var hasRAF: Bool { files?.keys.contains("RAF") ?? false }
 }
 
+// One stage of an import. Copy, hash and upload overlap by design, so each
+// stage carries its own counters and any number of them may be moving at once —
+// there is no single active phase.
+struct ImportStage: Decodable, Equatable {
+    let state: String       // pending | running | done | n/a
+    let files: Int
+    let filesTotal: Int     // PAIRS, for the stack stage
+    let bytes: Int64?
+    let bytesTotal: Int64?
+    let rate: Double?       // bytes/s, or pairs/s for the stack stage
+    let cached: Int?        // arrived from the browse cache, never off the card
+    let failed: Int?
+}
+
 struct ImportStatus: Decodable, Equatable {
     let running: Bool
-    let phase: String       // idle | copy | hash | upload | validate | done | error
+    let phase: String       // idle | copy | upload | validate | done | error
     let done: Int
     let total: Int
     let message: String
@@ -22,6 +36,18 @@ struct ImportStatus: Decodable, Equatable {
     let dest: String
     // Copy and upload run at the same time now, so they are counted apart.
     let uploaded: Int?
+    // The stage lanes. Optional so an older engine still decodes.
+    let camera: ImportStage?
+    let upload: ImportStage?
+    let verify: ImportStage?
+    let stack: ImportStage?
+    let elapsedSec: Int?
+    // The upload currently worth showing: a multi-gigabyte video holds every
+    // lane counter still for minutes at a time.
+    let file: String?
+    let fileSent: Int64?
+    let fileTotal: Int64?
+    let rateBps: Double?
 }
 
 // What the next import would carry. "keep" behaves as a queue: shots already
