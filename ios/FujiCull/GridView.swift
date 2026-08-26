@@ -21,6 +21,49 @@ struct MonthGroup: Identifiable {
     let days: [DayGroup]
 }
 
+/// Reports poll failures once, not every tick.
+///
+/// These requests used to be `try?`, so an engine error was indistinguishable
+/// from a grid that had simply stopped moving — and the server did not log the
+/// failure either, so nothing anywhere said why. The loop runs every ~600ms,
+/// which is why this reports the first of each distinct failure and then stays
+/// quiet until it changes or clears rather than logging every one.
+@MainActor
+final class PollReporter {
+    private let api: API
+    private var key = ""
+    private var count = 0
+    private var at = Date.distantPast
+
+    init(api: API) { self.api = api }
+
+    func run<T>(_ what: String, _ fetch: () async throws -> T) async -> T? {
+        do {
+            let v = try await fetch()
+            if !key.isEmpty {
+                let n = count
+                key = ""
+                count = 0
+                NSLog("[poll] recovered after %d failure(s)", n)
+                let api = self.api
+                Task { await api.logEvent("poll: recovered after \(n) failure(s)") }
+            }
+            return v
+        } catch {
+            count += 1
+            let k = "\(what): \((error as NSError).localizedDescription)"
+            guard k != key || Date().timeIntervalSince(at) > 30 else { return nil }
+            key = k
+            at = Date()
+            let n = count
+            NSLog("[poll] %@", k)
+            let api = self.api
+            Task { await api.logEvent("poll \(k) — \(n) failure(s) so far") }
+            return nil
+        }
+    }
+}
+
 @MainActor
 final class GridModel: ObservableObject {
     @Published var shots: [Shot] = []
@@ -74,9 +117,10 @@ final class GridModel: ObservableObject {
 
     func load() async {
         guard let api else { return }
+        let poll = PollReporter(api: api)
         // the catalog can lag readiness for a beat; retry until it lands
         while shots.isEmpty {
-            if let st = try? await api.fetchState(), !st.shots.isEmpty {
+            if let st = await poll.run("state", { try await api.fetchState() }), !st.shots.isEmpty {
                 // group off the main actor: at 24k shots this pass plus the
                 // publish froze first render for ~3s when run inline
                 let grouped = await Task.detached(priority: .userInitiated) {
@@ -96,6 +140,7 @@ final class GridModel: ObservableObject {
 
     func startPolling() {
         guard pollTask == nil, let api else { return }
+        let poll = PollReporter(api: api)
         pollTask = Task { @MainActor [weak self] in
             var lastHave = -1
             // change-guard every @Published assignment: each one invalidates
@@ -106,13 +151,13 @@ final class GridModel: ObservableObject {
             while !Task.isCancelled {
                 // Scores creep forward far slower than thumbs, and the payload
                 // is a whole map — poll it every ~10th round, not every round.
-                if sharpTick % 10 == 0, let s = try? await api.fetchSharpness(), let self {
+                if sharpTick % 10 == 0, let s = await poll.run("sharpness", { try await api.fetchSharpness() }), let self {
                     if s.scores.count != self.sharp.count { self.sharp = s.scores }
                     let best = Set(s.best ?? [])
                     if best != self.focusBest { self.focusBest = best }
                 }
                 sharpTick += 1
-                if let t = try? await api.fetchThumbs(), let self {
+                if let t = await poll.run("thumbs", { try await api.fetchThumbs() }), let self {
                     if t.states != rawStates { rawStates = t.states; self.states = Array(t.states) }
                     if t.orient != rawOrient {
                         rawOrient = t.orient
@@ -123,7 +168,7 @@ final class GridModel: ObservableObject {
                     if t.immich != rawImmich { rawImmich = t.immich; self.immichChars = Array(t.immich) }
                     if t.have != self.haveThumbs { self.haveThumbs = t.have }
                 }
-                if let st = try? await api.fetchStatus(), let self {
+                if let st = await poll.run("status", { try await api.fetchStatus() }), let self {
                     let sick = st.bulkSick || st.partSick
                     if sick != self.sick { self.sick = sick }
                     if st.posters != self.enginePosters { self.enginePosters = st.posters }

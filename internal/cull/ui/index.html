@@ -471,6 +471,39 @@
 "use strict";
 const $ = id => document.getElementById(id);
 
+/* Poll failures used to be swallowed as a comment saying they were transient,
+   so an engine error was indistinguishable from a UI that had simply stopped
+   updating — and the server did not log it either, so nothing anywhere said
+   why. Report the first of each distinct failure, then stay quiet until it
+   changes or clears: these loops run every 1-2s and would otherwise fill both
+   the console and the engine log they report into. */
+const pollFail = { key: "", at: 0, n: 0 };
+function notePollError(what, e) {
+  const key = what + ": " + ((e && e.message) || e);
+  pollFail.n++;
+  const now = Date.now();
+  if (key === pollFail.key && now - pollFail.at < 30000) return;
+  pollFail.key = key;
+  pollFail.at = now;
+  console.warn("poll " + key + " — " + pollFail.n + " failure(s) so far");
+  /* Best-effort: when the engine is reachable but a handler is failing, this
+     lands the client's side of the story in the same log as the server's. */
+  fetch("/api/log", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ msg: "poll " + key + " — " + pollFail.n + " failure(s) so far" }),
+  }).catch(() => {});
+}
+function notePollOK() {
+  if (!pollFail.key) return;
+  const n = pollFail.n;
+  pollFail.key = ""; pollFail.n = 0;
+  console.info("poll: recovered after " + n + " failure(s)");
+  fetch("/api/log", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ msg: "poll: recovered after " + n + " failure(s)" }),
+  }).catch(() => {});
+}
+
 let shots = [], decisions = {}, fetchStates = {}, cursor = 0;
 let undoStack = [], importStatus = {}, videoDirect = false, videoStreaming = false;
 let ticks = [];
@@ -1050,7 +1083,8 @@ async function syncThumbs() {
     const mdEligible = o.length - (o.match(/-/g) || []).length;
     const mdKnown = mdEligible - (o.match(/0/g) || []).length;
     $("metaProg").textContent = mdKnown < mdEligible ? "MD " + mdKnown + "/" + mdEligible : "";
-  } catch (e) { /* transient */ }
+    notePollOK();
+  } catch (e) { notePollError("thumbs", e); }
   if (!s || s.includes("0") || orientStates.includes("0") || immichStates.includes("-"))
     setTimeout(syncThumbs, gridOpen ? 2000 : 4000);
 }
@@ -1502,7 +1536,8 @@ async function poll() {
     if (s && s.kind === "video" && !videoDirect && !$("view").querySelector("video")) {
       renderVideo(s);
     }
-  } catch (e) { /* transient */ }
+    notePollOK();
+  } catch (e) { notePollError("status", e); }
 }
 
 /* ── import panel ─────────────────────────────────────────── */
