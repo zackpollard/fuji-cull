@@ -58,6 +58,10 @@ type decoded struct {
 	img  *turbo.Image
 	err  error
 	when time.Time
+	// full is set when img holds every pixel the file has. A fitted decode
+	// is enough to display, but not to judge critical focus or to zoom into,
+	// so those callers ask for a re-decode and wait for this.
+	full bool
 }
 
 type decodePool struct {
@@ -66,6 +70,18 @@ type decodePool struct {
 	want     []string // priority order, first = most urgent
 	inflight map[string]context.CancelFunc
 	done     map[string]*decoded
+
+	// boxW/boxH is the stage the frames get drawn into. Decoding past it is
+	// pure waste — and not a little: a 26 MP frame fitted to a 4K stage is
+	// 3 MP, so the surplus costs 8x the RGBA memory, 8x the texture upload,
+	// and 8x every per-pixel pass over it, to show pixels the screen cannot
+	// resolve. libjpeg-turbo drops them inside the IDCT for free.
+	boxW, boxH int
+	// fullWant is the one shot that needs a native-resolution decode anyway
+	// (it is zoomed in, or peaking is measuring it). Deliberately one: the
+	// window around the cursor is a dozen frames and re-decoding them all at
+	// full size would give back everything the fit above buys.
+	fullWant string
 }
 
 func newDecodePool(app *cull.App, workers int) *decodePool {
@@ -102,6 +118,36 @@ func (p *decodePool) SetWant(ids []string) {
 	p.mu.Unlock()
 }
 
+// SetBox tells the pool how big the frames will be drawn. Growing it drops
+// the fitted frames on hand so they come back sharp enough for the new stage;
+// shrinking keeps them, since they are merely more than is needed.
+func (p *decodePool) SetBox(w, h int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if w == p.boxW && h == p.boxH {
+		return
+	}
+	grew := w > p.boxW || h > p.boxH
+	p.boxW, p.boxH = w, h
+	if !grew {
+		return
+	}
+	for id, d := range p.done {
+		if d.err == nil && !d.full {
+			delete(p.done, id)
+		}
+	}
+}
+
+// WantFull names the one shot that needs every pixel decoded. The fitted
+// frame stays available meanwhile, so the viewer shows it soft rather than
+// blank while the re-decode runs.
+func (p *decodePool) WantFull(id string) {
+	p.mu.Lock()
+	p.fullWant = id
+	p.mu.Unlock()
+}
+
 func (p *decodePool) Get(id string) *decoded {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -124,34 +170,58 @@ func (p *decodePool) Prune(keep map[string]bool) {
 	p.mu.Unlock()
 }
 
-func (p *decodePool) next() (string, context.Context, bool) {
+// job is one decode the pool has claimed: which shot, at what size, and
+// whether the caller needs every pixel the file holds.
+type job struct {
+	id         string
+	ctx        context.Context
+	boxW, boxH int
+	full       bool
+}
+
+func (p *decodePool) next() (job, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, id := range p.want {
-		if _, busy := p.inflight[id]; busy || p.done[id] != nil {
+		if _, busy := p.inflight[id]; busy {
+			continue
+		}
+		need := id == p.fullWant
+		// A frame already decoded is re-run only to upgrade a fitted one to
+		// full size; a banked error is left for Get to expire and retry.
+		if d := p.done[id]; d != nil && (d.err != nil || d.full || !need) {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		p.inflight[id] = cancel
-		return id, ctx, true
+		return job{id: id, ctx: ctx, boxW: p.boxW, boxH: p.boxH, full: need}, true
 	}
-	return "", nil, false
+	return job{}, false
 }
 
 func (p *decodePool) worker() {
 	for {
-		id, ctx, ok := p.next()
+		j, ok := p.next()
 		if !ok {
 			time.Sleep(15 * time.Millisecond)
 			continue
 		}
+		id, ctx := j.id, j.ctx
 		path, err := p.app.WaitImage(ctx, id) // camera fetch if not buffered
 		var d decoded
 		d.when = time.Now()
+		d.full = j.full
 		if err != nil {
 			d.err = err
-		} else {
+		} else if j.full {
 			d.img, d.err = turbo.DecodeFile(path)
+		} else {
+			d.img, d.err = turbo.DecodeScaledFile(path, j.boxW, j.boxH)
+		}
+		// A frame small enough that the fit asked for all of it is already
+		// full — saying so stops a later zoom re-decoding it for nothing.
+		if d.img != nil && d.img.W >= d.img.NatW {
+			d.full = true
 		}
 		p.mu.Lock()
 		if cancel := p.inflight[id]; cancel != nil {
@@ -171,10 +241,36 @@ func (p *decodePool) worker() {
 /* ── texture caches ───────────────────────────────────────── */
 
 type texEntry struct {
-	tex    *sdl.Texture
-	w, h   int32
+	tex  *sdl.Texture
+	w, h int32
+	// natW/natH are the photograph's own dimensions, which may be larger
+	// than the texture when the frame was decoded to fit the stage. Layout
+	// and zoom read these, so what is on screen does not jump when a sharper
+	// decode of the same frame replaces this one. Zero means "same as w,h"
+	// (thumbnails, glyphs — anything not a fitted photo).
+	natW, natH int32
+	// pic is the part of the texture that is the photograph, when that is
+	// not all of it: Fuji writes a 3:2 frame into a 4:3 EXIF thumbnail and
+	// pads the rest black. Zero means the whole texture.
+	pic    sdl.Rect
 	used   time.Time
 	orient int // EXIF orientation baked into the pixels (thumbs only)
+}
+
+// picRect is the source rectangle to draw the photograph from.
+func (e *texEntry) picRect() sdl.Rect {
+	if e.pic.W > 0 && e.pic.H > 0 {
+		return e.pic
+	}
+	return sdl.Rect{W: e.w, H: e.h}
+}
+
+// nat returns the size to lay the texture out at.
+func (e *texEntry) nat() (int32, int32) {
+	if e.natW > 0 && e.natH > 0 {
+		return e.natW, e.natH
+	}
+	return e.w, e.h
 }
 
 type texCache struct {
@@ -208,6 +304,9 @@ func (c *texCache) drop(id string) {
 }
 
 func (c *texCache) put(id string, e *texEntry) {
+	if old := c.m[id]; old != nil && old != e {
+		old.tex.Destroy() // a sharper decode of the same frame
+	}
 	e.used = time.Now()
 	c.m[id] = e
 	for len(c.m) > c.cap {
@@ -238,7 +337,8 @@ func uploadRGBA(r *sdl.Renderer, img *turbo.Image) (*texEntry, error) {
 		return nil, err
 	}
 	tex.SetBlendMode(sdl.BLENDMODE_NONE)
-	return &texEntry{tex: tex, w: int32(img.W), h: int32(img.H)}, nil
+	return &texEntry{tex: tex, w: int32(img.W), h: int32(img.H),
+		natW: int32(img.NatW), natH: int32(img.NatH)}, nil
 }
 
 /* ── UI state ─────────────────────────────────────────────── */
@@ -247,6 +347,7 @@ type ui struct {
 	app      *cull.App
 	apiBase  string // in-process HTTP server, for mpv stream URLs
 	pool     *decodePool
+	peaker   *peaker
 	ren      *sdl.Renderer
 	win      *sdl.Window
 	font     *ttf.Font
@@ -290,8 +391,13 @@ type ui struct {
 	fit           float64
 	natW, natH    int32
 	curTexID      string
-	lastTex       *texEntry
-	zoomMem       *zoomMem
+	// lastTexID, not a *texEntry: the LRU protects only the shot under the
+	// cursor, so the moment the cursor moves the previous frame's texture
+	// becomes evictable — and eviction destroys it. Holding the id means a
+	// vanished texture reads as "nothing to fall back on" instead of a
+	// freed pointer handed to the renderer.
+	lastTexID string
+	zoomMem   *zoomMem
 
 	panning    bool
 	panStart   [2]int32
@@ -467,8 +573,12 @@ func main() {
 	flag.StringVar(&o.SyncURL, "sync-url", os.Getenv("FUJI_SYNC_URL"), "cross-device sync server URL (or env FUJI_SYNC_URL)")
 	flag.StringVar(&o.SyncKey, "sync-key", os.Getenv("FUJI_SYNC_KEY"), "cross-device sync API key (or env FUJI_SYNC_KEY)")
 	flag.StringVar(&o.EngineKey, "engine-key", os.Getenv("FUJI_ENGINE_KEY"), "require this key on /api/* to expose the engine on the LAN (or env FUJI_ENGINE_KEY)")
-	decodeAhead := flag.Int("decode-ahead", 28, "decoded frames to hold ahead of the cursor (~104 MB RAM each)")
-	decodeBehind := flag.Int("decode-behind", 8, "decoded frames to hold behind the cursor")
+	// Frames are decoded to fit the stage rather than at full resolution, so
+	// one costs ~13 MB on a 4K display instead of ~104 MB. That is what makes
+	// a window this deep affordable, and a deep window is what makes panning
+	// back over shots you just passed instant.
+	decodeAhead := flag.Int("decode-ahead", 64, "decoded frames to hold ahead of the cursor (~13 MB RAM each at 4K)")
+	decodeBehind := flag.Int("decode-behind", 16, "decoded frames to hold behind the cursor")
 	logPath := flag.String("log", "", "log file (default: ~/.local/share/fuji-cull/logs/fuji-cull-gui-<ts>.log)")
 	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -576,6 +686,7 @@ func run(app *cull.App, apiBase string, decodeAhead, decodeBehind int) error {
 		texts:     newTexCache(256),
 		decisions: map[string]string{},
 	}
+	u.peaker = newPeaker(u.pool)
 	if err := u.reloadFonts(); err != nil {
 		return fmt.Errorf("font %s: %w", fontPath, err)
 	}
@@ -672,6 +783,17 @@ func (u *ui) frame() bool {
 			u.decisions = u.app.Decisions() // adopt cross-device synced decisions
 		}
 		u.updateWants()
+		// The stage is what every fitted decode is sized against, and the
+		// shot on screen gets a full-resolution one when it is being zoomed
+		// into or measured for focus.
+		st := u.stageRect()
+		u.pool.SetBox(int(st.W), int(st.H))
+		if u.mode != modeGrid && u.cursor < len(u.shots) {
+			if cur := u.shots[u.cursor]; cur.Kind == "photo" &&
+				(u.peaking || u.scale > u.fit+1e-4) {
+				u.pool.WantFull(cur.ID)
+			}
+		}
 		// A 104 MB photo texture upload mid-playback stalls the render
 		// thread and stutters the video: photos wait until playback stops.
 		videoPlaying := u.mode == modeViewer && u.cursor < len(u.shots) &&
@@ -753,18 +875,20 @@ func (u *ui) uploadReady() {
 			return false
 		}
 		id := u.shots[i].ID
-		if u.full.get(id) != nil {
-			return false
-		}
 		d := u.pool.Get(id)
 		if d == nil || d.err != nil || d.img == nil {
 			return false
 		}
-		if te, err := uploadRGBA(u.ren, d.img); err == nil {
-			u.full.put(id, te)
-			return true
+		old := u.full.get(id)
+		if old != nil && int32(d.img.W) <= old.w {
+			return false // nothing sharper has arrived
 		}
-		return false
+		te, err := uploadRGBA(u.ren, d.img)
+		if err != nil {
+			return false
+		}
+		u.full.put(id, te) // frees the texture it displaces
+		return true
 	}
 	uploads := 0
 	tryUp := func(i int) bool {
@@ -811,15 +935,17 @@ func (u *ui) drawViewer() {
 
 	te := u.full.get(s.ID)
 	if te == nil {
-		// Keep the previous frame on screen while the new one decodes and
-		// uploads — a full-screen flash per navigation reads as strobing.
-		if u.lastTex != nil {
+		// The shot's own thumbnail first; only if there is none does the
+		// previous frame stay up, which at least avoids a full-screen flash
+		// per navigation (that reads as strobing).
+		if last := u.full.get(u.lastTexID); !u.drawThumbFill(s.ID, u.cursor, st) && last != nil {
+			lw, lh := last.nat()
 			dst := sdl.FRect{
 				X: float32(float64(st.X) + u.tx), Y: float32(float64(st.Y) + u.ty),
-				W: float32(float64(u.lastTex.w) * u.scale), H: float32(float64(u.lastTex.h) * u.scale),
+				W: float32(float64(lw) * u.scale), H: float32(float64(lh) * u.scale),
 			}
 			u.ren.SetClipRect(&st)
-			u.ren.CopyF(u.lastTex.tex, nil, &dst)
+			u.ren.CopyF(last.tex, nil, &dst)
 			u.ren.SetClipRect(nil)
 		}
 		d := u.pool.Get(s.ID)
@@ -833,18 +959,19 @@ func (u *ui) drawViewer() {
 
 	if u.curTexID != s.ID {
 		u.mountTexture(s.ID, te, st)
-		u.lastTex = te
+		u.lastTexID = s.ID
 	}
+	tw, th := te.nat()
 	dst := sdl.FRect{
 		X: float32(float64(st.X) + u.tx), Y: float32(float64(st.Y) + u.ty),
-		W: float32(float64(te.w) * u.scale), H: float32(float64(te.h) * u.scale),
+		W: float32(float64(tw) * u.scale), H: float32(float64(th) * u.scale),
 	}
 	u.ren.SetClipRect(&st)
 	u.ren.CopyF(te.tex, nil, &dst)
 	// Focus peaking shares the photo's exact dst rect, so the edges stay
 	// registered to the pixels underneath at any zoom or pan.
 	if u.peaking {
-		if pt := u.peakTex(s.ID); pt != nil {
+		if pt := u.peakTex(s.ID, st); pt != nil {
 			u.ren.CopyF(pt.tex, nil, &dst)
 		}
 	}
@@ -880,16 +1007,16 @@ func (u *ui) drawViewer() {
 
 func (u *ui) mountTexture(id string, te *texEntry, st sdl.Rect) {
 	u.curTexID = id
-	u.natW, u.natH = te.w, te.h
-	u.fit = minf(float64(st.W)/float64(te.w), float64(st.H)/float64(te.h))
+	u.natW, u.natH = te.nat()
+	u.fit = minf(float64(st.W)/float64(u.natW), float64(st.H)/float64(u.natH))
 	if u.fit > 1 {
 		u.fit = 1
 	}
-	aspect := float64(te.w) / float64(te.h)
+	aspect := float64(u.natW) / float64(u.natH)
 	if u.zoomMem != nil && absf(u.zoomMem.aspect-aspect) < 0.01 {
 		u.scale = maxf(u.fit, minf(8, u.zoomMem.scale))
-		u.tx = float64(st.W)/2 - u.zoomMem.cx*float64(te.w)*u.scale
-		u.ty = float64(st.H)/2 - u.zoomMem.cy*float64(te.h)*u.scale
+		u.tx = float64(st.W)/2 - u.zoomMem.cx*float64(u.natW)*u.scale
+		u.ty = float64(st.H)/2 - u.zoomMem.cy*float64(u.natH)*u.scale
 	} else {
 		u.zoomMem = nil
 		u.scale = u.fit
@@ -1137,8 +1264,80 @@ func (u *ui) thumbTex(id, path string, orient int) *texEntry {
 		return nil
 	}
 	te.orient = orient
+	te.pic = thumbContent(img)
 	u.thumbs.put(id, te)
 	return te
+}
+
+// thumbContent locates the photograph inside an EXIF thumbnail. Fuji fits a
+// 3:2 frame into a 4:3 thumbnail and pads the rest black, so a thumbnail used
+// at any aspect but its own shows bars. Only a thin, uniformly black margin
+// is trimmed: a genuinely dark sky is a photograph, not padding.
+func thumbContent(img *turbo.Image) sdl.Rect {
+	whole := sdl.Rect{W: int32(img.W), H: int32(img.H)}
+	if img.W < 8 || img.H < 8 {
+		return whole
+	}
+	limit := img.H / 5 // 3:2 in 4:3 costs 11% a side; past that it is content
+	// A bar is not quite zero: JPEG ringing at the edge of the picture lifts
+	// it a little, measurably so at this size.
+	const barLevel = 24
+	dark := func(y int) bool {
+		row := y * img.W * 4
+		for x := 0; x < img.W; x++ {
+			p := row + x*4
+			if img.Pix[p] > barLevel || img.Pix[p+1] > barLevel || img.Pix[p+2] > barLevel {
+				return false
+			}
+		}
+		return true
+	}
+	top := 0
+	for top < limit && dark(top) {
+		top++
+	}
+	bot := img.H - 1
+	for img.H-1-bot < limit && dark(bot) {
+		bot--
+	}
+	// Padding is thin and sits on both sides. Darkness running to the cap, or
+	// down one side only, is the photograph — cropping off a night sky would
+	// be a worse lie than leaving a black bar.
+	head, tail := top, img.H-1-bot
+	if head == 0 || tail == 0 || head >= limit || tail >= limit || head-tail > 2 || tail-head > 2 {
+		return whole
+	}
+	// The row where bar meets picture holds a blend of the two; it goes with
+	// the bar, or it shows as a dark line across the frame.
+	top++
+	bot--
+	return sdl.Rect{Y: int32(top), W: int32(img.W), H: int32(bot - top + 1)}
+}
+
+// drawThumbFill paints the shot's own thumbnail across the stage while its
+// full frame is still coming off the camera. Outrunning the buffer is normal
+// rather than exceptional — a frame is ~10 MB and MTP carries about four a
+// second, so any brisk pan gets ahead of it — and showing the RIGHT photo
+// coarsely beats showing the previous one sharply: the strip, the grid and
+// the viewer then never disagree about where the cursor is.
+func (u *ui) drawThumbFill(id string, idx int, st sdl.Rect) bool {
+	tp, ok := u.app.ThumbPathIfReady(id)
+	if !ok {
+		return false
+	}
+	te := u.thumbTex(id, tp, u.orientAt(idx))
+	if te == nil {
+		return false
+	}
+	src := te.picRect()
+	fit := minf(float64(st.W)/float64(src.W), float64(st.H)/float64(src.H))
+	w, h := float64(src.W)*fit, float64(src.H)*fit
+	dst := sdl.Rect{
+		X: st.X + int32((float64(st.W)-w)/2), Y: st.Y + int32((float64(st.H)-h)/2),
+		W: int32(w), H: int32(h),
+	}
+	u.ren.Copy(te.tex, &src, &dst)
+	return true
 }
 
 /* ── input ────────────────────────────────────────────────── */
