@@ -1,8 +1,12 @@
 import Foundation
 
 // AppSettings mirrors the Android app's Settings: Immich credentials, session
-// name and RAF+JPG stacking, plus iOS-side import destination and a switch to
-// force the fake corpus (useful on-device when no camera is attached).
+// name and RAF+JPG stacking, plus a switch to force the fake corpus (useful
+// on-device when no camera is attached).
+//
+// The import destination is deliberately NOT here: on iOS it can only ever be
+// a folder inside our own container, and a stored absolute path breaks on the
+// next app update (the container UUID changes). Engine.importDest resolves it.
 struct AppSettings: Codable, Equatable {
     var immichURL: String = ""
     var immichKey: String = ""
@@ -10,7 +14,6 @@ struct AppSettings: Codable, Equatable {
     // user-named sessions — decisions follow the camera automatically)
     var stack: Bool = false
     var album: String = ""
-    var importDest: String = ""
     var forceFake: Bool = false
     // cross-device progress sync (optional): a self-hosted fuji-sync server
     var syncURL: String = ""
@@ -33,7 +36,6 @@ struct AppSettings: Codable, Equatable {
         immichKey = try c.decodeIfPresent(String.self, forKey: .immichKey) ?? ""
         stack = try c.decodeIfPresent(Bool.self, forKey: .stack) ?? false
         album = try c.decodeIfPresent(String.self, forKey: .album) ?? ""
-        importDest = try c.decodeIfPresent(String.self, forKey: .importDest) ?? ""
         forceFake = try c.decodeIfPresent(Bool.self, forKey: .forceFake) ?? false
         syncURL = try c.decodeIfPresent(String.self, forKey: .syncURL) ?? ""
         syncKey = try c.decodeIfPresent(String.self, forKey: .syncKey) ?? ""
@@ -56,11 +58,6 @@ final class SettingsStore: ObservableObject {
             settings = s
         } else {
             settings = AppSettings()
-        }
-        if settings.importDest.isEmpty {
-            settings.importDest = FileManager.default
-                .urls(for: .documentDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("imported").path
         }
     }
 

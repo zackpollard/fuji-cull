@@ -1,15 +1,15 @@
 import SwiftUI
 
-// ImportView ports the Android/web import dialog: choose a destination, kick off
-// the engine's import pipeline over the keepers, and watch phase/progress. On
-// iOS the destination is a folder in the app sandbox (Immich upload rides the
-// same pipeline once configured in Settings).
+// ImportView ports the Android/web import dialog: kick off the engine's import
+// pipeline over the keepers and watch phase/progress. Unlike desktop there is
+// no destination to choose — iOS can only write inside the app's own container
+// (Engine.importDest); getting the photos off the device is the Immich upload,
+// which rides the same pipeline once configured in Settings.
 struct ImportView: View {
     @ObservedObject var model: GridModel
-    let defaultDest: String
+    let dest: String
     var album: String = ""
     @Environment(\.dismiss) private var dismiss
-    @State private var dest: String = ""
     @State private var reimport = false
     @State private var albumName: String = ""
 
@@ -24,13 +24,6 @@ struct ImportView: View {
         let importLabel = "Import \(importCount) keeper\(importCount == 1 ? "" : "s")"
         return NavigationStack {
             Form {
-                Section("Destination") {
-                    TextField("path", text: $dest)
-                        .font(.system(.footnote, design: .monospaced))
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                }
-
                 Section("Immich album (optional)") {
                     TextField("album name", text: $albumName)
                         .autocorrectionDisabled()
@@ -52,7 +45,7 @@ struct ImportView: View {
                     }
                     .disabled(importCount == 0 || running)
                 } footer: {
-                    Text("Copies kept shots to the destination. Rejects and undecided are left on the card.")
+                    Text("Copies kept shots into the app's storage, then uploads them if Immich is configured. Rejects and undecided are left on the card.")
                 }
 
                 if let s = status, s.running || s.phase == "done" || s.phase == "error" {
@@ -106,7 +99,6 @@ struct ImportView: View {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
             }
             .onAppear {
-                if dest.isEmpty { dest = defaultDest }
                 if albumName.isEmpty { albumName = album }
             }
         }

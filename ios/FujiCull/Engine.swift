@@ -64,7 +64,10 @@ final class Engine: ObservableObject {
         if let remoteBase { return remoteBase }
         return port > 0 ? URL(string: "http://127.0.0.1:\(port)") : nil
     }
-    var defaultImportDest: String { settings.importDest }
+    /// Where imports land. Fixed, and resolved on every read: iOS moves the data
+    /// container (new UUID) on every app update, so anything that persisted this
+    /// path would point into a container we can no longer write.
+    var importDest: String { docs.appendingPathComponent("imported").path }
 
     private var docs: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
 

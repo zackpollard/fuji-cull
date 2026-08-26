@@ -1,8 +1,8 @@
 import SwiftUI
 
 // SettingsView ports the Android settings screen: Immich credentials, session
-// name, RAF+JPG stacking, plus the iOS import destination and a fake-corpus
-// override. Saving restarts the engine (the camera link is re-established).
+// name, RAF+JPG stacking, plus a fake-corpus override. Saving restarts the
+// engine (the camera link is re-established).
 struct SettingsView: View {
     @EnvironmentObject var engine: Engine
     @EnvironmentObject var store: SettingsStore
@@ -44,13 +44,6 @@ struct SettingsView: View {
                     Text("Camera source")
                 } footer: {
                     Text("Leave empty to use this device's camera. Set a URL to browse a camera plugged into another machine (that engine must be started with --engine-key). Saving reconnects.")
-                }
-
-                Section("Import destination") {
-                    TextField("path", text: $draft.importDest)
-                        .font(.system(.footnote, design: .monospaced))
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
                 }
 
                 Section {
