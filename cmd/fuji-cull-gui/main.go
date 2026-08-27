@@ -200,6 +200,12 @@ type job struct {
 	waits      bool // this one expects to block on the camera
 }
 
+// fullResSettle is how long the cursor must rest on a shot before its
+// full-resolution decode is asked for. Long enough that scrubbing never pays
+// for frames it is about to leave, short enough that stopping to look at
+// something has already upgraded it by the time the eye settles.
+const fullResSettle = 150 * time.Millisecond
+
 // maxFetchWaiters bounds how many workers may block on a camera fetch at once.
 // One, and only for the shot under the cursor: the engine fills the window
 // ahead on its own, so a demand exists to preempt that for a jump the user
@@ -457,6 +463,8 @@ type ui struct {
 	scale, tx, ty float64
 	fit           float64
 	natW, natH    int32
+	lastCursor    int
+	cursorSince   time.Time
 	curTexID      string
 	// lastTexID, not a *texEntry: the LRU protects only the shot under the
 	// cursor, so the moment the cursor moves the previous frame's texture
@@ -712,6 +720,12 @@ func run(app *cull.App, apiBase, apiKey string, decodeAhead, decodeBehind int) e
 	// GL renderer required for zero-copy video (mpv renders into a shared
 	// SDL texture); WINDOW_OPENGL lets us create the second shared context.
 	sdl.SetHint(sdl.HINT_RENDER_DRIVER, "opengl")
+	// Linear filtering, not SDL's nearest-neighbour default. Every photo is
+	// scaled to the stage, so nearest was dropping whole rows and columns to
+	// get there — it reads as sharp when the texture is several times the
+	// display size (aliasing looks like detail) and as visibly degraded when
+	// it is only a little larger. Must be set before any texture is created.
+	sdl.SetHint(sdl.HINT_RENDER_SCALE_QUALITY, "1")
 	win, err := sdl.CreateWindow("fuji-cull", sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED,
 		1600, 1000, sdl.WINDOW_RESIZABLE|sdl.WINDOW_ALLOW_HIGHDPI|sdl.WINDOW_OPENGL)
 	if err != nil {
@@ -854,14 +868,19 @@ func (u *ui) frame() bool {
 			u.focusBest = u.app.FocusBest()
 		}
 		u.updateWants()
-		// The stage is what every fitted decode is sized against, and the
-		// shot on screen gets a full-resolution one when it is being zoomed
-		// into or measured for focus.
+		// The stage is what every fitted decode is sized against. The shot on
+		// screen gets a full-resolution one as soon as the cursor settles on
+		// it, so what is actually being looked at is never a rendition — a
+		// fitted frame is for getting past, not for judging. Panning stays
+		// cheap because the upgrade only starts once you stop.
 		st := u.stageRect()
 		u.pool.SetBox(int(st.W), int(st.H))
+		if u.cursor != u.lastCursor {
+			u.lastCursor, u.cursorSince = u.cursor, time.Now()
+		}
 		if u.mode != modeGrid && u.cursor < len(u.shots) {
 			if cur := u.shots[u.cursor]; cur.Kind == "photo" &&
-				(u.peaking || u.scale > u.fit+1e-4) {
+				(u.peaking || u.scale > u.fit+1e-4 || time.Since(u.cursorSince) > fullResSettle) {
 				u.pool.WantFull(cur.ID)
 			}
 		}
