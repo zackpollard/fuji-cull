@@ -72,3 +72,19 @@ func TestPullBudgetScalesWithBytes(t *testing.T) {
 		t.Errorf("5 GB budget = %v, want at least %v", big, want)
 	}
 }
+
+// A clip past the partial-read ceiling cannot be chunk-read to its end — the
+// camera has no GetPartialObject64 — so the batch must fall back to a
+// whole-object pull. Getting this wrong is what made a 4.7 GB video
+// unpullable even when the viewer asked for it by name.
+func TestPartialReadableRejectsOversizedFiles(t *testing.T) {
+	if !partialReadable([]int64{10 * mb, 2 << 30, streamPartialLimit}) {
+		t.Error("a batch inside the ceiling was rejected")
+	}
+	if partialReadable([]int64{10 * mb, streamPartialLimit + 1}) {
+		t.Error("a batch containing an oversized file was accepted")
+	}
+	if !partialReadable(nil) {
+		t.Error("an empty batch was rejected")
+	}
+}

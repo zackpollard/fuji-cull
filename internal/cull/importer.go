@@ -574,11 +574,13 @@ func (im *Importer) copyPhase(app *App, dest string, keepers []keeperFile, total
 			// trips this camera into replaying stale buffers, which is why an
 			// import could fail on a card that browsed perfectly.
 			var fetchErr error
-			if app.prefetch.partsOK() {
-				chunkSizes := make([]int64, len(chunk))
-				for i, c := range chunk {
-					chunkSizes[i] = c.size
-				}
+			// Anything past the partial-read ceiling must be pulled whole:
+			// chunked reads fail at the same byte every time.
+			chunkSizes := make([]int64, len(chunk))
+			for i, c := range chunk {
+				chunkSizes[i] = c.size
+			}
+			if app.prefetch.partsOK() && partialReadable(chunkSizes) {
 				// Credit bytes as they land. Without this a multi-gigabyte
 				// video reports nothing at all until it finishes, which reads
 				// as a hung import while the camera is working normally.

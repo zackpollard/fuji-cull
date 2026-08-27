@@ -1743,6 +1743,24 @@ func (p *Prefetcher) evictLocked() {
 	}
 }
 
+// partialReadable reports whether every file in a batch can be read to its end
+// through the partial-read session. GetPartialObject's offset is 32-bit and the
+// X-H2S has no GetPartialObject64 (see streamPartialLimit, verified in the
+// field), so a longer file fails at the same byte however often it is retried.
+// Streaming already caps itself at that ceiling and offers a full local pull
+// instead; this is the other half of that — the pull it offers has to actually
+// take the one-shot path, which streams from the start and never names an
+// offset. A single oversized file disqualifies the batch, since they share one
+// session and the one-shot path handles the whole set.
+func partialReadable(sizes []int64) bool {
+	for _, sz := range sizes {
+		if sz > streamPartialLimit {
+			return false
+		}
+	}
+	return true
+}
+
 // fetchItemsViaParts pulls full files through the persistent partial-read
 // session in 8 MB chunks, writing progressively so incremental promotion
 // still hands each file over the moment its bytes land. Cancellation stops
@@ -1764,6 +1782,10 @@ func (p *Prefetcher) fetchItemsViaPartsProgress(ctx context.Context, items []fet
 		}
 		if it.ObjectID == "" {
 			return fmt.Errorf("no MTP object ID for %s/%s", it.CameraDir, it.Name)
+		}
+		if sizes[n] > streamPartialLimit {
+			return fmt.Errorf("%s/%s is %d bytes: past the offset GetPartialObject can address — needs a whole-object pull",
+				it.CameraDir, it.Name, sizes[n])
 		}
 		out, err := os.Create(it.Dest)
 		if err != nil {
@@ -1884,7 +1906,10 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 	// aft processes get SIGKILLed mid-URB when preempted faster than they can
 	// exit — the kill that wedges the camera off the bus while swiping through
 	// full-screen photos, tripping it into stale-buffer mode.
-	useParts := p.partsOK()
+	// A file past the partial-read ceiling has to be pulled whole, or it fails
+	// at the same offset every time no matter how often it is retried — which
+	// is what made a >4 GiB clip unpullable even when asked for by name.
+	useParts := p.partsOK() && partialReadable(sizes)
 	fetchDone := make(chan error, 1)
 	go func() {
 		if !useParts {
