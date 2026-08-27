@@ -1748,6 +1748,15 @@ func (p *Prefetcher) evictLocked() {
 // still hands each file over the moment its bytes land. Cancellation stops
 // between chunks with the camera session intact.
 func (p *Prefetcher) fetchItemsViaParts(ctx context.Context, items []fetchItem, sizes []int64) error {
+	return p.fetchItemsViaPartsProgress(ctx, items, sizes, nil)
+}
+
+// fetchItemsViaPartsProgress is fetchItemsViaParts with a per-chunk callback.
+// A caller showing progress needs it: a single video can be several gigabytes,
+// and crediting bytes only when a file completes leaves the display frozen for
+// minutes while the link is working perfectly. onBytes is called with the size
+// of each chunk as it lands, never under a lock.
+func (p *Prefetcher) fetchItemsViaPartsProgress(ctx context.Context, items []fetchItem, sizes []int64, onBytes func(int64)) error {
 	const chunk = 8 << 20
 	for n, it := range items {
 		if ctx.Err() != nil {
@@ -1791,6 +1800,9 @@ func (p *Prefetcher) fetchItemsViaParts(ctx context.Context, items []fetchItem, 
 				return werr
 			}
 			off += int64(len(data))
+			if onBytes != nil {
+				onBytes(int64(len(data)))
+			}
 		}
 		out.Close()
 		// Guard the caller's contract. A short read is only end-of-object when

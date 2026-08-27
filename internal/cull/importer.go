@@ -398,6 +398,40 @@ func (im *Importer) run(app *App, dest, album string, keepers []keeperFile, opt 
 	}
 }
 
+// chunkEnd returns where the pull chunk starting at start should end: bounded
+// by file count and by bytes, and never empty — one file larger than the byte
+// bound gets a chunk to itself, which is the point. Batching a multi-gigabyte
+// video with 23 photos makes them share a deadline the video alone can use up,
+// so a timeout on it fails 23 files that were never the problem.
+func chunkEnd(sizes []int64, start, maxCount int, maxBytes int64) int {
+	end, total := start, int64(0)
+	for end < len(sizes) && end-start < maxCount {
+		if end > start && total+sizes[end] > maxBytes {
+			break
+		}
+		total += sizes[end]
+		end++
+	}
+	if end == start && start < len(sizes) {
+		end = start + 1
+	}
+	return end
+}
+
+// pullBudget is how long a chunk of the given size gets before it is treated as
+// a wedged camera. Sized from the bytes on the wire rather than the file count:
+// budgeting per file gave a chunk holding a 5 GB video the same seven minutes
+// as one holding 24 thumbnails, so the video timed out and retried forever. The
+// allowance is deliberately slack — roughly 4 MB/s — because the deadline is
+// there to catch a dead link, not to police a slow one.
+func pullBudget(bytes int64) time.Duration {
+	d := 60*time.Second + time.Duration(bytes/(4<<20))*time.Second
+	if d < 2*time.Minute {
+		d = 2 * time.Minute
+	}
+	return d
+}
+
 // copyPhase lands keeper files in dest/<folder>/: files already present are
 // kept, cached camera-verbatim copies (prefetched JPGs/RAFs/videos) are
 // copied locally, and the remainder is pulled from the camera in per-folder
@@ -494,7 +528,17 @@ func (im *Importer) copyPhase(app *App, dest string, keepers []keeperFile, total
 	// unbounded 859-file session once wedged an import forever, and its
 	// first hiccup aborted the whole run — every landed file is committed
 	// immediately, so failures and re-runs only ever resume.
-	const importChunk = 24
+	//
+	// Bounded by bytes as well as by count: 24 files is a sensible session
+	// when they are 10 MB photos and a bad one when one of them is a 5 GB
+	// video, because the whole chunk then shares a deadline the video alone
+	// can exhaust. A large video ends up in a chunk of its own, which is what
+	// gives it the full budget and keeps a timeout from taking 23 innocent
+	// files down with it.
+	const (
+		importChunk      = 24
+		importChunkBytes = 512 << 20
+	)
 	if len(toPull) > 0 {
 		log.Printf("import: pulling %d files from camera (%d satisfied locally)", len(toPull), done)
 	}
@@ -507,30 +551,43 @@ func (im *Importer) copyPhase(app *App, dest string, keepers []keeperFile, total
 			log.Printf("import: retrying %d files (round %d/3)", len(pending), round)
 			time.Sleep(10 * time.Second)
 		}
+		sizes := make([]int64, len(pending))
+		for i, c := range pending {
+			sizes[i] = c.size
+		}
 		var failed []pullItem
-		for start := 0; start < len(pending); start += importChunk {
-			end := start + importChunk
-			if end > len(pending) {
-				end = len(pending)
+		for start := 0; start < len(pending); {
+			end := chunkEnd(sizes, start, importChunk, importChunkBytes)
+			chunkBytes := int64(0)
+			for _, sz := range sizes[start:end] {
+				chunkBytes += sz
 			}
 			chunk := pending[start:end]
+			start = end
 			items := make([]fetchItem, len(chunk))
 			for i, c := range chunk {
 				items[i] = c.it
 			}
-			ctx, cancel := context.WithTimeout(context.Background(),
-				60*time.Second+time.Duration(len(items))*15*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), pullBudget(chunkBytes))
 			// Ride the persistent partial-read session when there is one —
 			// the same path browsing uses. A one-shot aft per chunk is what
 			// trips this camera into replaying stale buffers, which is why an
 			// import could fail on a card that browsed perfectly.
 			var fetchErr error
 			if app.prefetch.partsOK() {
-				sizes := make([]int64, len(chunk))
+				chunkSizes := make([]int64, len(chunk))
 				for i, c := range chunk {
-					sizes[i] = c.size
+					chunkSizes[i] = c.size
 				}
-				fetchErr = app.prefetch.fetchItemsViaParts(ctx, items, sizes)
+				// Credit bytes as they land. Without this a multi-gigabyte
+				// video reports nothing at all until it finishes, which reads
+				// as a hung import while the camera is working normally.
+				inflight := int64(0)
+				fetchErr = app.prefetch.fetchItemsViaPartsProgress(ctx, items, chunkSizes, func(n int64) {
+					inflight += n
+					b := bytesDone + inflight
+					im.update(func(s *ImportStatus) { s.Camera.Bytes = b })
+				})
 			} else {
 				fetchErr = app.backend.Fetch(ctx, items)
 			}
