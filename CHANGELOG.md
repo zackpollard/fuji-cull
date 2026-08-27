@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.10.0](https://github.com/zackpollard/fuji-cull/compare/v1.9.0...v1.10.0) (2026-08-27)
+
+
+### Bug Fixes
+
+* **camera:** pull files past the partial-read ceiling whole ([b0eb3ec](https://github.com/zackpollard/fuji-cull/commit/b0eb3ec536ade8287bc7be347e31ec9f29433a3d))
+* **gui:** authenticate the desktop player against its own engine ([f7efc84](https://github.com/zackpollard/fuji-cull/commit/f7efc8401b1dea2aff7ff22d3c6f59e57b89481c))
+* **gui:** draw the sharpest-of-burst marker the desktop already computed ([b11d0f2](https://github.com/zackpollard/fuji-cull/commit/b11d0f29dc02ed442b78a702c3e70464addaca78))
+* **gui:** filter scaled photos, and show the settled shot at full resolution ([a64dab5](https://github.com/zackpollard/fuji-cull/commit/a64dab51bcec33c1713f1cff3a96aa8d00393188))
+* **heif:** give HEIF shots a capture time so they can form bursts ([6d5bc8f](https://github.com/zackpollard/fuji-cull/commit/6d5bc8f10f1586b89e5e33b859da12c921987e9e))
+* **import:** budget pulls by bytes, and report progress inside a file ([4b6084e](https://github.com/zackpollard/fuji-cull/commit/4b6084e3c97134421abdf380a109efea50d144da))
+* **import:** stack HEIF+raw pairs, and stack them on a re-run ([6325543](https://github.com/zackpollard/fuji-cull/commit/6325543b2d6e41a08145ab5fb8814fe86a1f0911))
+* **prefetch:** asking for a buffered shot must not cancel the camera's transfer ([3a91e50](https://github.com/zackpollard/fuji-cull/commit/3a91e50aaca96838708eb2fc2465b4db13478cae))
+
+
+### Performance Improvements
+
+* **gui:** decode frames to fit the screen, build peaking off the render thread ([68bc129](https://github.com/zackpollard/fuji-cull/commit/68bc12980d1e5fadbc14857796847a50953ba506))
+* **gui:** decode from disk, and stop 18 workers queueing on the camera ([40b4443](https://github.com/zackpollard/fuji-cull/commit/40b4443a458852bbdf5e43f2e96333fd4f8bc7bc))
+* **prefetch:** transcode off the fetch loop so the camera keeps pulling ([a545055](https://github.com/zackpollard/fuji-cull/commit/a54505556815c07dada6642c993e45902ce56054))
+* **session:** journal decisions instead of rewriting the whole file ([f46a026](https://github.com/zackpollard/fuji-cull/commit/f46a026150ed294fd073775ca3d938071bebb061))
+
+
+### Miscellaneous Chores
+
+* release 1.10.0 ([193bec5](https://github.com/zackpollard/fuji-cull/commit/193bec5f749ec0108968c2a6b897eb699d94c452))
+
 ## [1.9.0](https://github.com/zackpollard/fuji-cull/compare/v1.8.0...v1.9.0) (2026-08-26)
 
 
