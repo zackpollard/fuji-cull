@@ -1,6 +1,8 @@
 package cull
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -35,6 +37,148 @@ type Session struct {
 
 	serverRef int64  // last server clock seen (ms); clamps locally-minted walls forward. 0 = none
 	onDirty   func() // woken after a local mutation leaves an unacked record
+
+	// Journal state. The snapshot is rewritten on a timer; between snapshots
+	// the journal is what makes a decision durable. See journalEntry.
+	jf        *os.File // append handle, opened on first write
+	dirty     bool     // snapshot is behind the in-memory data
+	stop      chan struct{}
+	closeOnce sync.Once
+}
+
+// The session file is the only durable record of a cull: sync records double as
+// the outbox, there is no server configured by default, and the desktop GUI
+// never gets a clean shutdown. So a decision has to survive the process dying
+// the instant it is made. Rewriting the whole file to achieve that cost 28 ms
+// of held lock per keypress on a 16,000-record card — hold a key down and saves
+// queue faster than they complete, and SetCursor was doing it on the render
+// thread. Decisions are therefore appended to a journal (one short line, one
+// write) and the full snapshot is rewritten on a timer. Snapshot plus journal
+// is always the complete history: a crash replays what the snapshot missed.
+const (
+	snapshotInterval = 3 * time.Second
+	journalSuffix    = ".journal"
+)
+
+// journalEntry is one durable mutation. It carries the acted-on shot ID as well
+// as the canonical key because the legacy projection needs it whenever the
+// catalog resolver is absent — which is exactly the situation during a replay.
+type journalEntry struct {
+	CK  string `json:"ck"`
+	ID  string `json:"id,omitempty"`
+	Rec record `json:"r"`
+}
+
+func (s *Session) journalPath() string { return s.path + journalSuffix }
+
+// appendJournalLocked makes one record durable without rewriting the file.
+// Deliberately no fsync: this guards against the process dying, which is what
+// actually happens here, and the whole-file write it replaces never fsynced
+// either — so durability is unchanged, only the cost is.
+func (s *Session) appendJournalLocked(ck, actedID string, r record) error {
+	if s.jf == nil {
+		if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+			return err
+		}
+		f, err := os.OpenFile(s.journalPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		s.jf = f
+	}
+	line, err := json.Marshal(journalEntry{CK: ck, ID: actedID, Rec: r})
+	if err != nil {
+		return err
+	}
+	_, err = s.jf.Write(append(line, '\n'))
+	return err
+}
+
+// replayJournalLocked applies decisions journalled since the last snapshot.
+// Re-applying one the snapshot already holds is harmless — same key, same
+// value — and that idempotence is what makes discarding the journal after a
+// snapshot safe.
+func (s *Session) replayJournalLocked() (int, error) {
+	f, err := os.Open(s.journalPath())
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	n := 0
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var e journalEntry
+		if err := json.Unmarshal(line, &e); err != nil {
+			// A half-written final line is what being killed mid-append looks
+			// like. Everything before it is still good, so take that and go on.
+			log.Printf("session: journal: discarding an unreadable entry (%v)", err)
+			continue
+		}
+		if e.CK == "" {
+			continue
+		}
+		if s.data.Records == nil {
+			s.data.Records = map[string]record{}
+		}
+		s.data.Records[e.CK] = e.Rec
+		s.projectLocked(e.CK, e.Rec, e.ID)
+		n++
+	}
+	if err := sc.Err(); err != nil {
+		return n, err
+	}
+	if n > 0 {
+		log.Printf("session: recovered %d decisions from the journal", n)
+	}
+	return n, nil
+}
+
+// snapshotLoop rewrites the full file in the background so the hot path never
+// has to.
+func (s *Session) snapshotLoop() {
+	t := time.NewTicker(snapshotInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.stop:
+			return
+		case <-t.C:
+			s.mu.Lock()
+			if s.dirty {
+				if err := s.saveLocked(); err != nil {
+					log.Printf("session: snapshot: %v", err)
+				}
+			}
+			s.mu.Unlock()
+		}
+	}
+}
+
+// Close stops the background writer after a final snapshot. Correctness does
+// not depend on it — the journal already holds anything the snapshot missed —
+// it just leaves the file tidy.
+func (s *Session) Close() {
+	s.closeOnce.Do(func() { close(s.stop) })
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dirty {
+		if err := s.saveLocked(); err != nil {
+			log.Printf("session: final snapshot: %v", err)
+		}
+	}
+	if s.jf != nil {
+		s.jf.Close()
+		s.jf = nil
+	}
 }
 
 type sessionData struct {
@@ -76,31 +220,40 @@ type cursorRec struct {
 }
 
 func loadSession(path string) (*Session, error) {
-	s := &Session{path: path, data: sessionData{Decisions: map[string]string{}}}
-	raw, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		s.initV2Locked()
-		if err := s.saveLocked(); err != nil {
-			return nil, err
-		}
-		return s, nil
+	s := &Session{
+		path: path,
+		data: sessionData{Decisions: map[string]string{}},
+		stop: make(chan struct{}),
 	}
-	if err != nil {
+	raw, err := os.ReadFile(path)
+	switch {
+	case os.IsNotExist(err):
+		s.initV2Locked()
+	case err != nil:
+		return nil, err
+	default:
+		if err := json.Unmarshal(raw, &s.data); err != nil {
+			return nil, fmt.Errorf("parse session %s: %w", path, err)
+		}
+		if s.data.Decisions == nil {
+			s.data.Decisions = map[string]string{}
+		}
+		// The one-time v1->v2 upgrade (mint deviceID, derive Records) runs
+		// before the replay so a journalled record lands on a v2 shape.
+		s.initV2Locked()
+	}
+	// Anything decided after the last snapshot lives here, including the
+	// decisions of a run that was killed rather than closed.
+	if _, err := s.replayJournalLocked(); err != nil {
+		return nil, fmt.Errorf("replay session journal %s: %w", s.journalPath(), err)
+	}
+	// One snapshot at startup makes the file self-contained again: the deviceID
+	// is stable across restarts, a migration never repeats, and the journal
+	// starts empty.
+	if err := s.saveLocked(); err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(raw, &s.data); err != nil {
-		return nil, fmt.Errorf("parse session %s: %w", path, err)
-	}
-	if s.data.Decisions == nil {
-		s.data.Decisions = map[string]string{}
-	}
-	// Persist the one-time v1->v2 upgrade (mint deviceID, derive Records) so the
-	// deviceID is stable across restarts and we never re-migrate.
-	if s.initV2Locked() {
-		if err := s.saveLocked(); err != nil {
-			return nil, err
-		}
-	}
+	go s.snapshotLoop()
 	return s, nil
 }
 
@@ -233,7 +386,21 @@ func (s *Session) saveLocked() error {
 	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	if err := os.Rename(tmp, s.path); err != nil {
+		return err
+	}
+	// The snapshot now holds everything the journal did. Retiring it under the
+	// same lock that marshalled the data is what makes that true: no decision
+	// can land in between and be dropped.
+	s.dirty = false
+	if s.jf != nil {
+		s.jf.Close()
+		s.jf = nil
+	}
+	if err := os.Remove(s.journalPath()); err != nil && !os.IsNotExist(err) {
+		log.Printf("session: could not retire the journal: %v", err)
+	}
+	return nil
 }
 
 // canonicalForLocked maps a backend-local shot ID to its canonical key: via the
@@ -275,7 +442,15 @@ func (s *Session) SetDecision(id, decision string) error {
 	}
 	s.data.Records[ck] = r
 	s.projectLocked(ck, r, id)
-	err := s.saveLocked()
+	err := s.appendJournalLocked(ck, id, r)
+	if err != nil {
+		// Never lose a decision to a journal problem: fall back to the
+		// whole-file write, which is what this always used to do.
+		log.Printf("session: journal append failed (%v) — writing the full snapshot", err)
+		err = s.saveLocked()
+	} else {
+		s.dirty = true
+	}
 	cb := s.onDirty
 	s.mu.Unlock()
 	if cb != nil {
@@ -325,7 +500,11 @@ func (s *Session) SetCursor(i int) error {
 		return nil
 	}
 	s.data.Cursor = i
-	return s.saveLocked()
+	// Deliberately not persisted here. Losing the cursor to a crash costs the
+	// user one scroll, which is not worth rewriting the whole file for on every
+	// arrow key — and this runs on the GUI's render thread.
+	s.dirty = true
+	return nil
 }
 
 func (s *Session) Cursor() int {
