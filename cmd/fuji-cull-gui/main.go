@@ -671,6 +671,10 @@ func (u *ui) frame() bool {
 			u.immich = u.app.ImmichStates()
 			u.camBulkSick, u.camPartSick = u.app.CameraSick()
 			u.decisions = u.app.Decisions() // adopt cross-device synced decisions
+			// Refreshed on the same tick: the set grows as the sharpness
+			// worker scores more frames, so a burst gains its winner while
+			// you are looking at it.
+			u.focusBest = u.app.FocusBest()
 		}
 		u.updateWants()
 		// A 104 MB photo texture upload mid-playback stalls the render
