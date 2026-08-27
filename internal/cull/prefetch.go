@@ -834,6 +834,17 @@ func (p *Prefetcher) Wait(ctx context.Context, id string) (string, error) {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// Already buffered: hand the path over and touch nothing else. Asking for
+	// a file that is on disk must not disturb the camera, and saying otherwise
+	// is ruinous — interruptImagesLocked cancels whatever batch is in flight,
+	// so callers that ask about buffered shots in bulk (the desktop decode
+	// pool does it per frame, remote clients per image) would cancel the
+	// current transfer over and over. No batch then ever completes, the buffer
+	// drains, and interrupting transfers mid-flight is what tips this camera
+	// into replaying stale buffers.
+	if st, ok := p.state[id]; ok && st.Status == "ready" {
+		return p.displayPath(s), nil
+	}
 	if st, ok := p.state[id]; !ok || st.Status == "failed" {
 		delete(p.state, id)
 		p.demand[id] = true
