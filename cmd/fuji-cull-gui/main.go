@@ -64,9 +64,16 @@ type decoded struct {
 	full bool
 }
 
+// imageSource is what the decode pool needs of the engine: what is already in
+// the buffer, and a blocking fetch for what is not.
+type imageSource interface {
+	ImagePathIfReady(id string) (string, bool)
+	WaitImage(ctx context.Context, id string) (string, error)
+}
+
 type decodePool struct {
 	mu       sync.Mutex
-	app      *cull.App
+	app      imageSource
 	want     []string // priority order, first = most urgent
 	inflight map[string]context.CancelFunc
 	done     map[string]*decoded
@@ -77,6 +84,11 @@ type decodePool struct {
 	// and 8x every per-pixel pass over it, to show pixels the screen cannot
 	// resolve. libjpeg-turbo drops them inside the IDCT for free.
 	boxW, boxH int
+	// waiters are the workers blocked in WaitImage on a camera fetch. A
+	// blocked worker cannot decode, and a frame already in the buffer decodes
+	// in under 200 ms while one still on the camera takes seconds — so
+	// letting every worker wait is how a full buffer still feels empty.
+	waiters map[string]bool
 	// fullWant is the one shot that needs a native-resolution decode anyway
 	// (it is zoomed in, or peaking is measuring it). Deliberately one: the
 	// window around the cursor is a dozen frames and re-decoding them all at
@@ -84,8 +96,9 @@ type decodePool struct {
 	fullWant string
 }
 
-func newDecodePool(app *cull.App, workers int) *decodePool {
-	p := &decodePool{app: app, inflight: map[string]context.CancelFunc{}, done: map[string]*decoded{}}
+func newDecodePool(app imageSource, workers int) *decodePool {
+	p := &decodePool{app: app, inflight: map[string]context.CancelFunc{},
+		done: map[string]*decoded{}, waiters: map[string]bool{}}
 	for i := 0; i < workers; i++ {
 		go p.worker()
 	}
@@ -112,6 +125,13 @@ func (p *decodePool) SetWant(ids []string) {
 	}
 	for id, cancel := range p.inflight {
 		if !wanted[id] {
+			cancel()
+			continue
+		}
+		// Blocking on the camera is only justified for the shot being looked
+		// at. Once the cursor moves on, that worker is worth more decoding
+		// what has already landed than holding a place in the queue.
+		if p.waiters[id] && (len(ids) == 0 || id != ids[0]) {
 			cancel()
 		}
 	}
@@ -177,24 +197,65 @@ type job struct {
 	ctx        context.Context
 	boxW, boxH int
 	full       bool
+	waits      bool // this one expects to block on the camera
+}
+
+// maxFetchWaiters bounds how many workers may block on a camera fetch at once.
+// One, and only for the shot under the cursor: the engine fills the window
+// ahead on its own, so a demand exists to preempt that for a jump the user
+// just made, not to queue up the whole window. Eighteen workers each demanding
+// a different shot also cancelled each other's fetch batch — every Wait
+// interrupts the in-flight batch that is not already fetching its own shot —
+// so the camera spent its time starting transfers instead of finishing them.
+const maxFetchWaiters = 1
+
+// needsWorkLocked reports whether a shot still has decoding to do: none yet,
+// or a fitted one to upgrade because something now needs every pixel. A banked
+// error is left alone for Get to expire and retry.
+func (p *decodePool) needsWorkLocked(id string) bool {
+	if _, busy := p.inflight[id]; busy {
+		return false
+	}
+	d := p.done[id]
+	return d == nil || (d.err == nil && !d.full && id == p.fullWant)
 }
 
 func (p *decodePool) next() (job, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for _, id := range p.want {
-		if _, busy := p.inflight[id]; busy {
-			continue
-		}
-		need := id == p.fullWant
-		// A frame already decoded is re-run only to upgrade a fitted one to
-		// full size; a banked error is left for Get to expire and retry.
-		if d := p.done[id]; d != nil && (d.err != nil || d.full || !need) {
-			continue
-		}
+	claim := func(id string, waits bool) (job, bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		p.inflight[id] = cancel
-		return job{id: id, ctx: ctx, boxW: p.boxW, boxH: p.boxH, full: need}, true
+		if waits {
+			p.waiters[id] = true
+		}
+		return job{id: id, ctx: ctx, boxW: p.boxW, boxH: p.boxH,
+			full: id == p.fullWant, waits: waits}, true
+	}
+	if len(p.want) == 0 {
+		return job{}, false
+	}
+	// The shot under the cursor goes first even when it has to come off the
+	// camera — it is the one being looked at, and making it queue behind a
+	// window of already-buffered frames is the wait the user actually feels.
+	if id := p.want[0]; p.needsWorkLocked(id) {
+		if _, ok := p.app.ImagePathIfReady(id); ok {
+			return claim(id, false)
+		}
+		if len(p.waiters) < maxFetchWaiters {
+			return claim(id, true)
+		}
+	}
+	// Everything else is decoded from disk only. The engine pulls the window
+	// ahead in batches on its own; a worker blocked here would be a worker
+	// not decoding what those batches have already landed.
+	for _, id := range p.want[1:] {
+		if !p.needsWorkLocked(id) {
+			continue
+		}
+		if _, ok := p.app.ImagePathIfReady(id); ok {
+			return claim(id, false)
+		}
 	}
 	return job{}, false
 }
@@ -208,6 +269,11 @@ func (p *decodePool) worker() {
 		}
 		id, ctx := j.id, j.ctx
 		path, err := p.app.WaitImage(ctx, id) // camera fetch if not buffered
+		if j.waits {
+			p.mu.Lock()
+			delete(p.waiters, id)
+			p.mu.Unlock()
+		}
 		var d decoded
 		d.when = time.Now()
 		d.full = j.full

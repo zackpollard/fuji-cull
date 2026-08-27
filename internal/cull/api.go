@@ -89,8 +89,7 @@ func (a *App) ImagePathIfReady(id string) (string, bool) {
 	if s == nil {
 		return "", false
 	}
-	states := a.prefetch.Snapshot()
-	if states[id] != "ready" {
+	if !a.prefetch.Ready(id) {
 		return "", false
 	}
 	return a.prefetch.displayPath(s), true

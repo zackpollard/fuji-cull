@@ -415,6 +415,37 @@ func (p *Prefetcher) interruptThumbsLocked() {
 // only when its own files are the ones being waited for.
 func (p *Prefetcher) bulkBatch() int { return p.batch * 4 }
 
+// nearWindow is how many shots ahead of the cursor count as "about to be
+// looked at". Sized so a brisk pan cannot cross it before a fetch batch
+// completes.
+const nearWindow = 40
+
+// nearWindowThinLocked reports whether shots just ahead of the cursor have
+// never been fetched. Taking turns with the head sweep is right for a cold
+// card — the grid would otherwise stay blank for the whole window fill — but
+// not while the viewer is walking straight into a hole. There, every other
+// batch spent on heads is a stall the user meets head-on, so images take every
+// turn until the ground just ahead is covered.
+func (p *Prefetcher) nearWindowThinLocked() bool {
+	near := min(p.ahead, nearWindow)
+	for d := 1; d <= near; d++ {
+		i := p.cursor + d
+		if i >= len(p.cat.Shots) {
+			break
+		}
+		s := p.cat.Shots[i]
+		if s.Kind == "video" {
+			continue // videos are fetched on demand, never by the window
+		}
+		// Only never-attempted shots are holes: one in flight is already
+		// being dealt with, and a failed one is waiting out its backoff.
+		if _, ok := p.state[s.ID]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
 // interactiveWorkLocked reports whether demands or window prefetch are waiting.
 func (p *Prefetcher) interactiveWorkLocked() bool {
 	return len(p.demand) > 0 || p.pickLocked() != nil
@@ -734,6 +765,17 @@ func (p *Prefetcher) Snapshot() map[string]string {
 	return out
 }
 
+// Ready reports whether a shot's display file is already in the buffer. Unlike
+// Snapshot this is a single map lookup, so a caller asking about one shot at a
+// time — the desktop decode pool deciding what it can decode without blocking
+// — does not pay for a copy of the whole table on every question.
+func (p *Prefetcher) Ready(id string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	st, ok := p.state[id]
+	return ok && st.Status == "ready"
+}
+
 // CachedFile returns the ready cache path for one of the shot's files, used
 // to serve videos and to seed imports without touching the camera again.
 // Only files whose cached bytes are camera-verbatim are returned.
@@ -844,7 +886,7 @@ func (p *Prefetcher) Run() {
 				// otherwise starve the grid of thumbnails for the entire
 				// window fill (minutes of full-size pulls on phone-class
 				// links). Demands are user-blocking and always win.
-				if p.imageTurn && len(p.demand) == 0 && p.partsOK() && !p.partSick {
+				if p.imageTurn && len(p.demand) == 0 && p.partsOK() && !p.partSick && !p.nearWindowThinLocked() {
 					if healBatch = p.pickHealBatchLocked(orientBatchSize); len(healBatch) > 0 {
 						p.imageTurn = false
 						thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
