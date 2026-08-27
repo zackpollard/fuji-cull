@@ -1,6 +1,8 @@
 package main
 
 import (
+	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/veandco/go-sdl2/sdl"
@@ -15,7 +17,12 @@ import (
 // The GUI already holds every frame as decoded RGBA (turbo.Image) on its way to
 // an SDL texture, so this is a pass over pixels we've already paid for — no
 // engine round-trip, and it measures the FULL-resolution frame, which is what
-// makes it trustworthy for critical focus.
+// makes it trustworthy for critical focus. That resolution is the point and
+// not negotiable: a frame fitted to the stage has already averaged away the
+// difference between sharp and nearly-sharp, which is the only thing peaking
+// is being asked. What it costs — a quarter-second Sobel pass over 26 MP — is
+// paid on a worker instead of the render thread (see peaker), because paying
+// it inline froze the UI for a dozen frames every time the cursor moved.
 
 // peakTint is the overlay colour: saturated red, which reads far more clearly
 // against real photo content than the cyan this started as. It does sit near
@@ -34,7 +41,7 @@ const peakCutPct = 14
 // painted in peakTint, ready to upload as a texture and blend over the photo.
 func edgeOverlay(img *turbo.Image) *turbo.Image {
 	w, h := img.W, img.H
-	out := &turbo.Image{Pix: make([]byte, w*h*4), W: w, H: h}
+	out := &turbo.Image{Pix: make([]byte, w*h*4), W: w, H: h, NatW: img.NatW, NatH: img.NatH}
 	if w < 3 || h < 3 {
 		return out
 	}
@@ -99,21 +106,128 @@ func uploadOverlay(r *sdl.Renderer, img *turbo.Image) (*texEntry, error) {
 		return nil, err
 	}
 	tex.SetBlendMode(sdl.BLENDMODE_BLEND)
-	return &texEntry{tex: tex, w: int32(img.W), h: int32(img.H)}, nil
+	return &texEntry{tex: tex, w: int32(img.W), h: int32(img.H),
+		natW: int32(img.NatW), natH: int32(img.NatH)}, nil
 }
 
-// peakTex returns the cached peaking overlay for a shot, building it on first
-// use from the frame the decode pool already holds. Nil when the frame isn't
-// decoded yet — the caller simply draws no overlay that redraw.
-func (u *ui) peakTex(id string) *texEntry {
+// shrinkMax fits an overlay into a box by keeping the STRONGEST edge in each
+// block rather than the average. Averaging is how a one-pixel-wide edge —
+// exactly what peaking exists to show — disappears, so the measurement stays
+// at full resolution and only the picture of it is scaled down. The screen
+// cannot show more than the box anyway, and an overlay is the same size in
+// memory as the frame it covers, so leaving it at 26 MP would hand the render
+// thread a second 99 MB upload per shot.
+func shrinkMax(img *turbo.Image, boxW, boxH int) *turbo.Image {
+	if boxW <= 0 || boxH <= 0 || (img.W <= boxW && img.H <= boxH) {
+		return img
+	}
+	k := 2
+	for (img.W+k-1)/k > boxW || (img.H+k-1)/k > boxH {
+		k++
+	}
+	ow, oh := (img.W+k-1)/k, (img.H+k-1)/k
+	out := &turbo.Image{Pix: make([]byte, ow*oh*4), W: ow, H: oh, NatW: img.NatW, NatH: img.NatH}
+	for oy := 0; oy < oh; oy++ {
+		for ox := 0; ox < ow; ox++ {
+			var a byte
+			for y := oy * k; y < (oy+1)*k && y < img.H; y++ {
+				row := y * img.W
+				for x := ox * k; x < (ox+1)*k && x < img.W; x++ {
+					if v := img.Pix[(row+x)*4+3]; v > a {
+						a = v
+					}
+				}
+			}
+			if a == 0 {
+				continue
+			}
+			o := (oy*ow + ox) * 4
+			out.Pix[o], out.Pix[o+1], out.Pix[o+2], out.Pix[o+3] = peakTint.R, peakTint.G, peakTint.B, a
+		}
+	}
+	return out
+}
+
+/* ── building overlays off the render thread ──────────────── */
+
+// peaker builds one overlay at a time on a worker goroutine. The render
+// thread never blocks on it: it says which shot it wants and, on some later
+// frame, finds the overlay waiting. Overlays are kept as images rather than
+// only as textures so that an evicted texture costs an upload to restore
+// rather than another Sobel pass.
+type peaker struct {
+	pool *decodePool
+
+	mu    sync.Mutex
+	want  string
+	box   [2]int
+	built map[string]*turbo.Image
+	order []string // insertion order, for a bounded cache
+}
+
+// peakCache is how many built overlays to keep. Small on purpose: each one is
+// megabytes, and the only ones that get drawn are the shot on screen and
+// whatever the cursor just left.
+const peakCache = 3
+
+func newPeaker(pool *decodePool) *peaker {
+	p := &peaker{pool: pool, built: map[string]*turbo.Image{}}
+	go p.worker()
+	return p
+}
+
+// Want names the shot whose overlay is needed and the box it gets drawn into,
+// and returns the overlay if it is already built. Never blocks.
+func (p *peaker) Want(id string, boxW, boxH int) *turbo.Image {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.want, p.box = id, [2]int{boxW, boxH}
+	return p.built[id]
+}
+
+func (p *peaker) worker() {
+	for {
+		p.mu.Lock()
+		id, box := p.want, p.box
+		have := id == "" || p.built[id] != nil
+		p.mu.Unlock()
+		if have {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		// Wait for the full-resolution decode the viewer asked for on our
+		// behalf; a fitted one would make a soft frame look sharp.
+		d := p.pool.Get(id)
+		if d == nil || d.img == nil || d.err != nil || !d.full {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		ov := shrinkMax(edgeOverlay(d.img), box[0], box[1])
+		p.mu.Lock()
+		if _, dup := p.built[id]; !dup {
+			p.built[id] = ov
+			p.order = append(p.order, id)
+			for len(p.order) > peakCache {
+				delete(p.built, p.order[0])
+				p.order = p.order[1:]
+			}
+		}
+		p.mu.Unlock()
+	}
+}
+
+// peakTex returns the peaking overlay for a shot, or nil while one is still
+// being built — the caller simply draws no overlay that redraw, and picks it
+// up a few frames later. All this does on the render thread is the upload.
+func (u *ui) peakTex(id string, st sdl.Rect) *texEntry {
 	if te := u.peaks.get(id); te != nil {
 		return te
 	}
-	d := u.pool.Get(id)
-	if d == nil || d.img == nil || d.err != nil {
+	ov := u.peaker.Want(id, int(st.W), int(st.H))
+	if ov == nil {
 		return nil
 	}
-	te, err := uploadOverlay(u.ren, edgeOverlay(d.img))
+	te, err := uploadOverlay(u.ren, ov)
 	if err != nil {
 		return nil
 	}

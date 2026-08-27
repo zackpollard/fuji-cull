@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -97,6 +98,15 @@ type Prefetcher struct {
 	partsMu  sync.Mutex
 	partsSrv *mtppart.Server
 
+	// Converting a pulled file is ffmpeg work, not camera work. Doing it in
+	// the fetch loop meant a HEIF-heavy card transferred in bursts and then
+	// sat idle: ~0.4s of ffmpeg per shot against ~0.1s of transfer, so the
+	// link spent most of a batch waiting on a CPU that had cores to spare.
+	// Conversions run on their own bounded pool instead, and the loop goes
+	// back to pulling the moment the bytes are down.
+	convSem    chan struct{}
+	converting int // in-flight conversions, so Close can drain them
+
 	onReady func(*photo.Shot) // optional hook: a verbatim file just landed
 	// onStaleHandles fires when the camera is proven to have rebound its
 	// object handles, so the catalog cache can be dropped and re-read.
@@ -158,6 +168,7 @@ func newPrefetcher(cat *Catalog, backend Backend, cacheDir string, ahead, behind
 		behind:      behind,
 		evict:       evictMargin,
 		batch:       batch,
+		convSem:     make(chan struct{}, convWorkers()),
 		cursor:      cursor,
 		demand:      map[string]bool{},
 		state:       map[string]*fetchState{},
@@ -415,6 +426,37 @@ func (p *Prefetcher) interruptThumbsLocked() {
 // only when its own files are the ones being waited for.
 func (p *Prefetcher) bulkBatch() int { return p.batch * 4 }
 
+// nearWindow is how many shots ahead of the cursor count as "about to be
+// looked at". Sized so a brisk pan cannot cross it before a fetch batch
+// completes.
+const nearWindow = 40
+
+// nearWindowThinLocked reports whether shots just ahead of the cursor have
+// never been fetched. Taking turns with the head sweep is right for a cold
+// card — the grid would otherwise stay blank for the whole window fill — but
+// not while the viewer is walking straight into a hole. There, every other
+// batch spent on heads is a stall the user meets head-on, so images take every
+// turn until the ground just ahead is covered.
+func (p *Prefetcher) nearWindowThinLocked() bool {
+	near := min(p.ahead, nearWindow)
+	for d := 1; d <= near; d++ {
+		i := p.cursor + d
+		if i >= len(p.cat.Shots) {
+			break
+		}
+		s := p.cat.Shots[i]
+		if s.Kind == "video" {
+			continue // videos are fetched on demand, never by the window
+		}
+		// Only never-attempted shots are holes: one in flight is already
+		// being dealt with, and a failed one is waiting out its backoff.
+		if _, ok := p.state[s.ID]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
 // interactiveWorkLocked reports whether demands or window prefetch are waiting.
 func (p *Prefetcher) interactiveWorkLocked() bool {
 	return len(p.demand) > 0 || p.pickLocked() != nil
@@ -473,7 +515,7 @@ func (p *Prefetcher) Close() {
 	}()
 	deadline := time.Now().Add(10 * time.Second)
 	p.mu.Lock()
-	for (p.fetching > 0 || p.thumbCancel != nil) && time.Now().Before(deadline) {
+	for (p.fetching > 0 || p.converting > 0 || p.thumbCancel != nil) && time.Now().Before(deadline) {
 		p.cond.Wait()
 	}
 	p.mu.Unlock()
@@ -734,6 +776,17 @@ func (p *Prefetcher) Snapshot() map[string]string {
 	return out
 }
 
+// Ready reports whether a shot's display file is already in the buffer. Unlike
+// Snapshot this is a single map lookup, so a caller asking about one shot at a
+// time — the desktop decode pool deciding what it can decode without blocking
+// — does not pay for a copy of the whole table on every question.
+func (p *Prefetcher) Ready(id string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	st, ok := p.state[id]
+	return ok && st.Status == "ready"
+}
+
 // CachedFile returns the ready cache path for one of the shot's files, used
 // to serve videos and to seed imports without touching the camera again.
 // Only files whose cached bytes are camera-verbatim are returned.
@@ -844,7 +897,7 @@ func (p *Prefetcher) Run() {
 				// otherwise starve the grid of thumbnails for the entire
 				// window fill (minutes of full-size pulls on phone-class
 				// links). Demands are user-blocking and always win.
-				if p.imageTurn && len(p.demand) == 0 && p.partsOK() && !p.partSick {
+				if p.imageTurn && len(p.demand) == 0 && p.partsOK() && !p.partSick && !p.nearWindowThinLocked() {
 					if healBatch = p.pickHealBatchLocked(orientBatchSize); len(healBatch) > 0 {
 						p.imageTurn = false
 						thumbCtx, p.thumbCancel = context.WithCancel(context.Background())
@@ -1871,33 +1924,30 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 				return
 			}
 		}
-		if err := p.finalizeShot(targets[i], tmps[i]); err != nil {
-			log.Printf("prefetch: %s: %v", targets[i].ID, err)
-			p.setState(targets[i].ID, "failed", err.Error())
-		} else {
-			p.setState(targets[i].ID, "ready", "")
-			p.harvestOrient(targets[i])
-			if p.onReady != nil {
-				p.onReady(targets[i])
-			}
+		shot, tmp := targets[i], tmps[i]
+		finished[i] = true // the batch is done with it either way
+		// A shot that has to be transcoded goes to the converter pool: the
+		// file is down, and holding the fetch loop for ffmpeg is what left
+		// the camera idle. The shot stays "fetching" until the conversion
+		// lands, so nothing re-picks it and a waiter still blocks correctly.
+		if shot.Kind == "photo" && needsConvert(shot.DisplayExt()) {
 			p.mu.Lock()
-			if p.bulkSick {
-				p.bulkSick = false
-				// A valid transfer after garbage means the camera was
-				// power-cycled — the only cure — so partial reads (streaming,
-				// posters, head-heal) are trustworthy again too. Their own
-				// validation re-trips partSick if not.
-				if p.partSick {
-					p.partSick = false
-					p.forgiveThumbFailuresLocked()
-					log.Printf("prefetch: camera recovered — re-enabling partial reads")
-				} else {
-					log.Printf("prefetch: camera bulk reads recovered")
-				}
-			}
+			p.converting++
 			p.mu.Unlock()
+			go func() {
+				p.convSem <- struct{}{}
+				defer func() {
+					<-p.convSem
+					p.mu.Lock()
+					p.converting--
+					p.mu.Unlock()
+					p.cond.Broadcast() // Close's drain re-checks on this
+				}()
+				p.completeShot(shot, tmp)
+			}()
+			return
 		}
-		finished[i] = true
+		p.completeShot(shot, tmp)
 	}
 
 	tick := time.NewTicker(150 * time.Millisecond)
@@ -1984,6 +2034,53 @@ func (p *Prefetcher) fetchBatch(targets []*photo.Shot) {
 			}
 		}
 	}
+}
+
+// convWorkers is how many conversions may run at once. Sized well below the
+// core count: ffmpeg is itself threaded and the viewer needs cores to decode
+// with. Enough that conversion stays ahead of the camera (~4-5 files/s) rather
+// than setting the pace, which is all that is being asked of it.
+func convWorkers() int {
+	n := runtime.NumCPU() / 4
+	if n < 2 {
+		n = 2
+	}
+	if n > 6 {
+		n = 6
+	}
+	return n
+}
+
+// completeShot turns a downloaded temp file into the shot the viewer can use
+// and publishes the result. For a HEIF or a RAF that means a transcode, which
+// is why callers may run this off the fetch loop.
+func (p *Prefetcher) completeShot(s *photo.Shot, tmp string) {
+	if err := p.finalizeShot(s, tmp); err != nil {
+		log.Printf("prefetch: %s: %v", s.ID, err)
+		p.setState(s.ID, "failed", err.Error())
+		return
+	}
+	p.setState(s.ID, "ready", "")
+	p.harvestOrient(s)
+	if p.onReady != nil {
+		p.onReady(s)
+	}
+	p.mu.Lock()
+	if p.bulkSick {
+		p.bulkSick = false
+		// A valid transfer after garbage means the camera was power-cycled —
+		// the only cure — so partial reads (streaming, posters, head-heal)
+		// are trustworthy again too. Their own validation re-trips partSick
+		// if not.
+		if p.partSick {
+			p.partSick = false
+			p.forgiveThumbFailuresLocked()
+			log.Printf("prefetch: camera recovered — re-enabling partial reads")
+		} else {
+			log.Printf("prefetch: camera bulk reads recovered")
+		}
+	}
+	p.mu.Unlock()
 }
 
 // finalizeShot promotes a completed tmp pull into its cache location,

@@ -22,11 +22,30 @@ import (
 type Image struct {
 	Pix  []byte
 	W, H int
+	// NatW/NatH are the frame's size in the file, after the orientation fix
+	// and regardless of the scale it was decoded at. Geometry — how big to
+	// draw it, what counts as 100% zoom — is a property of the photograph,
+	// not of how many pixels we chose to decode, so callers size from these
+	// and let the renderer stretch the texture.
+	NatW, NatH int
 }
 
-// Decode decompresses a JPEG byte stream to RGBA using a per-call handle
-// (handles are cheap; this keeps Decode goroutine-safe).
-func Decode(data []byte) (*Image, error) {
+// Decode decompresses a JPEG byte stream to RGBA at the file's own size.
+func Decode(data []byte) (*Image, error) { return DecodeScaled(data, 0, 0) }
+
+// DecodeScaled decompresses a JPEG to RGBA big enough to fill a boxW x boxH
+// letterbox and no bigger,
+// letting libjpeg-turbo drop the surplus resolution inside the IDCT rather
+// than decoding pixels the screen will never show. A 40 MP frame shown on a
+// 4K display needs a quarter of its pixels; decoding it whole costs that
+// factor four times over — in the decode, in the 151 MB RGBA buffer, in the
+// texture upload, and again in every per-pixel pass (focus peaking) run over
+// it. Scaling happens before the orientation fix, so maxW/maxH are in
+// display space and get swapped here for a rotated frame.
+//
+// A box of 0 means "the file's own size": callers that genuinely need every
+// pixel — a zoom past what the fitted rendition holds — ask for it.
+func DecodeScaled(data []byte, boxW, boxH int) (*Image, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("empty jpeg data")
 	}
@@ -41,21 +60,79 @@ func Decode(data []byte) (*Image, error) {
 	if C.tjDecompressHeader3(h, src, C.ulong(len(data)), &w, &hgt, &subsamp, &colorspace) != 0 {
 		return nil, fmt.Errorf("tjDecompressHeader3: %s", C.GoString(C.tjGetErrorStr2(h)))
 	}
-	img := &Image{Pix: make([]byte, int(w)*int(hgt)*4), W: int(w), H: int(hgt)}
+
+	orient := jpegmeta.Orientation(data)
+	reqW, reqH := boxW, boxH
+	if orient >= 5 && orient <= 8 { // the fix below transposes the frame
+		reqW, reqH = reqH, reqW
+	}
+	dw, dh := scaledSize(int(w), int(hgt), reqW, reqH)
+
+	img := &Image{Pix: make([]byte, dw*dh*4), W: dw, H: dh}
 	dst := (*C.uchar)(unsafe.Pointer(&img.Pix[0]))
-	if C.tjDecompress2(h, src, C.ulong(len(data)), dst, w, w*4, hgt, C.TJPF_RGBA, C.TJFLAG_FASTDCT) != 0 {
+	if C.tjDecompress2(h, src, C.ulong(len(data)), dst, C.int(dw), C.int(dw*4), C.int(dh), C.TJPF_RGBA, C.TJFLAG_FASTDCT) != 0 {
 		return nil, fmt.Errorf("tjDecompress2: %s", C.GoString(C.tjGetErrorStr2(h)))
 	}
-	return img.Normalize(jpegmeta.Orientation(data)), nil
+	out := img.Normalize(orient)
+	out.NatW, out.NatH = int(w), int(hgt)
+	if orient >= 5 && orient <= 8 {
+		out.NatW, out.NatH = int(hgt), int(w)
+	}
+	return out, nil
 }
 
-// DecodeFile decodes a JPEG file from disk.
-func DecodeFile(path string) (*Image, error) {
+// scaledSize picks the smallest libjpeg-turbo scaling factor whose output
+// still has every pixel the screen can show. The frame is letterboxed into
+// boxW x boxH, so what matters is the fitted size, not the box: a tall frame
+// on a wide screen is limited by its height and the width the box offers is
+// never used. Only the factors the library advertises are considered — those
+// are the ones the scaled IDCT implements, so they cost less than a full
+// decode rather than more. Falls back to the native size when nothing fits,
+// including when the caller passes 0 meaning "no limit".
+func scaledSize(w, hgt, boxW, boxH int) (int, int) {
+	if boxW <= 0 || boxH <= 0 || w <= 0 || hgt <= 0 {
+		return w, hgt
+	}
+	fit := float64(boxW) / float64(w)
+	if f := float64(boxH) / float64(hgt); f < fit {
+		fit = f
+	}
+	if fit >= 1 { // the box wants more pixels than the file holds
+		return w, hgt
+	}
+	needW := int(float64(w)*fit) + 1
+	needH := int(float64(hgt)*fit) + 1
+
+	var n C.int
+	fs := C.tjGetScalingFactors(&n)
+	if fs == nil || n <= 0 {
+		return w, hgt
+	}
+	bw, bh := w, hgt
+	for _, f := range unsafe.Slice(fs, int(n)) {
+		num, den := int(f.num), int(f.denom)
+		if num > den { // upscaling: more pixels than the file has
+			continue
+		}
+		sw := (w*num + den - 1) / den
+		sh := (hgt*num + den - 1) / den
+		if sw >= needW && sh >= needH && sw*sh < bw*bh {
+			bw, bh = sw, sh
+		}
+	}
+	return bw, bh
+}
+
+// DecodeFile decodes a JPEG file from disk at its own size.
+func DecodeFile(path string) (*Image, error) { return DecodeScaledFile(path, 0, 0) }
+
+// DecodeScaledFile decodes a JPEG file from disk, sized for a boxW x boxH fit.
+func DecodeScaledFile(path string, boxW, boxH int) (*Image, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return Decode(data)
+	return DecodeScaled(data, boxW, boxH)
 }
 
 /* ── EXIF orientation ─────────────────────────────────────── */

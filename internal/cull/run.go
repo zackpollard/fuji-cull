@@ -354,4 +354,7 @@ func (a *App) Close() {
 	if a.isReady() {
 		a.prefetch.Close()
 	}
+	if a.session != nil {
+		a.session.Close() // final snapshot; the journal covers anything else
+	}
 }
