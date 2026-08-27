@@ -25,6 +25,12 @@ import (
 func TestStackStageCountsOnlyCompletePairs(t *testing.T) {
 	var posts int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// StackPairs asks what is already stacked before stacking anything;
+		// only the creations are what this test counts.
+		if r.Method == http.MethodGet {
+			w.Write([]byte("[]"))
+			return
+		}
 		posts++
 		w.WriteHeader(http.StatusCreated)
 	}))
@@ -76,6 +82,10 @@ func TestStackStageCountsOnlyCompletePairs(t *testing.T) {
 // with a stack lane that never leaves "running".
 func TestStackStageResolvesWithNoPairs(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Write([]byte("[]"))
+			return
+		}
 		t.Error("CreateStack must not be called when there are no pairs")
 	}))
 	defer srv.Close()
@@ -158,6 +168,10 @@ func TestStageTimelineAcrossAFailedUploadAndRetry(t *testing.T) {
 			}
 			json.NewEncoder(w).Encode(out)
 		case strings.HasSuffix(r.URL.Path, "/stacks"):
+			if r.Method == http.MethodGet {
+				w.Write([]byte("[]")) // nothing stacked yet
+				return
+			}
 			io.Copy(io.Discard, r.Body)
 			mu.Lock()
 			stacks++

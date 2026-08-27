@@ -467,7 +467,7 @@ func (s *Streamer) Wait() error {
 	log.Printf("All %d files verified in Immich", len(files))
 
 	if s.opts.ImmichStack && !s.opts.DryRun {
-		log.Printf("--- stacking RAF+JPG pairs ---")
+		log.Printf("--- stacking raw + rendition pairs ---")
 		StackPairs(s.ctx, s.opts, s.client, files)
 	}
 	Report(s.opts.Dest, files)

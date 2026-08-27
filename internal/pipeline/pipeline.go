@@ -165,7 +165,7 @@ func Run(ctx context.Context, opts Options, files []photo.FileEntry) error {
 		log.Printf("All %d files verified in Immich", len(files))
 
 		if opts.ImmichStack && !opts.DryRun {
-			log.Printf("--- stacking RAF+JPG pairs ---")
+			log.Printf("--- stacking raw + rendition pairs ---")
 			StackPairs(ctx, opts, client, files)
 		}
 	}
@@ -328,15 +328,25 @@ func Upload(ctx context.Context, opts Options, client *immich.Client, albumID st
 	return nil
 }
 
-// StackPairs groups each RAF+JPG pair of the same shot into an Immich stack
-// with the JPG as the primary asset. Failures are logged, not fatal: the
-// assets themselves are already uploaded and verified.
+// StackPairs groups each shot's raw and its camera rendition into one Immich
+// stack, with the rendition as the primary asset. Failures are logged, not
+// fatal: the assets themselves are already uploaded and verified.
+//
+// "Rendition" is JPG or HEIF, not JPG alone. A card shot in HEIF+RAW produces
+// HEIC+RAF pairs, and matching only JPG meant every one of them was passed
+// over in silence — the stage reported nothing to do and looked like it had
+// worked.
+//
+// This runs on a re-import too. Asset IDs are populated for files the server
+// already had (Upload returns the existing id for a duplicate, and Validate
+// fills in the rest), so a second run over an already-uploaded card is
+// precisely when a missed stack gets picked up.
 //
 // One request per pair, sequentially. Whether that is too slow to leave alone
 // is a measurement nobody had, so the stage reports pairs per second and the
 // summary logs the elapsed time — decide with numbers, not with a hunch.
 func StackPairs(ctx context.Context, opts Options, client *immich.Client, files []photo.FileEntry) {
-	type pair struct{ jpg, raf string }
+	type pair struct{ rendition, raw string }
 	pairs := map[string]*pair{}
 	var keys []string
 	for _, f := range files {
@@ -351,21 +361,38 @@ func StackPairs(ctx context.Context, opts Options, client *immich.Client, files 
 			pairs[key] = p
 			keys = append(keys, key)
 		}
-		switch ext {
-		case "JPG":
-			p.jpg = f.AssetID
-		case "RAF":
-			p.raf = f.AssetID
+		switch {
+		case ext == "RAF":
+			p.raw = f.AssetID
+		case ext == "JPG":
+			p.rendition = f.AssetID // preferred when a shot somehow carries both
+		case photo.IsHEIF(ext) && p.rendition == "":
+			p.rendition = f.AssetID
 		}
 	}
 	sort.Strings(keys)
 
-	// Only complete pairs are stackable, so the denominator is those — not
-	// every key. A total that counts singles would leave the bar short of the
-	// end on any import carrying JPG-only shots or videos.
+	stackable := func(p *pair) bool {
+		return p.rendition != "" && p.raw != "" && p.rendition != p.raw
+	}
+
+	// Skip what is already stacked, so a re-import is a no-op rather than a
+	// second attempt per pair. A key without stack.read cannot tell, and
+	// guessing either way is worse than saying so: we go ahead and let the
+	// server rule on each pair.
+	stacked := map[string]bool{}
+	if known, err := client.StackedAssetIDs(ctx); err != nil {
+		log.Printf("stack: cannot check what is already stacked (%v) — grant the API key stack.read to skip them", err)
+	} else {
+		stacked = known
+	}
+
+	// Only complete, not-yet-stacked pairs are work, so the denominator is
+	// those. A total that counted singles would leave the bar short of the end
+	// on any import carrying rendition-only shots or videos.
 	total := 0
 	for _, key := range keys {
-		if p := pairs[key]; p.jpg != "" && p.raf != "" && p.jpg != p.raf {
+		if p := pairs[key]; stackable(p) && !(stacked[p.rendition] && stacked[p.raw]) {
 			total++
 		}
 	}
@@ -378,21 +405,21 @@ func StackPairs(ctx context.Context, opts Options, client *immich.Client, files 
 	}
 
 	t0 := time.Now()
-	stacked, failed := 0, 0
+	stackedCount, failed := 0, 0
 	for _, key := range keys {
 		p := pairs[key]
-		if p.jpg == "" || p.raf == "" || p.jpg == p.raf {
+		if !stackable(p) || (stacked[p.rendition] && stacked[p.raw]) {
 			continue
 		}
-		if err := client.CreateStack(ctx, []string{p.jpg, p.raf}); err != nil {
+		if err := client.CreateStack(ctx, []string{p.rendition, p.raw}); err != nil {
 			failed++
 			log.Printf("WARN: stack %s: %v", key, err)
 		} else {
-			stacked++
+			stackedCount++
 		}
-		st.Files, st.Failed = stacked, failed
+		st.Files, st.Failed = stackedCount, failed
 		if el := time.Since(t0).Seconds(); el > 0 {
-			st.Rate = float64(stacked+failed) / el
+			st.Rate = float64(stackedCount+failed) / el
 		}
 		opts.stage(StageStack, st)
 	}
@@ -401,10 +428,10 @@ func StackPairs(ctx context.Context, opts Options, client *immich.Client, files 
 	opts.stage(StageStack, st)
 	rate := 0.0
 	if el.Seconds() > 0 {
-		rate = float64(stacked+failed) / el.Seconds()
+		rate = float64(stackedCount+failed) / el.Seconds()
 	}
-	log.Printf("Stacked %d RAF+JPG pair(s), %d failed, in %s (%.1f pairs/s)",
-		stacked, failed, el.Round(time.Millisecond), rate)
+	log.Printf("Stacked %d raw+rendition pair(s), %d failed, in %s (%.1f pairs/s)",
+		stackedCount, failed, el.Round(time.Millisecond), rate)
 }
 
 // Validate bulk-checks all files against Immich by checksum and returns the

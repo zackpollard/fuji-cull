@@ -282,6 +282,48 @@ func (c *Client) EnsureAlbum(ctx context.Context, name string) (string, error) {
 // CreateStack groups assets into one stack; the first ID becomes the primary
 // asset. Safe to repeat: Immich merges/replaces any existing stack the assets
 // belong to.
+// StackedAssetIDs returns every asset that is already part of a stack, so a
+// re-import can skip pairs it has stacked before instead of asking the server
+// to stack them again. Needs the "stack.read" permission: a key without it
+// gets a clear error rather than a silent empty set, because "nothing is
+// stacked" and "I am not allowed to look" must not be confused.
+func (c *Client) StackedAssetIDs(ctx context.Context) (map[string]bool, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.URL+"/api/stacks", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("list stacks: HTTP %d: %s", resp.StatusCode, truncate(string(body), 200))
+	}
+	var stacks []struct {
+		PrimaryAssetID string `json:"primaryAssetId"`
+		Assets         []struct {
+			ID string `json:"id"`
+		} `json:"assets"`
+	}
+	if err := json.Unmarshal(body, &stacks); err != nil {
+		return nil, fmt.Errorf("list stacks: %w", err)
+	}
+	out := map[string]bool{}
+	for _, st := range stacks {
+		if st.PrimaryAssetID != "" {
+			out[st.PrimaryAssetID] = true
+		}
+		for _, a := range st.Assets {
+			if a.ID != "" {
+				out[a.ID] = true
+			}
+		}
+	}
+	return out, nil
+}
+
 func (c *Client) CreateStack(ctx context.Context, assetIDs []string) error {
 	body, err := json.Marshal(map[string]any{"assetIds": assetIDs})
 	if err != nil {
