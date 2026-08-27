@@ -1775,6 +1775,16 @@ func (p *Prefetcher) fetchItemsViaParts(ctx context.Context, items []fetchItem, 
 // minutes while the link is working perfectly. onBytes is called with the size
 // of each chunk as it lands, never under a lock.
 func (p *Prefetcher) fetchItemsViaPartsProgress(ctx context.Context, items []fetchItem, sizes []int64, onBytes func(int64)) error {
+	// 8 MiB a read, and measured rather than assumed: on a 4.23 GB clip a
+	// single read costs the same at 98% into the file as at the start
+	// (120-216ms throughout, no trend), and sustained throughput is 62.0 MB/s
+	// over the first 200 MB against 62.8 MB/s over 200 MB at the 90% mark. So
+	// the camera does not re-seek per request and reading deep into a large
+	// file is not penalised. A one-shot whole-object pull of the same file
+	// manages 70 MB/s — about 13% better, which does not pay for reinstating
+	// the per-chunk aft invocations that tip this camera into replaying stale
+	// buffers. Chunked stays; the one-shot path is for files past the 4 GiB
+	// offset ceiling only.
 	const chunk = 8 << 20
 	for n, it := range items {
 		if ctx.Err() != nil {
