@@ -73,6 +73,46 @@ reverse proxy or a private network (Tailscale/WireGuard). It composes with
 cross-device sync but doesn't need it: thin clients share the one host engine,
 so they always see the same state.
 
+## fuji-cull for macOS (desktop app)
+
+Each release ships `fuji-cull-macos-arm64.dmg` (Apple Silicon; there is no
+Intel build). The bundle carries everything it shells out to — `gphoto2` and
+its libgphoto2 drivers, `ffmpeg`, the patched `aft-mtp-cli`, SDL — so there
+is no Homebrew step. Open the dmg and drag `fuji-cull.app` to
+`/Applications`.
+
+### First launch: "Apple could not verify …"
+
+There's no paid Apple developer account behind this app, so the bundle is
+**ad-hoc signed but not notarized**. macOS quarantines anything downloaded
+from the internet, and with no Apple signature to check the app against,
+Gatekeeper blocks the first launch with:
+
+> **"fuji-cull" Not Opened** — Apple could not verify "fuji-cull" is free of
+> malware that may harm your Mac or compromise your privacy.
+
+That is expected, not a broken download. Two ways past it:
+
+**Terminal (one command, recommended).** Clears the quarantine flag from the
+app *and* the helper tools inside it:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/fuji-cull.app
+```
+
+**Or through System Settings.** Double-click the app and dismiss the dialog
+with **Done** — *not* Move to Trash. Then open **System Settings ▸ Privacy &
+Security**, scroll down to Security, and click **Open Anyway** next to the
+line about fuji-cull; confirm in the dialog that follows and authenticate.
+That button only appears after a blocked launch attempt, so open the app
+first. macOS may ask again for `gphoto2` or `ffmpeg` the first time you
+connect a camera — the `xattr` command above is the one that covers the
+bundled helpers too.
+
+Right-click ▸ **Open** is the old advice for this and no longer works: macOS
+15 (Sequoia) removed that bypass, so on current macOS use one of the two
+routes above.
+
 ## fuji-cull for iPad (iOS app)
 
 <img src="assets/fuji-cull.png" width="96" align="right">

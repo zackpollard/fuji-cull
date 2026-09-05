@@ -2,7 +2,14 @@
 # Builds fuji-cull.app (drag-to-Applications dmg): the GUI plus every helper
 # tool it execs (gphoto2 + plugins, ffmpeg, patched aft-mtp-cli)
 # with the full dylib closure bundled and install names rewritten, ad-hoc
-# signed. Unsigned-by-Apple: first launch needs right-click -> Open.
+# signed.
+#
+# Ad-hoc is a signature, not an Apple one: there is no Developer ID cert and
+# no notarization, so Gatekeeper blocks the first launch of a downloaded
+# build with "Apple could not verify ... free of malware". Right-click ->
+# Open no longer clears that (macOS 15 removed the bypass); the user needs
+# `xattr -dr com.apple.quarantine` or Privacy & Security -> Open Anyway.
+# README's macOS section documents both -- keep it in step with this script.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
