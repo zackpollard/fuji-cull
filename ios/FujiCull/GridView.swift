@@ -178,6 +178,12 @@ final class GridModel: ObservableObject {
                     if st.importStatus != self.importStatus { self.importStatus = st.importStatus }
                     if st.pending != self.pendingImport { self.pendingImport = st.pending }
                     self.startPosterSweepIfNeeded()
+                    // The engine runs in-process: auto-lock suspends the app
+                    // and the import with it.
+                    let busy = st.importStatus?.running ?? false
+                    if UIApplication.shared.isIdleTimerDisabled != busy {
+                        UIApplication.shared.isIdleTimerDisabled = busy
+                    }
                     if let imp = st.importStatus {
                         if imp.running {
                             self.importing = "importing \(imp.done)/\(imp.total)"
