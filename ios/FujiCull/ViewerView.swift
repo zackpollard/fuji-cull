@@ -23,16 +23,16 @@ struct ViewerView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            // UIPageViewController pager (PagerView): natively virtualized —
-            // the previous windowed TabView mutated its page set while a
-            // swipe settled and stranded the pager halfway between pages.
-            PagerView(model: model, index: $index)
-                .ignoresSafeArea()
-
+            // Chrome is stacked around the frame, not overlaid, so a photo that
+            // fits to the full height (iPad, landscape) stays entirely visible.
             VStack(spacing: 0) {
                 topBar
-                decisionChip.padding(.top, DS.s2)
-                Spacer()
+                decisionChip.padding(.vertical, DS.s2)
+                // UIPageViewController pager (PagerView): natively virtualized —
+                // the previous windowed TabView mutated its page set while a
+                // swipe settled and stranded the pager halfway between pages.
+                PagerView(model: model, index: $index)
+                    .ignoresSafeArea(edges: .horizontal)
                 Filmstrip(model: model, index: $index)
                 bottomBar
             }
@@ -109,7 +109,6 @@ struct ViewerView: View {
         .foregroundStyle(.white)
         .padding(.horizontal, 20)
         .padding(.top, 14)
-        .background(LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom))
     }
 
     private var bottomBar: some View {
@@ -125,7 +124,6 @@ struct ViewerView: View {
         .padding(.horizontal, DS.s4)
         .padding(.vertical, DS.s3)
         .frame(maxWidth: .infinity)
-        .background(LinearGradient(colors: [.clear, DS.bg.opacity(0.85)], startPoint: .top, endPoint: .bottom))
     }
 
     private func decisionButton(title: String, system: String, tint: Color, active: Bool, action: @escaping () -> Void) -> some View {
